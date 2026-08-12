@@ -1,0 +1,1 @@
+"""OverSeer Browser local CLI."""

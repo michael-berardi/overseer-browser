@@ -1,0 +1,43 @@
+OverSeer Browser — Third-Party Notices
+
+This file records dependencies and public concept references relevant to the repository. Check the package lock and shipped distribution for the exact dependency versions and license texts included in a particular release.
+
+1. WXT
+
+WXT is used as the extension build/tooling framework. WXT is distributed under the MIT License.
+Project: https://github.com/wxt-dev/wxt
+License: https://github.com/wxt-dev/wxt/blob/main/LICENSE
+
+2. React
+
+React is used for extension UI components. React is distributed under the MIT License.
+Project: https://github.com/facebook/react
+License: https://github.com/facebook/react/blob/main/LICENSE
+
+3. BrowserSkill — concept/reference only
+
+Tencent BrowserSkill is an MIT-licensed open-source project consulted for session, window, and human-handoff concepts. This repository does not claim to include BrowserSkill source code or proprietary Kimi/ChatGPT bundles. Any future adapted source must be identified in the relevant file and accompanied by the required notice.
+Project: https://github.com/Tencent/BrowserSkill
+License: https://github.com/Tencent/BrowserSkill/blob/main/LICENSE
+
+4. mcp-chrome — concept/reference only
+
+The MIT-licensed mcp-chrome project was consulted for content-script and local native-transport patterns. No mcp-chrome source is claimed here unless a future release explicitly identifies an adapted file and preserves its notice.
+Project: https://github.com/hangwin/mcp-chrome
+License: https://github.com/hangwin/mcp-chrome/blob/main/LICENSE
+
+5. Webpage MCP — concept/reference only
+
+The MIT-licensed Webpage MCP project was consulted for banner-free webpage interaction concepts. No Webpage MCP source is claimed here unless a future release explicitly identifies an adapted file and preserves its notice.
+Project: https://github.com/mcpland/webpage-mcp
+License: https://github.com/mcpland/webpage-mcp/blob/main/LICENSE
+
+6. Chromium Native Messaging
+
+The framing format follows the Chromium Native Messaging interface. Chromium is an open-source browser project with component licenses described in its source tree. This repository uses the browser interface and does not bundle Chromium.
+Project: https://www.chromium.org
+Native Messaging documentation: https://developer.chrome.com/docs/extensions/develop/concepts/native-messaging
+
+License note
+
+MIT-licensed project text is not reproduced in this notice. The repository's own code and documentation are released under the MIT License in LICENSE. Dependency notices generated for a concrete release should be added to the release artifact without embedding private paths, credentials, or user data.

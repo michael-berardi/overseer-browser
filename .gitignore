@@ -1,0 +1,46 @@
+# Dependencies and build output
+node_modules/
+dist/
+.output/
+.wxt/
+.cache/
+__pycache__/
+*.py[cod]
+coverage/
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.token
+.token
+
+# Native-host and CLI runtime state
+*.sock
+*.socket
+host-manifest.local.json
+native-host.local.json
+config.local.*
+
+# Logs and local diagnostics
+*.log
+logs/
+reports/
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Temporary fixtures and screenshots
+.tmp/
+tmp/
+screenshots/
