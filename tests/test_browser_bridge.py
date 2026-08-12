@@ -388,6 +388,9 @@ class CLIMappingTests(unittest.TestCase):
         self.assertEqual(_command_request("type", ["@e1", "hello"]), ("type", {"ref": "@e1", "text": "hello"}))
         self.assertEqual(_command_request("press", ["Enter"]), ("press", {"key": "Enter"}))
         self.assertEqual(_command_request("cancel", ["known-request"]), ("cancel", {"request_id": "known-request"}))
+        self.assertEqual(_command_request("press", ["Enter", "osr-submit"]), ("press", {"key": "Enter", "ref": "osr-submit"}))
+        self.assertEqual(_command_request("scroll", ["osr-target"]), ("scroll", {"ref": "osr-target"}))
+        self.assertEqual(_command_request("scroll", ["500"]), ("scroll", {"y": 500}))
     def test_help_lists_all_public_command_aliases(self) -> None:
         with patch("cli.main._render") as render:
             self.assertEqual(cli_main(["help"]), 0)
@@ -399,6 +402,44 @@ class CLIMappingTests(unittest.TestCase):
                 "element-screenshot", "help",
             }.issubset(commands)
         )
+
+    def test_status_combines_local_and_extension_readiness(self) -> None:
+        extension = {
+            "version": 1,
+            "kind": "response",
+            "request_id": "status",
+            "ok": True,
+            "result": {
+                "connected": True,
+                "extension_id": "iabfdeokmilpklblkgccpjlekchfjcno",
+                "evaluate_enabled": False,
+                "permissions": {"origins": ["http://127.0.0.1:8765/*"]},
+                "sessions": [],
+            },
+        }
+        with (
+            patch("cli.main.local_health", return_value={"ok": True, "socket": {"ok": True}}),
+            patch("cli.main.request_once", return_value=extension) as request,
+            patch("cli.main._render") as render,
+        ):
+            self.assertEqual(cli_main(["--json", "status"]), 0)
+        request.assert_called_once_with("health.status", {}, timeout=30.0, request_id=None)
+        payload = render.call_args.args[0]
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["extension"], {"ok": True, **extension["result"]})
+
+    def test_status_preserves_local_readiness_when_extension_is_unavailable(self) -> None:
+        local = {"ok": True, "socket": {"ok": True}}
+        with (
+            patch("cli.main.local_health", return_value=local),
+            patch("cli.main.request_once", side_effect=CLIError("native_disconnected", "native host disconnected before returning a response")),
+            patch("cli.main._render") as render,
+        ):
+            self.assertEqual(cli_main(["--json", "status"]), 1)
+        payload = render.call_args.args[0]
+        self.assertEqual(payload["socket"], {"ok": True})
+        self.assertEqual(payload["mode"], "local-native")
+        self.assertEqual(payload["extension"]["error"], {"code": "native_disconnected", "message": "native host disconnected before returning a response"})
 
     def test_console_network_batch_and_capture_commands_match_extension_schema(self) -> None:
         self.assertEqual(_command_request("console", ["start"]), ("console.start", {}))
