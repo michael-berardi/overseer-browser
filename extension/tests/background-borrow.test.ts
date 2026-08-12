@@ -9,13 +9,14 @@ function storageArea(store: Record<string, unknown>) {
 }
 
 describe('native tab borrowing approval', () => {
-  it('rejects arbitrary native borrowing but permits the popup user-gesture path', async () => {
-    const localStore: Record<string, unknown> = {};
+  it('consumes native disconnect errors, rejects arbitrary borrowing, and permits the popup user-gesture path', async () => {
+    const localStore: Record<string, unknown> = { 'overseer.connection.enabled.v1': true };
     const sessionStore: Record<string, unknown> = {};
     const tabs = new Map<number, chrome.tabs.Tab>([
       [11, { id: 11, windowId: 10, url: 'about:blank', title: 'Agent', active: true }],
       [99, { id: 99, windowId: 20, url: 'https://example.test/', title: 'Example', active: true }],
     ]);
+    let runtimeLastErrorReads = 0;
     const port = {
       onMessage: { addListener: vi.fn() },
       onDisconnect: { addListener: vi.fn() },
@@ -48,6 +49,10 @@ describe('native tab borrowing approval', () => {
         onMessage: { addListener: vi.fn() },
         connectNative: () => port,
         getURL: (path: string) => path,
+        get lastError() {
+          runtimeLastErrorReads += 1;
+          return { message: 'Native host has exited.' };
+        },
       },
     };
     vi.stubGlobal('browser', browserStub);
@@ -55,6 +60,11 @@ describe('native tab borrowing approval', () => {
     vi.stubGlobal('defineBackground', (callback: () => void) => callback());
 
     const background = await import('../entrypoints/background');
+    await vi.waitFor(() => expect(port.onDisconnect.addListener).toHaveBeenCalledOnce());
+    const onDisconnect = port.onDisconnect.addListener.mock.calls[0]?.[0];
+    expect(onDisconnect).toBeTypeOf('function');
+    onDisconnect?.();
+    expect(runtimeLastErrorReads).toBe(1);
     await background.dispatch({ version: 1, kind: 'request', request_id: 'start', command: 'sessions.start' }, { cancelled: false });
     expect(background.resetReconnectDelayOnHandshakeAck(4_000, { version: 1, kind: 'handshake' })).toBe(4_000);
     expect(background.resetReconnectDelayOnHandshakeAck(4_000, { version: 1, kind: 'handshake_ack', ok: 'yes' })).toBe(4_000);
