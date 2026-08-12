@@ -20,10 +20,11 @@ Permissions are deliberately separated:
 
 - **Required meeting-host access:** persistent content scripts are limited to the exact Google Meet and Zoom hosts needed for reminders. This permission does not authorize snapshots, clicks, uploads, evaluation, or other automation on meeting tabs.
 - **Explicit automation access:** general browser control is off until the operator enables the active origin from a popup user gesture. For Meet and Zoom, that separate decision is retained as an exact-origin local allowlist because Chromium already treats the reminder host permission as granted. Granting access is not a request to collect or index the site; actions still require an active session and tab ownership.
+- **Optional screenshot access:** Chromium's extension screenshot API requires a broad optional host grant. `<all_urls>` is declared only under `optional_host_permissions` and requested from the popup's explicitly labeled advanced control. It is never a required host permission. Session ownership, explicit tab borrowing, HTTP(S)-only validation, and the separate page-evaluation opt-in continue to constrain commands after the grant.
 - **Native Messaging:** connects the extension to the local host only. It is not a network permission.
 - **No debugger permission:** the extension does not use `chrome.debugger` and cannot access debugger-only capabilities.
 
-The manifest must not add broad required origins, `<all_urls>`, history, bookmarks, or webRequest merely to make automation easier. Browser permission prompts are controlled by Chromium and may vary by version; the user should grant only the origins needed for a task.
+The manifest must not add broad required origins, history, bookmarks, or webRequest merely to make automation easier. The optional `<all_urls>` screenshot capability must remain user-gesture gated, separately labeled, and absent from required `host_permissions`. Browser permission prompts are controlled by Chromium and may vary by version; the user should grant only the access needed for a task.
 
 ## Agent Window and borrow model
 
@@ -59,7 +60,7 @@ No browser extension can protect against a compromised browser, compromised oper
 
 ## No-debugger and no-infobar invariant
 
-The project does not request `debugger` and never invokes `chrome.debugger`. It does not rely on a Chrome launch switch to hide an infobar. A release or local build that contains the debugger permission, debugger API calls, or broad origins fails the privacy review and must not be used. Debugger-only operations return explicit unsupported errors and must be handled by an approved OverSeer cloud/desktop fallback instead.
+The project does not request `debugger` and never invokes `chrome.debugger`. It does not rely on a Chrome launch switch to hide an infobar. A release or local build that contains the debugger permission, debugger API calls, or broad required origins fails the privacy review and must not be used. Optional `<all_urls>` access is acceptable only for the documented popup-granted screenshot capability and does not weaken tab ownership or command gating. Debugger-only operations return explicit unsupported errors and must be handled by an approved OverSeer cloud/desktop fallback instead.
 
 ## Retention and deletion
 
@@ -70,7 +71,7 @@ There is no server-side account or cloud retention. Runtime state is bounded and
 Before publishing a build, reviewers should inspect the manifest and source for:
 
 - no telemetry, analytics, external fetch, remote logging, or cloud endpoint;
-- exact meeting host permissions separated from user-gesture-gated automation origins;
+- exact meeting host permissions separated from popup user-gesture-gated automation origins and optional broad screenshot access;
 - no debugger API or `debugger` permission;
 - no raw meeting identifiers in host or adapter messages;
 - no passive tab/history/bookmark collection;

@@ -15,6 +15,7 @@ MANAGER_PATH="$MANAGER_DIR/manage-macos.sh"
 SOURCE_ROOT_PATH="$APP_SUPPORT/source-root"
 CLI_LAUNCHER_PATH="$APP_SUPPORT/cli-launcher-path"
 HOST_PATH="$APP_SUPPORT/overseer-browser-native-host"
+EXTENSION_DIR="$ROOT/chrome-extension"
 DEFAULT_CLI_LAUNCHER="${OVERSEER_BROWSER_BIN_DIR:-$HOME/.local/bin}/overseer-browser"
 CLI_LAUNCHER="$DEFAULT_CLI_LAUNCHER"
 if [ -r "$CLI_LAUNCHER_PATH" ]; then
@@ -76,6 +77,12 @@ build_extension() {
   PATH="$npm_path" "$npm_bin" run build --prefix "$ROOT/extension"
   [ -f "$ROOT/extension/.output/chrome-mv3/manifest.json" ] ||
     fail "extension build did not produce .output/chrome-mv3/manifest.json"
+  rm -rf "$EXTENSION_DIR"
+  mkdir -p "$EXTENSION_DIR"
+  cp -R "$ROOT/extension/.output/chrome-mv3/." "$EXTENSION_DIR/"
+  [ -f "$EXTENSION_DIR/manifest.json" ] ||
+    fail "extension staging did not produce chrome-extension/manifest.json"
+  say "Load unpacked extension directory: $EXTENSION_DIR"
 }
 
 

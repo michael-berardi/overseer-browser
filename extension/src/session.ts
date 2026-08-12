@@ -7,6 +7,7 @@ export interface SessionState {
   agentWindowId: number;
   ownedTabIds: number[];
   borrowedTabIds: number[];
+  name?: string;
   selectedTabId?: number;
   startedAtMs: number;
 }
@@ -15,10 +16,14 @@ export interface SessionSummary extends SessionState {
   connected: boolean;
 }
 
+export type SessionReleaseHook = (tabId: number) => Promise<void>;
+
 export class SessionManager {
   private state: SessionState | null = null;
   private loadPromise: Promise<void> | null = null;
   private lifecycle: Promise<void> = Promise.resolve();
+
+  constructor(private readonly releaseHook?: SessionReleaseHook) {}
 
   private load(): Promise<void> {
     this.loadPromise ??= this.loadStoredState();
@@ -47,6 +52,14 @@ export class SessionManager {
     if (this.state) await browser.storage.session.set({ [SESSION_STORAGE_KEY]: this.state });
     else await browser.storage.session.remove(SESSION_STORAGE_KEY);
   }
+  private async releaseTabBestEffort(tabId: number): Promise<void> {
+    if (!this.releaseHook) return;
+    try {
+      await this.releaseHook(tabId);
+    } catch {
+      // Cleanup must continue even when page restoration fails.
+    }
+  }
 
   private async refreshAgentTabs(): Promise<Browser.tabs.Tab[]> {
     const state = this.state;
@@ -62,10 +75,18 @@ export class SessionManager {
     return tabs;
   }
 
-  async start(): Promise<SessionSummary> {
+  async start(name?: string): Promise<SessionSummary> {
     return this.serializeLifecycle(async () => {
       await this.load();
+      const requestedName = normalizeSessionName(name);
       if (this.state) {
+        if (requestedName !== undefined && this.state.name !== requestedName) {
+          throw new SessionError(
+            'session_conflict',
+            `The active browser session is named ${this.state.name ?? 'unnamed'}.`,
+            'Stop the active session before starting one with a different name.',
+          );
+        }
         await this.refreshAgentTabs();
         return { ...this.state, connected: true };
       }
@@ -74,6 +95,7 @@ export class SessionManager {
       const tabIds = (agentWindow.tabs ?? []).map((tab) => tab.id).filter((id): id is number => id !== undefined);
       this.state = {
         sessionId: crypto.randomUUID(),
+        ...(requestedName === undefined ? {} : { name: requestedName }),
         agentWindowId: agentWindow.id,
         ownedTabIds: tabIds,
         borrowedTabIds: [],
@@ -90,6 +112,7 @@ export class SessionManager {
       await this.load();
       if (!this.state) return { stopped: false, returnedTabIds: [] };
       const previous = this.state;
+      for (const tabId of previous.borrowedTabIds) await this.releaseTabBestEffort(tabId);
       this.state = null;
       await this.persist();
       try {
@@ -160,6 +183,13 @@ export class SessionManager {
   async closeTab(tabId: number): Promise<{ closed: boolean }> {
     const state = await this.requireState();
     if (!(await this.ownsTab(tabId))) throw new SessionError('tab_not_owned', 'Tab is not owned or borrowed by this session.');
+    if (state.borrowedTabIds.includes(tabId)) {
+      throw new SessionError(
+        'borrowed_tab_close_forbidden',
+        'Borrowed user tabs cannot be closed by the agent.',
+        'Return the borrowed tab, or close it yourself in the browser.',
+      );
+    }
     await browser.tabs.remove(tabId);
     state.ownedTabIds = state.ownedTabIds.filter((id) => id !== tabId);
     state.borrowedTabIds = state.borrowedTabIds.filter((id) => id !== tabId);
@@ -185,14 +215,23 @@ export class SessionManager {
     await this.persist();
     return tab;
   }
-
   async returnTab(tabId: number): Promise<{ returned: boolean }> {
     const state = await this.requireState();
     const wasBorrowed = state.borrowedTabIds.includes(tabId);
+    if (wasBorrowed) await this.releaseTabBestEffort(tabId);
     state.borrowedTabIds = state.borrowedTabIds.filter((id) => id !== tabId);
     if (state.selectedTabId === tabId) state.selectedTabId = state.ownedTabIds[0] ?? state.borrowedTabIds[0];
     await this.persist();
     return { returned: wasBorrowed };
+  }
+
+  async cleanupTab(tabId: number): Promise<void> {
+    return this.serializeLifecycle(async () => {
+      await this.load();
+      const state = this.state;
+      if (!state || (!state.ownedTabIds.includes(tabId) && !state.borrowedTabIds.includes(tabId))) return;
+      await this.releaseTabBestEffort(tabId);
+    });
   }
 
   async requireState(): Promise<SessionState> {
@@ -248,10 +287,21 @@ export class SessionError extends Error {
   }
 }
 
+function normalizeSessionName(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  const normalized = value.trim();
+  if (normalized.length < 1 || normalized.length > 64 || /[\u0000-\u001f\u007f]/.test(normalized)) {
+    throw new SessionError('invalid_session_name', 'Session names must contain 1–64 printable characters.');
+  }
+  return normalized;
+}
+
 function isSessionState(value: unknown): value is SessionState {
   if (!value || typeof value !== 'object') return false;
   const candidate = value as Partial<SessionState>;
-  return typeof candidate.sessionId === 'string' && Number.isInteger(candidate.agentWindowId) &&
+  return typeof candidate.sessionId === 'string' &&
+    (candidate.name === undefined || (typeof candidate.name === 'string' && candidate.name.length >= 1 && candidate.name.length <= 64 && !/[\u0000-\u001f\u007f]/.test(candidate.name))) &&
+    Number.isInteger(candidate.agentWindowId) &&
     Array.isArray(candidate.ownedTabIds) && candidate.ownedTabIds.every((id) => Number.isInteger(id)) &&
     Array.isArray(candidate.borrowedTabIds) && candidate.borrowedTabIds.every((id) => Number.isInteger(id)) &&
     (candidate.selectedTabId === undefined || Number.isInteger(candidate.selectedTabId)) && Number.isFinite(candidate.startedAtMs);

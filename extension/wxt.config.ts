@@ -13,7 +13,7 @@ export default defineConfig({
     key: publicKey,
     permissions: ['nativeMessaging', 'storage', 'scripting', 'tabs', 'windows', 'activeTab'],
     host_permissions: ['https://meet.google.com/*', 'https://zoom.us/*', 'https://*.zoom.us/*'],
-    optional_host_permissions: ['http://*/*', 'https://*/*'],
+    optional_host_permissions: ['<all_urls>'],
     icons: {
       16: 'icon-16.png',
       32: 'icon-32.png',

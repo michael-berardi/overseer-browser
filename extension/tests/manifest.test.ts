@@ -10,9 +10,9 @@ describe('manifest privacy invariants', () => {
     expect(config).toContain('IDAQAB');
     expect(config).toContain("permissions: ['nativeMessaging', 'storage', 'scripting', 'tabs', 'windows', 'activeTab']");
     expect(config).toContain("host_permissions: ['https://meet.google.com/*', 'https://zoom.us/*', 'https://*.zoom.us/*']");
-    expect(config).toContain("optional_host_permissions: ['http://*/*', 'https://*/*']");
+    expect(config).toContain("optional_host_permissions: ['<all_urls>']");
+    expect(config).not.toMatch(/^\s*host_permissions:\s*\['<all_urls>'\]/m);
     expect(config).not.toContain(['debug', 'ger'].join(''));
-    expect(config).not.toContain("'<all_urls>'");
   });
 
   it('declares the fixed extension identity in source', () => {

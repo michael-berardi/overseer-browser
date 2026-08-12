@@ -4,7 +4,7 @@ import { MAX_SCREENSHOT_FRAME_BYTES } from '../src/screenshot';
 
 describe('native protocol validation', () => {
   it('publishes every required command with explicit dotted names', () => {
-    expect(COMMANDS).toEqual(expect.arrayContaining(['health.status', 'sessions.start', 'tabs.borrow', 'tabs.return', 'snapshot', 'evaluate', 'screenshot.element', 'upload', 'cancel']));
+    expect(COMMANDS).toEqual(expect.arrayContaining(['health.status', 'sessions.start', 'tabs.borrow', 'tabs.return', 'snapshot', 'evaluate', 'screenshot.element', 'upload', 'batch', 'console.start', 'console.read', 'console.stop', 'network.read', 'cancel']));
     expect(COMMANDS).not.toContain('capability.set');
   });
   it('matches the native host handshake fixture', () => {
@@ -12,6 +12,8 @@ describe('native protocol validation', () => {
     expect(handshake.kind).toBe('handshake');
     expect(isNativeHandshakeAck({ version: 1, kind: 'handshake_ack', ok: 'yes' })).toBe(false);
     expect(isNativeHandshakeAck({ version: 1, kind: 'handshake_ack', ok: true })).toBe(true);
+    expect(isNativeHandshakeAck({ version: 1, kind: 'handshake_ack', ok: false, error: 'denied' })).toBe(true);
+    expect(isNativeHandshakeAck({ version: 1, kind: 'handshake_ack' })).toBe(false);
   });
   it('validates versioned requests and rejects unbounded input', () => {
     expect(parseNativeRequest({ version: 1, kind: 'request', request_id: 'r1', command: 'health.status' }).ok).toBe(true);

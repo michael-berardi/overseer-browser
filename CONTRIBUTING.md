@@ -5,8 +5,8 @@ Contributions are welcome when they preserve the local-only, least-privilege con
 ## Design rules
 
 - Keep all browser control local. Do not add telemetry, analytics, external servers, remote logging, or hidden network fallbacks.
-- Never use `chrome.debugger`, CDP, the `debugger` permission, `<all_urls>`, history, bookmarks, or webRequest to make a feature easier.
-- Preserve exact meeting-host permissions and popup user-gesture gating for optional origins.
+- Never use `chrome.debugger`, CDP, the `debugger` permission, history, bookmarks, or webRequest to make a feature easier. `<all_urls>` may be offered only as an optional user-gesture grant for Chrome's screenshot API; it must never be a required host permission.
+- Preserve exact meeting-host permissions, popup user-gesture gating for automation origins, and the separate warning for optional broad screenshot access.
 - Keep the Agent Window as the default. Require an explicit borrow for normal tabs and return borrowed tabs on stop.
 - Never put raw meeting URLs, IDs, titles, page content, participants, credentials, cookies, or recording data into host or adapter messages.
 - Unsupported debugger-only work must return an explicit structured error and point callers to an approved fallback.

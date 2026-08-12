@@ -17,7 +17,7 @@ export const MEETING_ORIGINS = [
   'https://*.zoom.us/*',
 ] as const;
 
-export const OPTIONAL_ORIGINS = ['http://*/*', 'https://*/*'] as const;
+export const OPTIONAL_ORIGINS = ['<all_urls>'] as const;
 
 export function isMeetingUrl(rawUrl: string): boolean {
   try {
@@ -39,32 +39,36 @@ export function originPatternForUrl(rawUrl: string): string | null {
   }
 }
 
-function isValidMeetingOriginPattern(value: unknown): value is string {
+function isValidOriginPattern(value: unknown): value is string {
   if (typeof value !== 'string' || value.length > MAX_ORIGIN_PATTERN_LENGTH || !value.endsWith('/*')) return false;
   try {
     const url = new URL(value.slice(0, -2));
-    return url.protocol === 'https:' && url.pathname === '/' && !url.username && !url.password && !url.search && !url.hash &&
-      isMeetingUrl(`${url.origin}/`);
+    return (url.protocol === 'http:' || url.protocol === 'https:') &&
+      url.pathname === '/' && !url.username && !url.password && !url.search && !url.hash &&
+      originPatternForUrl(`${url.origin}/`) === value;
   } catch {
     return false;
   }
 }
 
+
 async function readExplicitAutomationOrigins(): Promise<string[]> {
   const stored = (await browser.storage.local.get([EXPLICIT_AUTOMATION_ORIGINS_KEY]))[EXPLICIT_AUTOMATION_ORIGINS_KEY];
   if (!Array.isArray(stored)) return [];
-  return [...new Set(stored.filter(isValidMeetingOriginPattern))].slice(0, MAX_EXPLICIT_AUTOMATION_ORIGINS);
+  return [...new Set(stored.filter(isValidOriginPattern))].slice(0, MAX_EXPLICIT_AUTOMATION_ORIGINS);
 }
 
 async function writeExplicitAutomationOrigins(origins: string[]): Promise<void> {
-  const valid = [...new Set(origins.filter(isValidMeetingOriginPattern))].slice(0, MAX_EXPLICIT_AUTOMATION_ORIGINS);
+  const valid = [...new Set(origins.filter(isValidOriginPattern))].slice(0, MAX_EXPLICIT_AUTOMATION_ORIGINS);
   await browser.storage.local.set({ [EXPLICIT_AUTOMATION_ORIGINS_KEY]: valid });
 }
 
 async function hasExplicitAutomationOrigin(rawUrl: string): Promise<boolean> {
   const pattern = originPatternForUrl(rawUrl);
-  return isMeetingUrl(rawUrl) && pattern !== null && (await readExplicitAutomationOrigins()).includes(pattern);
+  if (pattern === null || !(await readExplicitAutomationOrigins()).includes(pattern)) return false;
+  return isMeetingUrl(rawUrl) || browser.permissions.contains({ origins: [pattern] });
 }
+
 
 export function isNavigableUrl(rawUrl: string): boolean {
   try {
@@ -80,44 +84,47 @@ export async function hasOptionalSiteAccess(): Promise<boolean> {
 }
 
 export async function hasOriginAccess(rawUrl: string): Promise<boolean> {
-  const pattern = originPatternForUrl(rawUrl);
-  return pattern ? browser.permissions.contains({ origins: [pattern] }) : false;
+  return hasExplicitAutomationOrigin(rawUrl);
 }
 export async function requestOriginAccess(rawUrl: string): Promise<boolean> {
   const pattern = originPatternForUrl(rawUrl);
   if (!pattern) return false;
-  if (isMeetingUrl(rawUrl)) {
-    const origins = await readExplicitAutomationOrigins();
-    if (origins.includes(pattern)) return true;
-    if (origins.length >= MAX_EXPLICIT_AUTOMATION_ORIGINS) return false;
-    origins.push(pattern);
+  let origins = await readExplicitAutomationOrigins();
+  if (origins.includes(pattern)) {
+    if (isMeetingUrl(rawUrl) || await browser.permissions.contains({ origins: [pattern] })) return true;
+    origins = origins.filter((origin) => origin !== pattern);
     await writeExplicitAutomationOrigins(origins);
-    return true;
   }
-  return browser.permissions.request({ origins: [pattern] });
+  if (origins.length >= MAX_EXPLICIT_AUTOMATION_ORIGINS) return false;
+  if (!isMeetingUrl(rawUrl)) {
+    const granted = await browser.permissions.request({ origins: [pattern] });
+    if (!granted) return false;
+  }
+  origins.push(pattern);
+  await writeExplicitAutomationOrigins(origins);
+  return true;
 }
 
 export async function revokeOriginAccess(rawUrl: string): Promise<boolean> {
   const pattern = originPatternForUrl(rawUrl);
   if (!pattern) return false;
-  if (isMeetingUrl(rawUrl)) {
-    const origins = await readExplicitAutomationOrigins();
-    if (!origins.includes(pattern)) return false;
-    await writeExplicitAutomationOrigins(origins.filter((origin) => origin !== pattern));
-    return true;
-  }
-  return browser.permissions.remove({ origins: [pattern] });
+  const origins = await readExplicitAutomationOrigins();
+  if (!origins.includes(pattern)) return false;
+  if (!isMeetingUrl(rawUrl)) await browser.permissions.remove({ origins: [pattern] });
+  await writeExplicitAutomationOrigins(origins.filter((origin) => origin !== pattern));
+  return true;
 }
 
 export async function requestOptionalSiteAccess(): Promise<boolean> {
   return browser.permissions.request({ origins: [...OPTIONAL_ORIGINS] });
 }
 
+export async function revokeOptionalSiteAccess(): Promise<boolean> {
+  return browser.permissions.remove({ origins: [...OPTIONAL_ORIGINS] });
+}
+
 export async function canControlUrl(rawUrl: string): Promise<boolean> {
-  if (!isNavigableUrl(rawUrl)) return false;
-  if (await hasOptionalSiteAccess()) return true;
-  if (isMeetingUrl(rawUrl)) return hasExplicitAutomationOrigin(rawUrl);
-  return hasOriginAccess(rawUrl);
+  return isNavigableUrl(rawUrl) && await hasExplicitAutomationOrigin(rawUrl);
 }
 export interface PermissionState {
   meetingHosts: true;
@@ -129,9 +136,7 @@ export interface PermissionState {
 export async function getPermissionState(currentUrl?: string): Promise<PermissionState> {
   const currentOrigin = currentUrl ? originPatternForUrl(currentUrl) ?? undefined : undefined;
   const optionalSiteAccess = await hasOptionalSiteAccess();
-  const currentOriginAccess = optionalSiteAccess || (currentUrl
-    ? isMeetingUrl(currentUrl) ? await hasExplicitAutomationOrigin(currentUrl) : await hasOriginAccess(currentUrl)
-    : false);
+  const currentOriginAccess = currentUrl ? await hasExplicitAutomationOrigin(currentUrl) : false;
   return {
     meetingHosts: true,
     optionalSiteAccess,

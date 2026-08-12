@@ -33,23 +33,16 @@ This is public identity material, not a signing secret. Do not regenerate it for
 
 ## Install from source
 
-Clone the public repository, then install and build the WXT package:
+Clone the public repository, then run the macOS installer. It builds the WXT package, stages a visible `chrome-extension/` directory for Chrome, and installs the per-user native host and CLI:
 
 ```sh
 git clone https://github.com/michael-berardi/overseer-browser.git
 cd overseer-browser
-npm ci --prefix extension
-npm run build --prefix extension
-```
-
-Load the generated extension directory using the browser's **Load unpacked** flow (`chrome://extensions`, enable Developer mode, select the generated output directory). Confirm that the loaded ID is `iabfdeokmilpklblkgccpjlekchfjcno` before registering the host. Never accept a different ID by weakening `allowed_origins`; fix the build key or use the release artifact.
-
-Register the native host for the current user. On macOS, the repository adapter is:
-
-```sh
 ./scripts/manage-macos.sh install
 ./scripts/manage-macos.sh status
 ```
+
+Load `./chrome-extension` using Chrome's **Load unpacked** flow (`chrome://extensions`, with Developer mode enabled). Confirm that the loaded ID is `iabfdeokmilpklblkgccpjlekchfjcno`. Never accept a different ID by weakening `allowed_origins`; fix the build key or use the release artifact.
 
 The equivalent installed CLI commands are `overseer-browser install`, `overseer-browser status`, `overseer-browser update`, and `overseer-browser uninstall`. Installed `status` and `uninstall` are self-contained; `install` and `update` require the recorded source checkout so the extension and native host can be rebuilt together. The registration must use the exact host name `com.imploselabs.overseer_browser`, the loaded extension ID in `allowed_origins`, and a user-owned host executable. Use the platform adapter for Linux or Windows when provided; it must preserve the same per-user and exact-origin rules. Do not place a token, private key, absolute home path, or production endpoint in source, manifests, or shell history.
 
@@ -76,7 +69,7 @@ overseer-browser update
 overseer-browser uninstall
 
 overseer-browser sessions start [name]
-overseer-browser sessions stop [session-id]
+overseer-browser sessions stop
 overseer-browser sessions list
 overseer-browser windows resize <width> <height>
 overseer-browser tabs list
@@ -103,13 +96,20 @@ overseer-browser scroll <ref> <x> <y>
 overseer-browser evaluate <script>
 overseer-browser screenshot [path]
 overseer-browser screenshot-element <ref> [path]
-overseer-browser upload <ref> <path>
+overseer-browser upload <ref> <path> [path...]
+overseer-browser console start
+overseer-browser console read
+overseer-browser console stop
+overseer-browser network read [limit]
+overseer-browser batch '<json-actions>'
+overseer-browser capture start
+overseer-browser capture stop
 overseer-browser help
 overseer-browser takeover
 overseer-browser cancel <request-id>
 ```
 
-`eval <script>` is an alias for `evaluate <script>` and is intentionally capability-gated. `--json` emits the structured response; `--timeout <seconds>` bounds a request. Automation callers may supply `--request-id <id>` before the command so that a concurrent `cancel <id>` can target the in-flight operation. Commands return stable structured error codes; unsupported debugger-only capabilities are not emulated.
+`eval <script>` is an alias for `evaluate <script>` and is intentionally capability-gated. `upload` accepts 1–16 files with an aggregate 8 MiB/32-chunk limit. `console` captures a bounded in-page console buffer only after an explicit start; `network read` returns bounded Resource Timing metadata with query strings, fragments, and response bodies omitted. `batch` executes up to 20 explicit actions sequentially in one local request and is rejected locally when its complete forwarded request would exceed the extension's 512 KiB parser limit. `--json` emits the structured response; `--timeout <seconds>` bounds a request. Automation callers may supply `--request-id <id>` before the command so that a concurrent `cancel <id>` can target the in-flight operation. Commands return stable structured error codes; unsupported debugger-only capabilities are not emulated.
 
 Run `overseer-browser --help` for the installed command list. Commands return structured errors with stable error codes; unsupported debugger-only capabilities are not emulated.
 
@@ -127,7 +127,7 @@ The generic `meeting_detected` event can be consumed by a local adapter such as 
 
 Before trusting an installation:
 
-- Inspect the built manifest: it must not contain `debugger`, `chrome.debugger`, `<all_urls>`, history, bookmarks, webRequest, or broad required origins.
+- Inspect the built manifest: it must not contain `debugger`, `chrome.debugger`, history, bookmarks, webRequest, or broad required origins. `<all_urls>` may appear only as an optional operator-granted capability needed for extension screenshots; it must never appear under `host_permissions`.
 - Confirm the extension ID and `allowed_origins` are exact; the host name is `com.imploselabs.overseer_browser`.
 - Confirm the host socket and token file are user-only (directory mode `0700`, socket/token mode `0600` where supported).
 - Run `overseer-browser status`, disconnect, and confirm the popup state changes without any network dependency.
@@ -149,7 +149,7 @@ If the recorded checkout moved or was deleted, clone the public repository again
 
 ## Uninstall and revoke access completely
 
-1. Disconnect the popup and stop every session: `overseer-browser sessions stop <session-id>`.
+1. Disconnect the popup and stop the active session: `overseer-browser sessions stop`.
 2. Return borrowed tabs and close Agent Windows.
 3. Revoke optional site access in the browser's extension settings.
 4. Remove the extension through `chrome://extensions` (or the browser's equivalent).

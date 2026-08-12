@@ -21,7 +21,7 @@ Do not include passwords, cookies, meeting URLs, raw meeting IDs, participant da
 A release is not acceptable if it violates any of these:
 
 - no `chrome.debugger` call and no `debugger` permission;
-- no `<all_urls>`, broad required origins, history, bookmarks, or webRequest permission;
+- no broad required origins, history, bookmarks, or webRequest permission; optional `<all_urls>` access is permitted only through the labeled popup grant needed for screenshots;
 - no telemetry, external server, remote logging, or unreviewed network endpoint;
 - exact extension ID and native-host `allowed_origins` binding;
 - CLI socket directory mode `0700`, socket/token mode `0600` where supported, and peer-UID validation where supported;
