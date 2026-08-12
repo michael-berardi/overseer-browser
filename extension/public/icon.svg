@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+  <title id="title">OverSeer Browser mark</title>
+  <desc id="desc">A geometric browser frame holding an aperture-shaped agent window.</desc>
+  <rect width="128" height="128" rx="20" fill="#0d0f12"/>
+  <path fill="#f5f7fa" d="M26 18h76c7.73 0 14 6.27 14 14v64c0 7.73-6.27 14-14 14H26c-7.73 0-14-6.27-14-14V32c0-7.73 6.27-14 14-14Zm0 12a2 2 0 0 0-2 2v64a2 2 0 0 0 2 2h76a2 2 0 0 0 2-2V32a2 2 0 0 0-2-2H26Z"/>
+  <path fill="#f5f7fa" d="M20 42h88v10H20z"/>
+  <circle cx="29" cy="35" r="3.5" fill="#0d0f12"/>
+  <circle cx="41" cy="35" r="3.5" fill="#0d0f12"/>
+  <circle cx="53" cy="35" r="3.5" fill="#0d0f12"/>
+  <path fill="#f5f7fa" d="M64 60a22 22 0 1 0 0 44 22 22 0 0 0 0-44Zm0 11a11 11 0 1 1 0 22 11 11 0 0 1 0-22Z"/>
+  <path fill="#f5f7fa" d="m64 60 12 12-12 12-12-12 12-12Z"/>
+  <path fill="#0d0f12" d="m64 71 5 5-5 5-5-5 5-5Z"/>
+</svg>
