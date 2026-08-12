@@ -406,11 +406,19 @@ function connectNative(): void {
       void handleRequest(parsed.request);
     });
     port.onDisconnect.addListener(() => {
+      const runtimeError = chrome.runtime.lastError;
       if (nativePort !== port) return;
       clearNativeHandshakeTimer();
       nativePort = null;
       connected = false;
       uploads.clear();
+      if (runtimeError?.message) {
+        lastNativeError = {
+          code: 'native_disconnected',
+          message: runtimeError.message,
+          fallback: 'Reconnect the local host from the extension popup.',
+        };
+      }
       scheduleReconnect();
     });
     const hello: NativeOutbound = { version: 1, kind: 'handshake', extension_id: EXTENSION_ID, capabilities: [...COMMANDS] };
