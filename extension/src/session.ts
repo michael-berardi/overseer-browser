@@ -177,7 +177,7 @@ export class SessionManager {
     await browser.tabs.update(tabId, { active: true });
     state.selectedTabId = tabId;
     await this.persist();
-    return tab;
+    return { ...tab, active: true };
   }
 
   async closeTab(tabId: number): Promise<{ closed: boolean }> {

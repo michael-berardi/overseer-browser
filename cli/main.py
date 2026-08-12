@@ -468,11 +468,13 @@ def _command_request(command: str, args: list[str]) -> tuple[str, dict[str, Any]
     if command == "press":
         if not 1 <= len(args) <= 2:
             raise CLIError("usage", "usage: overseer-browser press KEY [REF]")
-        return command, ({"key": args[0]} if len(args) == 1 else {"ref": args[0], "key": args[1]})
+        return command, ({"key": args[0]} if len(args) == 1 else {"key": args[0], "ref": args[1]})
     if command == "scroll":
         if not 1 <= len(args) <= 3:
-            raise CLIError("usage", "usage: overseer-browser scroll Y | scroll X Y | scroll REF X Y")
+            raise CLIError("usage", "usage: overseer-browser scroll Y | scroll REF | scroll X Y | scroll REF X Y")
         if len(args) == 1:
+            if args[0].startswith("osr-"):
+                return command, {"ref": args[0]}
             return command, {"y": _integer(args[0], minimum=-100_000, maximum=100_000)}
         if len(args) == 2:
             return command, {"x": _integer(args[0], minimum=-100_000, maximum=100_000), "y": _integer(args[1], minimum=-100_000, maximum=100_000)}
@@ -653,6 +655,19 @@ def main(argv: list[str] | None = None) -> int:
             _exact(args, 0, "status")
             payload = local_health()
             payload["mode"] = "local-native"
+            if payload.get("ok"):
+                try:
+                    extension_response = request_once("health.status", {}, timeout=timeout, request_id=request_id)
+                except CLIError as exc:
+                    payload["ok"] = False
+                    payload["extension"] = {"ok": False, "error": {"code": exc.code, "message": exc.message}}
+                else:
+                    extension_result = extension_response.get("result")
+                    if extension_response.get("ok") is True and isinstance(extension_result, dict):
+                        payload["extension"] = {"ok": True, **extension_result}
+                    else:
+                        payload["ok"] = False
+                        payload["extension"] = {"ok": False, "error": extension_response.get("error", {"code": "invalid_response", "message": "Extension status was unavailable."})}
         elif command == "upload":
             _require(args, 2, "upload REF PATH [PATH...]")
             ref = args[0]

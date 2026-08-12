@@ -541,7 +541,7 @@ async function handleRequest(request: NativeRequest): Promise<void> {
   const state: InflightRequest = { cancelled: false, deadlineAt: Date.now() + COMMAND_TIMEOUT_MS };
   inflight.set(request.request_id, state);
   try {
-    const result = await withTimeout(dispatch(request, state), COMMAND_TIMEOUT_MS, () => markTimedOut(state));
+    const result = await dispatchWithinDeadline(request, state);
     if (!state.cancelled) sendNative(responseOk(request.request_id, result));
     else sendNative(responseError(request.request_id, { code: 'cancelled', message: 'Request was cancelled.' }));
   } catch (error) {
@@ -565,7 +565,24 @@ export async function dispatch(request: NativeRequest, state: InflightRequest): 
   }
   assertNotCancelled(state);
   if (takeoverRequested && isPausedCommand(command)) throw new DispatchError('human_takeover_active', 'Automation is paused for human takeover.', 'Return control to the agent from the extension popup.');
-  if (command === 'health.status') return { version: 1, connected, extension_id: EXTENSION_ID, evaluate_enabled: evaluateEnabled, takeover_requested: takeoverRequested, permissions: await getPermissionState(), sessions: await sessions.list() };
+  if (command === 'health.status') {
+    let currentUrl: string | undefined;
+    try {
+      const selectedTabId = await sessions.getSelectedTabId();
+      currentUrl = (await browser.tabs.get(selectedTabId)).url;
+    } catch {
+      currentUrl = undefined;
+    }
+    return {
+      version: 1,
+      connected,
+      extension_id: EXTENSION_ID,
+      evaluate_enabled: evaluateEnabled,
+      takeover_requested: takeoverRequested,
+      permissions: await getPermissionState(currentUrl),
+      sessions: await sessions.list(),
+    };
+  }
   if (command === 'sessions.start') return sessions.start(optionalString(params, 'name'));
   if (command === 'sessions.stop') {
     const result = await sessions.stop();
@@ -575,7 +592,23 @@ export async function dispatch(request: NativeRequest, state: InflightRequest): 
   if (command === 'sessions.list') return sessions.list();
   if (command === 'windows.resize') return sessions.resize({ width: optionalInteger(params, 'width'), height: optionalInteger(params, 'height'), left: optionalInteger(params, 'left'), top: optionalInteger(params, 'top') });
   if (command === 'tabs.list') return sessions.listTabs();
-  if (command === 'tabs.create') return sessions.createTab(optionalString(params, 'url'));
+  if (command === 'tabs.create') {
+    const url = optionalString(params, 'url');
+    if (url === undefined) return sessions.createTab();
+    if (!isNavigableUrl(url) || !(await canControlUrl(url))) {
+      throw new DispatchError('permission_required', 'Optional site access is required for this URL.', 'Grant site access from the popup.');
+    }
+    const tab = await sessions.createTab();
+    if (tab.id === undefined) throw new DispatchError('tab_required', 'Chrome did not return the new tab id.');
+    const navigation = createTabNavigationWait(tab.id);
+    try {
+      await browser.tabs.update(tab.id, { url });
+      return await navigation.promise;
+    } catch (error) {
+      navigation.cancel();
+      throw error;
+    }
+  }
   if (command === 'tabs.select') return sessions.selectTab(readInteger(params, 'tab_id', 1));
   if (command === 'tabs.close') return sessions.closeTab(readInteger(params, 'tab_id', 1));
   if (command === 'tabs.borrow') return borrowExistingTab(readInteger(params, 'tab_id', 1));
@@ -614,7 +647,7 @@ export async function dispatch(request: NativeRequest, state: InflightRequest): 
   }
   if (command === 'snapshot' || command === 'observe') return runAction(params, { kind: command, maxNodes: optionalInteger(params, 'max_nodes') }, state);
   if (command === 'click' || command === 'hover') return runAction(params, { kind: command, ref: readString(params, 'ref', 128) }, state);
-  if (command === 'fill') return runAction(params, { kind: 'fill', ref: readString(params, 'ref', 128), value: readString(params, 'value', 32_000) }, state);
+  if (command === 'fill') return runAction(params, { kind: 'fill', ref: readString(params, 'ref', 128), value: readStringAllowEmpty(params, 'value', 32_000) }, state);
   if (command === 'type') return runAction(params, { kind: 'type', ref: readString(params, 'ref', 128), text: readString(params, 'text', 32_000) }, state);
   if (command === 'select') return runAction(params, { kind: 'select', ref: readString(params, 'ref', 128), value: readString(params, 'value', 2_000) }, state);
   if (command === 'press') return runAction(params, { kind: 'press', ref: optionalString(params, 'ref'), key: readString(params, 'key', 64), code: optionalString(params, 'code') }, state);
@@ -1036,7 +1069,7 @@ function markTimedOut(state: InflightRequest): void {
   state.cancelled = true;
 }
 
-function markCancelled(state: InflightRequest): void {
+export function markCancelled(state: InflightRequest): void {
   if (state.timedOut) return;
   state.cancelled = true;
   state.cancelSignalReject?.(cancellationError());
@@ -1059,7 +1092,7 @@ function assertNotCancelled(state: InflightRequest): void {
   }
 }
 
-async function dispatchWithinDeadline(request: NativeRequest, state: InflightRequest): Promise<unknown> {
+export async function dispatchWithinDeadline(request: NativeRequest, state: InflightRequest): Promise<unknown> {
   assertNotCancelled(state);
   const remainingMs = state.deadlineAt === undefined ? COMMAND_TIMEOUT_MS : state.deadlineAt - Date.now();
   if (remainingMs <= 0) {
@@ -1088,6 +1121,12 @@ class DispatchError extends Error {
 function readString(params: Record<string, unknown>, key: string, maxLength: number): string {
   const value = params[key];
   if (typeof value !== 'string' || value.length < 1 || value.length > maxLength) throw new DispatchError('invalid_params', `${key} must be a non-empty string of at most ${maxLength} characters.`);
+  return value;
+}
+
+function readStringAllowEmpty(params: Record<string, unknown>, key: string, maxLength: number): string {
+  const value = params[key];
+  if (typeof value !== 'string' || value.length > maxLength) throw new DispatchError('invalid_params', `${key} must be a string of at most ${maxLength} characters.`);
   return value;
 }
 

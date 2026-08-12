@@ -61,7 +61,10 @@ export async function runInIsolatedWorld(tabId: number, action: AutomationAction
     func: isolatedAutomation,
     args: [action],
   });
-  return result?.result;
+  if (result === undefined || !('result' in result) || result.result === undefined || result.result === null || ('error' in result && typeof result.error === 'string')) {
+    throw new AutomationError('automation_failed', 'Browser automation failed in the target tab.');
+  }
+  return result.result;
 }
 
 export async function runPageEvaluation(tabId: number, source: string): Promise<unknown> {
@@ -199,7 +202,6 @@ function isolatedAutomation(action: AutomationAction): SnapshotNode[] | RectResu
     for (const element of document.querySelectorAll<HTMLElement>('[data-overseer-ref]')) {
       if (element.getAttribute('data-overseer-ref') === ref) return element;
     }
-    for (const element of allVisible()) if (refFor(element) === ref) return element;
     throw new Error(`Stable ref not found: ${ref}`);
   };
   const setTextValue = (element: HTMLInputElement | HTMLTextAreaElement, value: string): void => {

@@ -4,6 +4,8 @@ OverSeer Browser is a local-first Chromium extension and native host for operato
 
 The extension and native host do **not** use `chrome.debugger`, the `debugger` permission, CDP, telemetry, or an external control service, and they do not create a browser-wide debugging infobar. Page observations or screenshots requested by the operator are returned to the calling OverSeer runtime; that runtime may send them to its configured AI provider. This project is not a remote browser, passive recorder, or telemetry product.
 
+The browser contract is model-agnostic. Claude, Codex, Kimi, and other general agents use the same CLI commands, `--json` responses, `osr-*` element references, error codes, limits, and explicit session lifecycle; no model SDK or vendor-specific transport is required.
+
 ## Guarantees and boundaries
 
 - **Zero telemetry.** There is no analytics, tracking, crash upload, remote logging, or external server.
@@ -89,9 +91,10 @@ overseer-browser hover <ref>
 overseer-browser fill <ref> <text>
 overseer-browser type <ref> <text>
 overseer-browser select <ref> <value>
-overseer-browser press <key>
+overseer-browser press <key> [ref]
 overseer-browser scroll <y>
 overseer-browser scroll <x> <y>
+overseer-browser scroll <ref>
 overseer-browser scroll <ref> <x> <y>
 overseer-browser evaluate <script>
 overseer-browser screenshot [path]
@@ -112,6 +115,8 @@ overseer-browser cancel <request-id>
 `eval <script>` is an alias for `evaluate <script>` and is intentionally capability-gated. `upload` accepts 1–16 files with an aggregate 8 MiB/32-chunk limit. `console` captures a bounded in-page console buffer only after an explicit start; `network read` returns bounded Resource Timing metadata with query strings, fragments, and response bodies omitted. `batch` executes up to 20 explicit actions sequentially in one local request and is rejected locally when its complete forwarded request would exceed the extension's 512 KiB parser limit. `--json` emits the structured response; `--timeout <seconds>` bounds a request. Automation callers may supply `--request-id <id>` before the command so that a concurrent `cancel <id>` can target the in-flight operation. Commands return stable structured error codes; unsupported debugger-only capabilities are not emulated.
 
 Run `overseer-browser --help` for the installed command list. Commands return structured errors with stable error codes; unsupported debugger-only capabilities are not emulated.
+
+`health` checks the installed local runtime without requiring an extension connection. `status` additionally queries the connected extension and reports its identity, evaluation capability, current selected-origin access, takeover state, and sessions; automation readiness should use `status --json`.
 
 The CLI request contract is documented in [PROTOCOL.md](PROTOCOL.md). The CLI token authenticates the local client to the host; it is stripped before a request is sent to the extension.
 

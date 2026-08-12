@@ -149,6 +149,17 @@ describe('native tab borrowing approval', () => {
     await expect(background.popupBorrowActive()).resolves.toMatchObject({ ok: true });
     await expect(background.dispatch({ version: 1, kind: 'request', request_id: 'borrow-again', command: 'tabs.borrow', params: { tab_id: 99 } }, { cancelled: false }))
       .resolves.toMatchObject({ id: 99 });
+    await expect(background.dispatch({
+      version: 1,
+      kind: 'request',
+      request_id: 'health',
+      command: 'health.status',
+    }, { cancelled: false })).resolves.toMatchObject({
+      permissions: {
+        currentOrigin: 'https://example.test/*',
+        currentOriginAccess: true,
+      },
+    });
     await expect(background.dispatch({ version: 1, kind: 'request', request_id: 'console-start', command: 'console.start' }, { cancelled: false }))
       .resolves.toMatchObject({ installed: true });
     await expect(background.dispatch({ version: 1, kind: 'request', request_id: 'return', command: 'tabs.return', params: { tab_id: 99 } }, { cancelled: false }))

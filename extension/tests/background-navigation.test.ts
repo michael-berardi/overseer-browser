@@ -23,11 +23,14 @@ async function loadBackground() {
   const onUpdated = event();
   const onRemoved = event();
   const browserStub = {
-    storage: { local: storageArea({}), session: storageArea({}) },
+    storage: { local: storageArea({ 'overseer.automation.origins.v1': ['https://example.test/*'] }), session: storageArea({}) },
+    permissions: { contains: async () => true },
     tabs: {
       onUpdated,
       onRemoved,
       get: vi.fn(async (id: number) => ({ id, windowId: 1, url: 'https://example.test/next' })),
+      create: vi.fn(async () => ({ id: 8, windowId: 1, url: 'https://example.test/next', status: 'loading' as const })),
+      update: vi.fn(async (id: number, updates: chrome.tabs.UpdateProperties) => ({ id, windowId: 1, ...updates })),
       query: vi.fn<() => Promise<chrome.tabs.Tab[]>>(async () => []),
     },
     runtime: {
@@ -77,6 +80,43 @@ describe('background navigation waits', () => {
     expect(browserStub.tabs.get).toHaveBeenCalledWith(7);
     vi.useRealTimers();
   });
+
+  it('waits for a newly created URL tab to finish loading', async () => {
+    const { background, onUpdated, browserStub } = await loadBackground();
+    browserStub.tabs.get.mockResolvedValueOnce(
+      { id: 8, windowId: 1, url: 'https://example.test/next', status: 'complete' },
+    );
+    await background.dispatch({ version: 1, kind: 'request', request_id: 'start', command: 'sessions.start' }, { cancelled: false });
+
+    const pending = background.dispatch({
+      version: 1,
+      kind: 'request',
+      request_id: 'new-tab',
+      command: 'tabs.create',
+      params: { url: 'https://example.test/next' },
+    }, { cancelled: false });
+    await vi.waitFor(() => expect(browserStub.tabs.update).toHaveBeenCalledWith(8, { url: 'https://example.test/next' }));
+    onUpdated.emit(8, { status: 'complete' });
+
+    await expect(pending).resolves.toMatchObject({ id: 8, status: 'complete' });
+  });
+  it('allows fill to clear an existing field value', async () => {
+    const { background, browserStub } = await loadBackground();
+    browserStub.scripting.executeScript.mockResolvedValueOnce([{ result: { changed: true } }]);
+    await background.dispatch({ version: 1, kind: 'request', request_id: 'start', command: 'sessions.start' }, { cancelled: false });
+
+    await expect(background.dispatch({
+      version: 1,
+      kind: 'request',
+      request_id: 'clear-field',
+      command: 'fill',
+      params: { ref: 'osr-field', value: '' },
+    }, { cancelled: false })).resolves.toEqual({ changed: true });
+    expect(browserStub.scripting.executeScript).toHaveBeenCalledWith(expect.objectContaining({
+      args: [{ kind: 'fill', ref: 'osr-field', value: '' }],
+    }));
+  });
+
 
   it('uses isolated-world history traversal for back and forward navigation', async () => {
     const { background, browserStub } = await loadBackground();
@@ -128,5 +168,26 @@ describe('background request cancellation', () => {
     await expect(batch).rejects.toMatchObject({ code: 'cancelled' });
     expect(query).toHaveBeenCalledTimes(1);
     vi.useRealTimers();
+  });
+
+  it('interrupts a single slow command when cancellation is requested', async () => {
+    const { background, browserStub } = await loadBackground();
+    const state = { cancelled: false, deadlineAt: Date.now() + 45_000 };
+    let release!: () => void;
+    browserStub.tabs.query.mockReturnValueOnce(new Promise<chrome.tabs.Tab[]>((resolve) => {
+      release = () => resolve([]);
+    }));
+    const pending = background.dispatchWithinDeadline({
+      version: 1,
+      kind: 'request',
+      request_id: 'slow-list',
+      command: 'tabs.list',
+    }, state);
+    await Promise.resolve();
+
+    background.markCancelled(state);
+
+    await expect(pending).rejects.toMatchObject({ code: 'cancelled' });
+    release();
   });
 });

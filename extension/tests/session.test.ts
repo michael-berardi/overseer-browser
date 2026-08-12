@@ -42,7 +42,11 @@ vi.stubGlobal('browser', {
       return tab;
     },
     get: async (id: number) => tabStore.get(id) ?? ({ id, windowId: 10, url: 'about:blank', active: false } as chrome.tabs.Tab),
-    update: async (id: number, updates: chrome.tabs.UpdateProperties) => Object.assign(tabStore.get(id) ?? { id }, updates),
+    update: async (id: number, updates: chrome.tabs.UpdateProperties) => {
+      const updated = { ...(tabStore.get(id) ?? { id }), ...updates } as chrome.tabs.Tab;
+      tabStore.set(id, updated);
+      return updated;
+    },
     remove: async (id: number) => tabStore.delete(id),
   },
 });
@@ -96,6 +100,35 @@ describe('session ownership', () => {
     await expect(manager.start('different-session')).rejects.toMatchObject({ code: 'session_conflict' });
     await manager.stop();
     await expect(manager.start('x'.repeat(65))).rejects.toMatchObject({ code: 'invalid_session_name' });
+  });
+
+  it('returns the updated active tab after selection', async () => {
+    delete sessionStore['overseer.session.v1'];
+    tabStore.set(21, { id: 21, windowId: 10, url: 'about:blank', active: false });
+    const manager = new SessionManager();
+    await manager.start();
+
+    const selected = await manager.selectTab(21);
+
+    expect(selected.active).toBe(true);
+    expect((await manager.requireState()).selectedTabId).toBe(21);
+    await manager.stop();
+  });
+
+  it('normalizes selection when Chrome returns the pre-update tab snapshot', async () => {
+    delete sessionStore['overseer.session.v1'];
+    tabStore.set(21, { id: 21, windowId: 10, url: 'about:blank', active: false });
+    const update = vi.spyOn(browser.tabs, 'update').mockResolvedValueOnce(
+      { id: 21, windowId: 10, url: 'about:blank', active: false },
+    );
+    const manager = new SessionManager();
+    await manager.start();
+
+    const selected = await manager.selectTab(21);
+
+    expect(selected.active).toBe(true);
+    update.mockRestore();
+    await manager.stop();
   });
   it('restores a borrowed tab before return and releases ownership when restoration fails', async () => {
     delete sessionStore['overseer.session.v1'];

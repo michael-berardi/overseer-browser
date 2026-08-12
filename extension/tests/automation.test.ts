@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { isBoundedUpload, runPageEvaluation, snapshotPriorityForNode, stableRefForPath } from '../src/automation';
+import { isBoundedUpload, runInIsolatedWorld, runPageEvaluation, snapshotPriorityForNode, stableRefForPath } from '../src/automation';
 
 const uploadBase = {
   kind: 'upload' as const,
@@ -69,6 +69,32 @@ describe('isolated automation contracts', () => {
     } as never)).toBe(false);
   });
 
+
+  it('returns a structured error for isolated-world automation failures', async () => {
+    vi.stubGlobal('chrome', {
+      scripting: {
+        executeScript: vi.fn(async () => [{ error: 'Error: Stable ref not found: osr-stale' }]),
+      },
+    });
+
+    await expect(runInIsolatedWorld(7, { kind: 'click', ref: 'osr-stale' })).rejects.toMatchObject({
+      code: 'automation_failed',
+      message: 'Browser automation failed in the target tab.',
+    });
+  });
+
+  it('rejects missing isolated-world results instead of reporting false success', async () => {
+    vi.stubGlobal('chrome', {
+      scripting: {
+        executeScript: vi.fn(async () => [{ result: null }]),
+      },
+    });
+
+    await expect(runInIsolatedWorld(7, { kind: 'click', ref: 'osr-stale' })).rejects.toMatchObject({
+      code: 'automation_failed',
+      message: 'Browser automation failed in the target tab.',
+    });
+  });
   it('returns a structured error for page-world evaluation failures', async () => {
     vi.stubGlobal('chrome', {
       scripting: {
