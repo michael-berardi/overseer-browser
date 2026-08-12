@@ -5,8 +5,10 @@ export const MAX_SCREENSHOT_FRAME_BYTES = 850 * 1024;
 const JPEG_QUALITIES = [0.78, 0.62, 0.48, 0.34, 0.24];
 const SCALE_FACTORS = [1, 0.8, 0.64, 0.5, 0.4];
 
+export type ScreenshotFormat = 'jpeg' | 'png';
+
 export interface ScreenshotResult {
-  format: 'jpeg';
+  format: ScreenshotFormat;
   data: string;
   bytes: number;
   width: number;
@@ -21,9 +23,18 @@ export async function requireActiveScreenshotTarget(tabId: number, windowId: num
   }
 }
 
-export async function captureScreenshot(tabId: number, windowId: number, rect?: RectResult): Promise<ScreenshotResult> {
+export async function captureScreenshot(
+  tabId: number,
+  windowId: number,
+  rect?: RectResult,
+  format: ScreenshotFormat = 'jpeg',
+): Promise<ScreenshotResult> {
+  if (format !== 'jpeg' && format !== 'png') {
+    throw new ScreenshotError('screenshot_format', 'Screenshot format must be jpeg or png.');
+  }
   await requireActiveScreenshotTarget(tabId, windowId);
-  const dataUrl = await chrome.tabs.captureVisibleTab(windowId, { format: 'jpeg', quality: 82 });
+  const captureOptions = format === 'jpeg' ? { format: 'jpeg' as const, quality: 82 } : { format: 'png' as const };
+  const dataUrl = await chrome.tabs.captureVisibleTab(windowId, captureOptions);
   const source = await createImageBitmap(await (await fetch(dataUrl)).blob());
   const viewport = (await runInIsolatedWorld(tabId, { kind: 'viewport' })) as { width: number; height: number; devicePixelRatio: number };
   try {
@@ -35,12 +46,15 @@ export async function captureScreenshot(tabId: number, windowId: number, rect?: 
       const context = canvas.getContext('2d');
       if (!context) continue;
       context.drawImage(source, crop.left, crop.top, crop.width, crop.height, 0, 0, targetWidth, targetHeight);
-      for (const quality of JPEG_QUALITIES) {
-        const blob = await canvas.convertToBlob({ type: 'image/jpeg', quality });
+      const qualities = format === 'jpeg' ? JPEG_QUALITIES : [undefined];
+      for (const quality of qualities) {
+        const blob = await canvas.convertToBlob(
+          format === 'jpeg' ? { type: 'image/jpeg', quality } : { type: 'image/png' },
+        );
         const bytes = new Uint8Array(await blob.arrayBuffer());
         const encoded = bytesToBase64(bytes);
         const result: ScreenshotResult = {
-          format: 'jpeg',
+          format,
           data: encoded,
           bytes: bytes.byteLength,
           width: targetWidth,

@@ -10,6 +10,9 @@ from typing import Any, BinaryIO
 MAX_FRAME_BYTES = 1_048_576
 MAX_REQUEST_ID = 128
 MAX_COMMAND = 96
+MAX_ERROR_CODE = 96
+MAX_ERROR_TEXT = 4_096
+MAX_ADAPTER_STATE = 128
 EXTENSION_ID = "iabfdeokmilpklblkgccpjlekchfjcno"
 NATIVE_HOST_NAME = "com.imploselabs.overseer_browser"
 
@@ -17,6 +20,9 @@ _REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
 _COMMAND_RE = re.compile(r"^[A-Za-z0-9_.:/-]{1,96}$")
 _HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
 
+def normalize_request_id(value: object) -> str:
+    """Return a safe request ID for protocol error echoes."""
+    return value if isinstance(value, str) and _REQUEST_ID_RE.fullmatch(value) else ""
 
 class ProtocolError(ValueError):
     """Raised when a frame is malformed or exceeds a protocol bound."""
@@ -81,7 +87,7 @@ def validate_request(message: object, token: str | None = None) -> dict[str, Any
     """Validate a CLI request and return a copy without its authentication token."""
     if not isinstance(message, dict):
         raise ProtocolError("request must be an object")
-    if message.get("version") != 1 or message.get("kind") != "request":
+    if isinstance(message.get("version"), bool) or message.get("version") != 1 or message.get("kind") != "request":
         raise ProtocolError("unsupported request version or kind")
     request_id = message.get("request_id")
     command = message.get("command")
@@ -99,9 +105,28 @@ def validate_request(message: object, token: str | None = None) -> dict[str, Any
     return clean
 
 
+def _validate_error_fields(value: object) -> dict[str, str]:
+    if not isinstance(value, dict):
+        raise ProtocolError("extension error must be an object")
+    code = value.get("code")
+    message = value.get("message")
+    if not isinstance(code, str) or not 1 <= len(code) <= MAX_ERROR_CODE:
+        raise ProtocolError("invalid extension error code")
+    if not isinstance(message, str) or not 1 <= len(message) <= MAX_ERROR_TEXT:
+        raise ProtocolError("invalid extension error message")
+    clean = {"code": code, "message": message}
+    for field in ("reason", "fallback"):
+        candidate = value.get(field)
+        if candidate is not None:
+            if not isinstance(candidate, str) or len(candidate) > MAX_ERROR_TEXT:
+                raise ProtocolError(f"invalid extension error {field}")
+            clean[field] = candidate
+    return clean
+
+
 def validate_extension_message(message: object) -> dict[str, Any]:
     """Validate an extension-to-host message."""
-    if not isinstance(message, dict) or message.get("version") != 1:
+    if not isinstance(message, dict) or isinstance(message.get("version"), bool) or message.get("version") != 1:
         raise ProtocolError("unsupported extension message")
     kind = message.get("kind")
     if kind in {"handshake", "hello"}:
@@ -115,6 +140,8 @@ def validate_extension_message(message: object) -> dict[str, Any]:
             raise ProtocolError("invalid response request_id")
         if not isinstance(message.get("ok"), bool):
             raise ProtocolError("response ok must be boolean")
+        if "error" in message and message["error"] is not None:
+            _validate_error_fields(message["error"])
         return message
     if kind == "meeting_detected":
         validate_meeting_payload(message.get("payload"))
@@ -126,7 +153,7 @@ def validate_meeting_payload(payload: object) -> dict[str, Any]:
     """Validate the opaque meeting event without accepting URL or content fields."""
     if not isinstance(payload, dict):
         raise ProtocolError("meeting payload must be an object")
-    if payload.get("version") != 1:
+    if isinstance(payload.get("version"), bool) or payload.get("version") != 1:
         raise ProtocolError("unsupported meeting payload version")
     detection_id = payload.get("detection_id")
     provider = payload.get("provider")
@@ -147,6 +174,24 @@ def validate_meeting_payload(payload: object) -> dict[str, Any]:
         "meeting_key": meeting_key,
         "detected_at_ms": detected_at_ms,
     }
+def validate_meeting_response(response: object, expected_request_id: str) -> dict[str, Any]:
+    """Validate the bounded response from the optional local meeting adapter."""
+    if not isinstance(expected_request_id, str) or not _REQUEST_ID_RE.fullmatch(expected_request_id):
+        raise ProtocolError("invalid expected meeting request_id")
+    if not isinstance(response, dict) or isinstance(response.get("version"), bool) or response.get("version") != 1:
+        raise ProtocolError("unsupported meeting response version")
+    request_id = response.get("requestId")
+    if not isinstance(request_id, str) or not _REQUEST_ID_RE.fullmatch(request_id):
+        raise ProtocolError("invalid meeting response requestId")
+    if request_id != expected_request_id:
+        raise ProtocolError("meeting response requestId mismatch")
+    if not isinstance(response.get("ok"), bool):
+        raise ProtocolError("meeting response ok must be boolean")
+    state = response.get("state")
+    if not isinstance(state, str) or not 1 <= len(state) <= MAX_ADAPTER_STATE:
+        raise ProtocolError("invalid meeting response state")
+    return {"version": 1, "requestId": request_id, "ok": response["ok"], "state": state}
+
 
 
 def meeting_forward_request(payload: dict[str, Any]) -> dict[str, Any]:

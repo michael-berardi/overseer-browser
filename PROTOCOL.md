@@ -66,12 +66,13 @@ An error response is:
   "error": {
     "code": "unsupported_capability",
     "message": "This operation requires the debugger API and is not available.",
-    "details": {
-      "fallback": "overseer_cloud_or_desktop"
-    }
+    "reason": "debugger_api_unavailable",
+    "fallback": "overseer_cloud_or_desktop"
   }
 }
 ```
+
+`error.reason` and `error.fallback` are optional top-level strings, each bounded to 4,096 characters. `reason` gives a stable machine-readable explanation when available; `fallback` identifies an explicitly supported alternative.
 
 `result` is present only for a successful response. `error.code` is stable enough for a CLI to branch on; `message` is human-readable and must not contain URLs, page text, credentials, or other captured browser content. Typical codes include `invalid_request`, `unauthorized`, `not_connected`, `not_found`, `permission_required`, `not_borrowed`, `timeout`, `cancelled`, `conflict`, `rate_limited`, and `unsupported_capability`.
 
@@ -87,15 +88,18 @@ The required command families are:
 - `snapshot` / `observe` with stable element references
 - `click`, `hover`, `fill`, `type`, `select`, `press`, `scroll`
 - `evaluate` only when the explicit capability is enabled
-- `screenshot` for a visible tab or element
-- bounded chunked `upload`
+- visible-tab or element screenshots
+- bounded chunked upload of 1–16 files
+- opt-in bounded console capture and redacted Resource Timing metadata
+- sequential batches of up to 20 explicit actions
 - `help` / visible `takeover` prompt
 - `cancel`
+- `capture.start`, `capture.stop`
 
 Commands operate on the active session/tab selected by the caller or on IDs supplied in `params`. Automation code is injected only into session-owned or explicitly borrowed tabs and uses isolated-world content scripts in permitted frames. There is no passive general-browsing collection.
 
 A session owns a dedicated Agent Window by default. A normal user tab is read-only until `tabs.borrow` succeeds. `tabs.return` restores ownership to the user, and stopping a session returns all borrowed tabs before releasing session state.
-Uploads are explicit and bounded. The CLI accepts `upload REF PATH`, limits the file to 8 MiB, sends at most 32 chunks of 256 KiB, and transmits only a bounded element reference plus chunk metadata, filename, and MIME type to the extension. The local filesystem path and token never enter the extension payload. A receiving implementation must reject missing, duplicated, oversized, or out-of-order chunks.
+Uploads are explicit and bounded. The CLI accepts `upload REF PATH [PATH...]`, limits each set to 1–16 files, 8 MiB aggregate, and at most 32 chunks of 256 KiB. It transmits only a bounded element reference plus ordered file/chunk metadata, basenames, MIME types, and contents; local filesystem paths and the token never enter the extension payload. A receiver must reject missing, duplicated, oversized, inconsistent, or out-of-order files and chunks before assigning the complete set atomically to a file input.
 
 ## Unsupported capabilities
 
@@ -107,7 +111,7 @@ The following operations require debugger/CDP privileges and are intentionally u
 - trusted CDP input or equivalent browser-privileged input;
 - any other operation whose only safe implementation requires `chrome.debugger`.
 
-Return `unsupported_capability` with a fallback hint for OverSeer cloud/desktop tooling. Never request `debugger`, add `<all_urls>`, or silently substitute a less trustworthy action.
+Return `unsupported_capability` with a fallback hint for OverSeer cloud/desktop tooling. Never request `debugger` or silently substitute a less trustworthy action. `<all_urls>` is permitted only as optional operator-granted host access needed by Chrome's screenshot API; it must never be a required host permission, and automation remains limited to session-owned or explicitly borrowed HTTP(S) tabs.
 
 ## Meeting detection event
 

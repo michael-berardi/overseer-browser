@@ -1,5 +1,11 @@
 import { MAX_UPLOAD_BYTES } from './protocol';
 
+export type AutomationUploadFile = {
+  filename: string;
+  mimeType: string;
+  contentBase64: string;
+};
+
 export type AutomationAction =
   | { kind: 'snapshot' | 'observe'; maxNodes?: number }
   | { kind: 'click' | 'hover'; ref: string }
@@ -10,7 +16,7 @@ export type AutomationAction =
   | { kind: 'scroll'; ref?: string; x?: number; y?: number }
   | { kind: 'element_rect'; ref: string }
   | { kind: 'viewport' }
-  | { kind: 'upload'; ref: string; filename: string; mimeType: string; contentBase64: string };
+  | { kind: 'upload'; ref: string; files: AutomationUploadFile[] };
 
 export interface SnapshotNode {
   ref: string;
@@ -42,13 +48,12 @@ export function snapshotPriorityForNode(node: Pick<SnapshotNode, 'tag' | 'role' 
 }
 
 export async function runInIsolatedWorld(tabId: number, action: AutomationAction): Promise<unknown> {
-  if (action.kind === 'upload') {
-    if (Math.floor(action.contentBase64.length * 3 / 4) > MAX_UPLOAD_BYTES) {
+  if (action.kind === 'upload' && !isBoundedUpload(action)) {
+    const decodedBytes = decodedUploadBytes(action);
+    if (decodedBytes !== null && decodedBytes > MAX_UPLOAD_BYTES) {
       throw new AutomationError('upload_too_large', 'Upload exceeds the 8 MiB extension limit.');
     }
-    if (!isBoundedUpload(action)) {
-      throw new AutomationError('invalid_upload', 'Upload metadata or content is invalid.');
-    }
+    throw new AutomationError('invalid_upload', 'Upload metadata or content is invalid.');
   }
   const [result] = await chrome.scripting.executeScript({
     target: { tabId },
@@ -69,6 +74,9 @@ export async function runPageEvaluation(tabId: number, source: string): Promise<
     func: pageWorldEvaluation,
     args: [source],
   });
+  if (typeof (result as { error?: unknown } | undefined)?.error === 'string') {
+    throw new AutomationError('evaluation_failed', 'Page evaluation failed in the target tab.');
+  }
   return result?.result;
 }
 
@@ -81,14 +89,47 @@ export function stableRefForPath(path: string): string {
   return `osr-${(hash >>> 0).toString(36)}`;
 }
 
-export function isBoundedUpload(action: Extract<AutomationAction, { kind: 'upload' }>): boolean {
-  const filenameBytes = new TextEncoder().encode(action.filename).byteLength;
+function decodedBase64Bytes(contentBase64: unknown): number | null {
+  if (typeof contentBase64 !== 'string' || contentBase64.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(contentBase64)) return null;
+  const padding = contentBase64.endsWith('==') ? 2 : contentBase64.endsWith('=') ? 1 : 0;
+  if (padding > 0 && contentBase64.length < 4) return null;
+  return contentBase64.length / 4 * 3 - padding;
+}
+
+function decodedUploadBytes(action: unknown): number | null {
+  if (!action || typeof action !== 'object' || !('files' in action) || !Array.isArray(action.files)) return null;
+  let total = 0;
+  for (const file of action.files) {
+    if (!file || typeof file !== 'object' || !('contentBase64' in file)) return null;
+    const bytes = decodedBase64Bytes(file.contentBase64);
+    if (bytes === null) return null;
+    total += bytes;
+  }
+  return total;
+}
+
+function isSafeUploadFile(file: unknown): file is AutomationUploadFile {
+  if (!file || typeof file !== 'object' || !('filename' in file) || !('mimeType' in file) || !('contentBase64' in file)) return false;
+  if (typeof file.filename !== 'string' || typeof file.mimeType !== 'string' || typeof file.contentBase64 !== 'string') return false;
+  const filenameBytes = new TextEncoder().encode(file.filename).byteLength;
   if (filenameBytes < 1 || filenameBytes > 255) return false;
-  if (action.filename === '.' || action.filename === '..') return false;
-  if (/[/\\\u0000-\u001f\u007f]/.test(action.filename)) return false;
-  if (action.mimeType.length < 1 || action.mimeType.length > 128) return false;
-  if (!/^[\w.+-]+\/[\w.+-]+$/.test(action.mimeType)) return false;
-  return Math.floor(action.contentBase64.length * 3 / 4) <= MAX_UPLOAD_BYTES;
+  if (file.filename === '.' || file.filename === '..') return false;
+  if (/[/\\\u0000-\u001f\u007f]/.test(file.filename)) return false;
+  if (file.mimeType.length < 1 || file.mimeType.length > 128) return false;
+  if (!/^[\w.+-]+\/[\w.+-]+$/.test(file.mimeType)) return false;
+  return decodedBase64Bytes(file.contentBase64) !== null;
+}
+export function isBoundedUpload(action: Extract<AutomationAction, { kind: 'upload' }>): boolean {
+  if (!action || !Array.isArray(action.files) || action.files.length < 1 || action.files.length > 16) return false;
+  let totalBytes = 0;
+  for (const file of action.files) {
+    if (!isSafeUploadFile(file)) return false;
+    const bytes = decodedBase64Bytes(file.contentBase64);
+    if (bytes === null) return false;
+    totalBytes += bytes;
+    if (totalBytes > MAX_UPLOAD_BYTES) return false;
+  }
+  return true;
 }
 
 export class AutomationError extends Error {
@@ -97,7 +138,8 @@ export class AutomationError extends Error {
     this.name = 'AutomationError';
   }
 }
-function isolatedAutomation(action: AutomationAction): SnapshotNode[] | RectResult | { width: number; height: number; devicePixelRatio: number } | { changed: boolean } | { uploaded: boolean } | null {
+
+function isolatedAutomation(action: AutomationAction): SnapshotNode[] | RectResult | { width: number; height: number; devicePixelRatio: number } | { changed: boolean } | { uploaded: boolean; count: number } | null {
   const stableRef = (path: string): string => {
     let hash = 2166136261;
     for (let index = 0; index < path.length; index += 1) {
@@ -166,6 +208,28 @@ function isolatedAutomation(action: AutomationAction): SnapshotNode[] | RectResu
     if (!setter) throw new Error('Target value setter is unavailable.');
     setter.call(element, value);
   };
+  const insertContentEditableText = (element: HTMLElement, data: string, replaceAll: boolean): boolean => {
+    const selection = window.getSelection();
+    if (!selection) return false;
+    const range = document.createRange();
+    const currentRange = selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
+    if (replaceAll) {
+      range.selectNodeContents(element);
+      selection.removeAllRanges();
+      selection.addRange(range);
+    } else if (!currentRange || !element.contains(currentRange.commonAncestorContainer)) {
+      range.selectNodeContents(element);
+      range.collapse(false);
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }
+    if (typeof document.execCommand !== 'function') return false;
+    try {
+      return document.execCommand('insertText', false, data);
+    } catch {
+      return false;
+    }
+  };
   if (action.kind === 'snapshot' || action.kind === 'observe') {
     const maxNodes = Math.min(Math.max(action.maxNodes ?? 200, 1), 500);
     const actionableTags = ['button', 'input', 'select', 'textarea', 'summary'];
@@ -230,16 +294,20 @@ function isolatedAutomation(action: AutomationAction): SnapshotNode[] | RectResu
     const element = findByRef(action.ref);
     if (!(element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || (element instanceof HTMLElement && element.isContentEditable))) throw new Error('Target does not accept text.');
     element.focus();
+    const data = action.kind === 'fill' ? action.value : action.text;
+    let usedNativeInsertion = false;
     if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
       const nextValue = action.kind === 'fill' ? action.value : `${element.value}${action.text}`;
       setTextValue(element, nextValue);
-    } else if (action.kind === 'fill') {
-      element.textContent = action.value;
     } else {
-      element.textContent = `${element.textContent ?? ''}${action.text}`;
+      usedNativeInsertion = insertContentEditableText(element, data, action.kind === 'fill');
+      if (!usedNativeInsertion) {
+        element.textContent = action.kind === 'fill' ? action.value : `${element.textContent ?? ''}${action.text}`;
+      }
     }
-    const data = action.kind === 'fill' ? action.value : action.text;
-    element.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data }));
+    if (!usedNativeInsertion) {
+      element.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data }));
+    }
     element.dispatchEvent(new Event('change', { bubbles: true }));
     return { changed: true };
   }
@@ -288,14 +356,17 @@ function isolatedAutomation(action: AutomationAction): SnapshotNode[] | RectResu
   if (action.kind === 'upload') {
     const input = findByRef(action.ref);
     if (!(input instanceof HTMLInputElement) || input.type !== 'file') throw new Error('Target is not a file input.');
-    const binary = atob(action.contentBase64);
-    const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+    const files = action.files.map((file) => {
+      const binary = atob(file.contentBase64);
+      const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+      return new File([bytes], file.filename, { type: file.mimeType });
+    });
     const transfer = new DataTransfer();
-    transfer.items.add(new File([bytes], action.filename, { type: action.mimeType }));
+    for (const file of files) transfer.items.add(file);
     input.files = transfer.files;
     input.dispatchEvent(new Event('input', { bubbles: true }));
     input.dispatchEvent(new Event('change', { bubbles: true }));
-    return { uploaded: true };
+    return { uploaded: true, count: files.length };
   }
   return null;
 }

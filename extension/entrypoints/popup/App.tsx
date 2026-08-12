@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { requestOriginAccess, revokeOriginAccess } from '../../src/permissions';
+import { requestOptionalSiteAccess, requestOriginAccess, revokeOptionalSiteAccess, revokeOriginAccess } from '../../src/permissions';
 
 type PermissionState = {
   meetingHosts: true;
@@ -27,7 +27,50 @@ type PopupState = {
   active_tab: ActiveTab | null;
 };
 
-type RuntimeReply = Partial<PopupState> & { granted?: boolean; enabled?: boolean; ok?: boolean; error?: { message?: string } };
+type RuntimeReply = Partial<PopupState> & {
+  granted?: boolean;
+  enabled?: boolean;
+  ok?: boolean;
+  error?: { message?: unknown } | string;
+};
+
+export const MEETING_HOST_POLICY = 'Only the exact Meet host meet.google.com and Zoom provider subdomains such as us02web.zoom.us are watched.';
+
+export function connectionStatusPresentation(connected: boolean): {
+  label: 'Connected' | 'Disconnected';
+  role: 'status';
+  ariaLive: 'polite';
+  ariaAtomic: 'true';
+} {
+  return {
+    label: connected ? 'Connected' : 'Disconnected',
+    role: 'status',
+    ariaLive: 'polite',
+    ariaAtomic: 'true',
+  };
+}
+
+export function isFailedRuntimeReply(reply: RuntimeReply | null | undefined): boolean {
+  return reply?.ok === false;
+}
+
+export function formatPopupError(operation: string, error: unknown): string {
+  const detail = error instanceof Error
+    ? error.message
+    : typeof error === 'string'
+      ? error
+      : error && typeof error === 'object' && 'message' in error && typeof error.message === 'string'
+        ? error.message
+        : '';
+  const suffix = detail.replace(/\s+/g, ' ').trim().slice(0, Math.max(0, 158 - operation.length));
+  return suffix ? `${operation}: ${suffix}` : `${operation}.`;
+}
+
+function runtimeReplyError(reply: RuntimeReply | null | undefined, fallback: string): Error | null {
+  if (!isFailedRuntimeReply(reply)) return null;
+  const detail = typeof reply?.error === 'string' ? reply.error : reply?.error?.message;
+  return new Error(typeof detail === 'string' && detail.trim() ? detail : fallback);
+}
 
 const initialState: PopupState = {
   connected: false,
@@ -44,14 +87,22 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState('');
 
-  const refresh = async (): Promise<void> => {
-    const reply = (await browser.runtime.sendMessage({ kind: 'popup_state' })) as RuntimeReply;
-    setState((current) => ({
-      ...current,
-      ...reply,
-      permissions: reply.permissions ?? current.permissions,
-      active_tab: reply.active_tab !== undefined ? reply.active_tab : current.active_tab,
-    }));
+  const refresh = async (): Promise<boolean> => {
+    try {
+      const reply = (await browser.runtime.sendMessage({ kind: 'popup_state' })) as RuntimeReply;
+      const failure = runtimeReplyError(reply, 'The background state request was rejected.');
+      if (failure) throw failure;
+      setState((current) => ({
+        ...current,
+        ...reply,
+        permissions: reply.permissions ?? current.permissions,
+        active_tab: reply.active_tab !== undefined ? reply.active_tab : current.active_tab,
+      }));
+      return true;
+    } catch (error) {
+      setNotice(formatPopupError('Unable to refresh local status', error));
+      return false;
+    }
   };
 
   useEffect(() => {
@@ -64,14 +115,20 @@ export default function App() {
     setBusy(true);
     setNotice('');
     try {
-      await browser.runtime.sendMessage({ kind: 'set_connection', enabled });
+      const reply = (await browser.runtime.sendMessage({ kind: 'set_connection', enabled })) as RuntimeReply;
+      const failure = runtimeReplyError(reply, 'The local host rejected the connection change.');
+      if (failure) throw failure;
+      if (enabled && reply.connected !== true) {
+        setNotice('Local host handshake is pending; status will update when it succeeds.');
+      }
       await refresh();
-    } catch {
-      setNotice('The local native host is unavailable.');
+    } catch (error) {
+      setNotice(formatPopupError('Unable to change local connection', error));
     } finally {
       setBusy(false);
     }
   };
+
 
   const requestCurrentOrigin = async (): Promise<void> => {
     const origin = state.permissions.currentOrigin;
@@ -90,22 +147,29 @@ export default function App() {
         setNotice(granted ? `Access enabled for ${origin}` : 'No additional site access was granted.');
       }
       await refresh();
-    } catch {
-      setNotice('Site access can only be changed from this user action.');
+    } catch (error) {
+      setNotice(formatPopupError('Unable to change site access', error));
     } finally {
       setBusy(false);
     }
   };
 
-  const requestAllOrigins = async (): Promise<void> => {
+  const changeOptionalSiteAccess = async (): Promise<void> => {
     setBusy(true);
     setNotice('');
     try {
-      const granted = await browser.permissions.request({ origins: ['http://*/*', 'https://*/*'] });
-      setNotice(granted ? 'All http/https site access enabled.' : 'No additional site access was granted.');
+      const shouldEnable = !state.permissions.optionalSiteAccess;
+      const changed = shouldEnable
+        ? await requestOptionalSiteAccess()
+        : await revokeOptionalSiteAccess();
+      setNotice(changed
+        ? shouldEnable
+          ? 'Broad screenshot access enabled. Grant each automation origin separately.'
+          : 'Broad screenshot access revoked.'
+        : `Broad screenshot access was not ${shouldEnable ? 'granted' : 'revoked'}.`);
       await refresh();
-    } catch {
-      setNotice('Site access can only be requested from this user action.');
+    } catch (error) {
+      setNotice(formatPopupError('Unable to change screenshot access', error));
     } finally {
       setBusy(false);
     }
@@ -113,9 +177,15 @@ export default function App() {
 
   const setEvaluate = async (enabled: boolean): Promise<void> => {
     setBusy(true);
+    setNotice('');
     try {
-      await browser.runtime.sendMessage({ kind: 'set_capability', capability: 'evaluate', enabled });
+      const reply = (await browser.runtime.sendMessage({ kind: 'set_capability', capability: 'evaluate', enabled })) as RuntimeReply;
+      const failure = runtimeReplyError(reply, 'The page evaluation capability change was rejected.');
+      if (failure) throw failure;
+      if (reply.enabled !== enabled) throw new Error('The page evaluation capability was not changed.');
       setState((current) => ({ ...current, evaluate_enabled: enabled }));
+    } catch (error) {
+      setNotice(formatPopupError('Unable to change page evaluation', error));
     } finally {
       setBusy(false);
     }
@@ -123,9 +193,15 @@ export default function App() {
 
   const setTakeover = async (enabled: boolean): Promise<void> => {
     setBusy(true);
+    setNotice('');
     try {
-      await browser.runtime.sendMessage({ kind: 'set_takeover', enabled });
+      const reply = (await browser.runtime.sendMessage({ kind: 'set_takeover', enabled })) as RuntimeReply;
+      const failure = runtimeReplyError(reply, 'The takeover change was rejected.');
+      if (failure) throw failure;
+      if (reply.takeover_requested !== enabled) throw new Error('The takeover change was not applied.');
       await refresh();
+    } catch (error) {
+      setNotice(formatPopupError('Unable to change takeover state', error));
     } finally {
       setBusy(false);
     }
@@ -136,10 +212,11 @@ export default function App() {
     setNotice('');
     try {
       const reply = (await browser.runtime.sendMessage({ kind: borrowed ? 'popup_borrow_active' : 'popup_return_active' })) as RuntimeReply;
-      if (reply.ok === false) setNotice(reply.error?.message ?? 'The active tab could not be updated.');
+      const failure = runtimeReplyError(reply, 'The active tab could not be updated.');
+      if (failure) throw failure;
       await refresh();
-    } catch {
-      setNotice('The active tab could not be updated from this user action.');
+    } catch (error) {
+      setNotice(formatPopupError('Unable to update the active tab', error));
     } finally {
       setBusy(false);
     }
@@ -148,6 +225,8 @@ export default function App() {
   const currentOriginLabel = state.permissions.currentOrigin?.replace(/\/\*$/, '') ?? 'the active site';
   const activeTab = state.active_tab;
   const activeTabLabel = activeTab?.title || activeTab?.url || 'No active browser tab';
+  const connectionStatus = connectionStatusPresentation(state.connected);
+
 
   return (
     <main className="popup" aria-labelledby="title">
@@ -165,7 +244,13 @@ export default function App() {
             <p className="eyebrow">CONNECTION</p>
             <h2 id="connection-heading">{state.connected ? 'Connected locally' : 'Not connected'}</h2>
           </div>
-          <span className={`status-dot ${state.connected ? 'online' : 'offline'}`} aria-label={state.connected ? 'Connected' : 'Disconnected'} />
+          <span
+            className={`status-dot ${state.connected ? 'online' : 'offline'}`}
+            role={connectionStatus.role}
+            aria-label={connectionStatus.label}
+            aria-live={connectionStatus.ariaLive}
+            aria-atomic={connectionStatus.ariaAtomic}
+          />
         </div>
         <p className="body-copy">Extension and native-host transport stay local. Page content and screenshots are returned only for explicit commands and may be sent to the configured AI provider. Meeting reminders send only a minimized opaque payload locally.</p>
         <button className={state.connected ? 'button secondary' : 'button primary'} type="button" onClick={() => void setConnection(!state.connected)} disabled={busy}>
@@ -182,7 +267,7 @@ export default function App() {
           <span className={`tag ${activeTab?.borrowed || activeTab?.owned ? 'tag-on' : ''}`}>{activeTab?.borrowed ? 'BORROWED' : activeTab?.owned ? 'SESSION-OWNED' : 'UNCONTROLLED'}</span>
         </div>
         <p className="muted">{activeTab?.url ?? 'Select a browser tab to borrow it for automation.'}</p>
-        <button className="button secondary" type="button" onClick={() => void setActiveBorrowed(!activeTab?.borrowed)} disabled={busy || !activeTab || activeTab.owned}>
+        <button className="button secondary" type="button" onClick={() => void setActiveBorrowed(!activeTab?.borrowed)} disabled={busy || !activeTab || activeTab.owned || (!activeTab.borrowed && !state.permissions.currentOriginAccess)}>
           {activeTab?.borrowed ? 'Return active tab' : 'Borrow active tab'}
         </button>
       </section>
@@ -195,7 +280,7 @@ export default function App() {
           </div>
           <span className="tag">ON</span>
         </div>
-        <p className="body-copy">Only exact Meet and Zoom hosts are watched. A salted opaque key is sent locally; URLs, titles, participants, and page text are never included.</p>
+        <p className="body-copy">{MEETING_HOST_POLICY} A salted opaque key is sent locally; URLs, titles, participants, and page text are never included.</p>
         <p className="muted">Recording still requires an explicit confirmation in UltraVox.</p>
       </section>
 
@@ -212,9 +297,9 @@ export default function App() {
           {state.permissions.currentOriginAccess ? `Revoke access for ${currentOriginLabel}` : `Grant access for ${currentOriginLabel}`}
         </button>
         <details className="advanced-access">
-          <summary>Advanced: grant all http/https sites</summary>
-          <p className="muted">This is broader than most operators need and lets the local host control any standard web origin.</p>
-          <button className="button secondary" type="button" onClick={() => void requestAllOrigins()} disabled={busy || state.permissions.optionalSiteAccess}>Grant all sites</button>
+          <summary>Advanced: screenshot access</summary>
+          <p className="muted">Chrome requires this optional broad site permission for screenshots only. OverSeer automation still requires explicit access for the active origin and acts only on session-owned or explicitly borrowed tabs.</p>
+          <button className="button secondary" type="button" onClick={() => void changeOptionalSiteAccess()} disabled={busy}>{state.permissions.optionalSiteAccess ? 'Revoke broad screenshot access' : 'Grant broad screenshot access'}</button>
         </details>
         <label className="capability-row">
           <input type="checkbox" checked={state.evaluate_enabled} onChange={(event) => void setEvaluate(event.target.checked)} disabled={busy} />

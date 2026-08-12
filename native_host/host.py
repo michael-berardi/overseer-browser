@@ -6,7 +6,9 @@ frames; the local CLI socket speaks big-endian frames. No TCP listener is used.
 from __future__ import annotations
 
 import argparse
+from collections import OrderedDict
 import ctypes
+import math
 import os
 import socket
 import stat
@@ -15,6 +17,7 @@ import sys
 import threading
 import tempfile
 import time
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, BinaryIO
@@ -22,36 +25,47 @@ from typing import Any, BinaryIO
 try:
     from .protocol import (
         EXTENSION_ID,
+        MAX_ERROR_CODE,
+        MAX_ERROR_TEXT,
         ProtocolError,
         encode_frame,
         meeting_forward_request,
+        normalize_request_id,
         read_frame,
         validate_extension_message,
         validate_meeting_payload,
+        validate_meeting_response,
         validate_request,
     )
     from .runtime import RuntimePaths, ensure_token, prepare_socket
 except ImportError:
     from protocol import (  # type: ignore[no-redef]
         EXTENSION_ID,
+        MAX_ERROR_CODE,
+        MAX_ERROR_TEXT,
         ProtocolError,
         encode_frame,
         meeting_forward_request,
+        normalize_request_id,
         read_frame,
         validate_extension_message,
         validate_meeting_payload,
+        validate_meeting_response,
         validate_request,
     )
     from runtime import RuntimePaths, ensure_token, prepare_socket  # type: ignore[no-redef]
-
 DEFAULT_REQUEST_TIMEOUT = 30.0
 MAX_PENDING = 128
+MAX_CLIENT_REQUEST_IDS = 4_096
+MAX_ABANDONED_REQUEST_IDS = 16_384
 
 
 @dataclass(eq=False)
 class Client:
     connection: socket.socket
     write_lock: threading.Lock = field(default_factory=threading.Lock)
+    request_ids_lock: threading.Lock = field(default_factory=threading.Lock)
+    request_ids: set[str] = field(default_factory=set)
 
 
 @dataclass
@@ -75,7 +89,15 @@ class NativeHost:
         ultravox_socket: Path | None = None,
     ) -> None:
         self.paths = paths or RuntimePaths.discover()
-        self.request_timeout = max(0.2, min(float(request_timeout), 300.0))
+        if isinstance(request_timeout, bool):
+            raise ValueError("timeout must be finite and positive")
+        try:
+            timeout = float(request_timeout)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("timeout must be finite and positive") from exc
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError("timeout must be finite and positive")
+        self.request_timeout = max(0.2, min(timeout, 300.0))
         self.native_in = native_in or sys.stdin.buffer
         self.native_out = native_out or sys.stdout.buffer
         self.ultravox_socket = ultravox_socket
@@ -84,6 +106,7 @@ class NativeHost:
         self._stop = threading.Event()
         self._native_write_lock = threading.Lock()
         self._pending: dict[str, Pending] = {}
+        self._abandoned_request_ids: OrderedDict[str, None] = OrderedDict()
         self._pending_lock = threading.Lock()
         self._clients: set[Client] = set()
         self._clients_lock = threading.Lock()
@@ -166,6 +189,8 @@ class NativeHost:
                 except ProtocolError as exc:
                     self._send_response(client, "", False, error=error("protocol_error", str(exc)))
                     break
+                except OSError:
+                    break
                 self._route_request(client, message)
         finally:
             with self._clients_lock:
@@ -174,14 +199,25 @@ class NativeHost:
             self._drop_client_pending(client)
 
     def _route_request(self, client: Client, message: object) -> None:
-        request_id = message.get("request_id", "") if isinstance(message, dict) else ""
+        request_id = normalize_request_id(message.get("request_id") if isinstance(message, dict) else None)
         try:
             request = validate_request(message, self.token)
         except ProtocolError as exc:
-            self._send_response(client, request_id if isinstance(request_id, str) else "", False, error=error(_error_code(str(exc)), str(exc)))
+            self._send_response(client, request_id, False, error=error(_error_code(str(exc)), str(exc)))
             return
         request_id = request["request_id"]
         with self._pending_lock:
+            if request_id in self._abandoned_request_ids:
+                self._send_response(client, request_id, False, error=error("duplicate_request", "request_id was abandoned on a previous connection"))
+                return
+            with client.request_ids_lock:
+                if request_id in client.request_ids:
+                    self._send_response(client, request_id, False, error=error("duplicate_request", "request_id was already used on this connection"))
+                    return
+                if len(client.request_ids) >= MAX_CLIENT_REQUEST_IDS:
+                    self._send_response(client, request_id, False, error=error("request_id_exhausted", "connection request ID limit reached"))
+                    return
+                client.request_ids.add(request_id)
             if len(self._pending) >= MAX_PENDING:
                 self._send_response(client, request_id, False, error=error("busy", "too many pending requests"))
                 return
@@ -194,6 +230,12 @@ class NativeHost:
             timer.start()
         try:
             self._write_native(request)
+        except ProtocolError as exc:
+            with self._pending_lock:
+                pending = self._pending.pop(request_id, None)
+            if pending is not None:
+                pending.timer.cancel()
+            self._send_response(client, request_id, False, error=error("request_too_large", str(exc)))
         except (BrokenPipeError, OSError) as exc:
             with self._pending_lock:
                 pending = self._pending.pop(request_id, None)
@@ -218,6 +260,11 @@ class NativeHost:
             except ProtocolError as exc:
                 self._write_native_safely({"version": 1, "kind": "error", "error": error("protocol_error", str(exc))})
                 return
+            except OSError:
+                self._write_native_safely(
+                    {"version": 1, "kind": "error", "error": error("native_disconnected", "native input disconnected")}
+                )
+                return
             try:
                 message = validate_extension_message(message)
             except ProtocolError as exc:
@@ -229,6 +276,7 @@ class NativeHost:
                     {
                         "version": 1,
                         "kind": "handshake_ack",
+                        "ok": True,
                         "extension_id": EXTENSION_ID,
                         "capabilities": ["local_control", "meeting_detection"],
                     }
@@ -250,6 +298,16 @@ class NativeHost:
     def _write_native_safely(self, message: dict[str, Any]) -> None:
         try:
             self._write_native(message)
+        except ProtocolError:
+            fallback = {
+                "version": 1,
+                "kind": "error",
+                "error": {"code": "protocol_error", "message": "native outbound frame exceeds the size limit"},
+            }
+            try:
+                self._write_native(fallback)
+            except (BrokenPipeError, OSError, ProtocolError):
+                self._stop.set()
         except (BrokenPipeError, OSError):
             self._stop.set()
 
@@ -257,8 +315,9 @@ class NativeHost:
         request_id = message["request_id"]
         with self._pending_lock:
             pending = self._pending.pop(request_id, None)
-        if pending is None:
-            return
+            if pending is None:
+                self._abandoned_request_ids.pop(request_id, None)
+                return
         pending.timer.cancel()
         if message.get("ok"):
             self._send_response(pending.client, request_id, True, result=message.get("result"))
@@ -268,15 +327,48 @@ class NativeHost:
     def _expire(self, request_id: str) -> None:
         with self._pending_lock:
             pending = self._pending.pop(request_id, None)
+            if pending is not None:
+                self._remember_abandoned_request_id(request_id)
         if pending is not None:
             self._send_response(pending.client, request_id, False, error=error("timeout", "request timed out"))
+            if not self._stop.is_set():
+                self._cancel_extension_request(request_id)
+
+    def _remember_abandoned_request_id(self, request_id: str) -> None:
+        """Retain recent abandoned IDs while deterministically evicting old ones."""
+        self._abandoned_request_ids.pop(request_id, None)
+        self._abandoned_request_ids[request_id] = None
+        while len(self._abandoned_request_ids) > MAX_ABANDONED_REQUEST_IDS:
+            self._abandoned_request_ids.popitem(last=False)
 
     def _drop_client_pending(self, client: Client) -> None:
+        abandoned: list[str] = []
         with self._pending_lock:
             stale = [item for item in self._pending.values() if item.client is client]
             for item in stale:
                 self._pending.pop(item.request_id, None)
                 item.timer.cancel()
+                self._remember_abandoned_request_id(item.request_id)
+                abandoned.append(item.request_id)
+        if not self._stop.is_set():
+            for request_id in abandoned:
+                self._cancel_extension_request(request_id)
+
+    def _cancel_extension_request(self, request_id: str) -> None:
+        """Best-effort cancellation using a unique internal request ID."""
+        cancel_id = f"cancel-{uuid.uuid4().hex}"
+        try:
+            self._write_native(
+                {
+                    "version": 1,
+                    "kind": "request",
+                    "request_id": cancel_id,
+                    "command": "cancel",
+                    "params": {"request_id": request_id},
+                }
+            )
+        except (BrokenPipeError, OSError, ProtocolError):
+            return
 
     def _send_response(
         self,
@@ -287,14 +379,32 @@ class NativeHost:
         result: Any = None,
         error: dict[str, str] | None = None,
     ) -> None:
-        response: dict[str, Any] = {"version": 1, "kind": "response", "request_id": request_id, "ok": ok}
+        response: dict[str, Any] = {
+            "version": 1,
+            "kind": "response",
+            "request_id": normalize_request_id(request_id),
+            "ok": ok,
+        }
         if ok:
             if result is not None:
                 response["result"] = result
-        elif error is not None:
-            response["error"] = error
+        else:
+            response["error"] = _normalise_error(error)
         try:
             encoded = encode_frame(response, byteorder="big")
+        except ProtocolError:
+            response = {
+                "version": 1,
+                "kind": "response",
+                "request_id": response["request_id"],
+                "ok": False,
+                "error": {"code": "response_too_large", "message": "response exceeds the native frame size limit"},
+            }
+            try:
+                encoded = encode_frame(response, byteorder="big")
+            except ProtocolError:
+                return
+        try:
             with client.write_lock:
                 client.connection.sendall(encoded)
         except (BrokenPipeError, OSError):
@@ -316,11 +426,8 @@ class NativeHost:
                     return False
                 connection.sendall(encode_frame(meeting_forward_request(clean), byteorder="big"))
                 response = read_frame(connection, byteorder="big")
-                return (
-                    isinstance(response, dict)
-                    and response.get("requestId") == clean["detection_id"]
-                    and response.get("ok") is True
-                )
+                validated = validate_meeting_response(response, clean["detection_id"])
+                return validated["ok"] is True
         except (EOFError, ProtocolError, FileNotFoundError, ConnectionRefusedError, TimeoutError, OSError):
             return False
 
@@ -387,12 +494,20 @@ def _ultravox_socket_from_env() -> Path | None:
 
 
 def error(code: str, message: str) -> dict[str, str]:
-    return {"code": code, "message": message[:256]}
+    return {"code": code[:MAX_ERROR_CODE], "message": message[:MAX_ERROR_TEXT]}
 
 
 def _normalise_error(value: object) -> dict[str, str]:
     if isinstance(value, dict) and isinstance(value.get("code"), str) and isinstance(value.get("message"), str):
-        return {"code": value["code"][:96], "message": value["message"][:256]}
+        code = value["code"][:MAX_ERROR_CODE]
+        message = value["message"][:MAX_ERROR_TEXT]
+        if code and message:
+            clean = {"code": code, "message": message}
+            for field in ("reason", "fallback"):
+                candidate = value.get(field)
+                if isinstance(candidate, str):
+                    clean[field] = candidate[:MAX_ERROR_TEXT]
+            return clean
     return error("extension_error", "extension returned an invalid error")
 
 
@@ -406,10 +521,9 @@ def _error_code(message: str) -> str:
 
 
 def validate_caller_origin(origin: str | None) -> None:
-    """Validate Chrome's optional argv[1] caller origin without accepting broad origins."""
-    if origin is not None and origin != f"chrome-extension://{EXTENSION_ID}/":
+    """Validate Chrome's caller origin against the installed extension exactly."""
+    if origin != f"chrome-extension://{EXTENSION_ID}/":
         raise ValueError("caller origin is not the installed OverSeer Browser extension")
-
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="OverSeer Browser Chrome native host")

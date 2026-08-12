@@ -10,7 +10,8 @@ export const COMMANDS = [
   'tabs.list', 'tabs.create', 'tabs.select', 'tabs.close', 'tabs.borrow', 'tabs.return',
   'navigate', 'back', 'forward', 'reload', 'snapshot', 'observe', 'click', 'hover', 'fill',
   'type', 'select', 'press', 'scroll', 'evaluate', 'screenshot.visible', 'screenshot.element',
-  'upload', 'takeover.prompt', 'cancel', 'capture.start', 'capture.stop',
+  'upload', 'batch', 'console.start', 'console.read', 'console.stop', 'network.read',
+  'takeover.prompt', 'cancel', 'capture.start', 'capture.stop',
 ] as const;
 
 export type Command = (typeof COMMANDS)[number];
@@ -57,7 +58,7 @@ export interface NativeHello {
 export interface NativeHandshakeAck {
   version: 1;
   kind: 'handshake_ack';
-  ok?: boolean;
+  ok: boolean;
   error?: string;
 }
 export interface NativeMeetingAck {
@@ -88,8 +89,7 @@ export function isPlainObject(value: unknown): value is Record<string, unknown> 
 }
 
 export function isNativeHandshakeAck(value: unknown): value is NativeHandshakeAck {
-  if (!isPlainObject(value) || value.version !== 1 || value.kind !== 'handshake_ack') return false;
-  if (value.ok !== undefined && typeof value.ok !== 'boolean') return false;
+  if (!isPlainObject(value) || value.version !== 1 || value.kind !== 'handshake_ack' || typeof value.ok !== 'boolean') return false;
   return value.error === undefined || (typeof value.error === 'string' && value.error.length <= 4_096);
 }
 export function isNativeMeetingAck(value: unknown): value is NativeMeetingAck {

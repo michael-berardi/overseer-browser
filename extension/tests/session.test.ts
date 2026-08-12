@@ -85,4 +85,62 @@ describe('session ownership', () => {
     expect(second.sessionId).toBe(first.sessionId);
     expect(second.agentWindowId).toBe(first.agentWindowId);
   });
+
+  it('preserves a bounded session name and rejects a conflicting active name', async () => {
+    delete sessionStore['overseer.session.v1'];
+    const manager = new SessionManager();
+
+    const started = await manager.start('qa-session');
+
+    expect(started.name).toBe('qa-session');
+    await expect(manager.start('different-session')).rejects.toMatchObject({ code: 'session_conflict' });
+    await manager.stop();
+    await expect(manager.start('x'.repeat(65))).rejects.toMatchObject({ code: 'invalid_session_name' });
+  });
+  it('restores a borrowed tab before return and releases ownership when restoration fails', async () => {
+    delete sessionStore['overseer.session.v1'];
+    localStore['overseer.automation.origins.v1'] = ['https://meet.google.com/*'];
+    const events: string[] = [];
+    let manager!: SessionManager;
+    manager = new SessionManager(async (tabId) => {
+      expect((await manager.requireState()).borrowedTabIds).toContain(tabId);
+      events.push(`release:${tabId}`);
+      throw new Error('console restoration failed');
+    });
+    await manager.start();
+    await manager.borrowTab(20);
+    await expect(manager.returnTab(20)).resolves.toEqual({ returned: true });
+    expect(events).toEqual(['release:20']);
+    expect((await manager.requireState()).borrowedTabIds).not.toContain(20);
+    await manager.stop();
+  });
+
+  it('restores borrowed tabs before session ownership is removed', async () => {
+    delete sessionStore['overseer.session.v1'];
+    localStore['overseer.automation.origins.v1'] = ['https://meet.google.com/*'];
+    const events: string[] = [];
+    let manager!: SessionManager;
+    manager = new SessionManager(async (tabId) => {
+      expect((await manager.requireState()).borrowedTabIds).toContain(tabId);
+      events.push(`release:${tabId}`);
+      throw new Error('console restoration failed');
+    });
+    await manager.start();
+    await manager.borrowTab(20);
+    await expect(manager.stop()).resolves.toMatchObject({ stopped: true, returnedTabIds: [20] });
+    expect(events).toEqual(['release:20']);
+    expect(sessionStore['overseer.session.v1']).toBeUndefined();
+  });
+
+  it('refuses to close a borrowed user tab', async () => {
+    delete sessionStore['overseer.session.v1'];
+    localStore['overseer.automation.origins.v1'] = ['https://meet.google.com/*'];
+    const manager = new SessionManager();
+    await manager.start();
+    await manager.borrowTab(20);
+
+    await expect(manager.closeTab(20)).rejects.toMatchObject({ code: 'borrowed_tab_close_forbidden' });
+    expect(tabStore.has(20)).toBe(true);
+    await manager.stop();
+  });
 });
