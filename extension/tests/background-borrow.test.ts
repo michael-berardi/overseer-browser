@@ -133,6 +133,27 @@ describe('native tab borrowing approval', () => {
       mime_type: 'text/plain',
       chunk: 'Yg==',
     }, 7, 'clear-ref')).toMatchObject({ complete: false });
+    expect(assembler.size).toBe(1);
+    expect(assembler.retainedBytes).toBe(1);
+    assembler.clear();
+    expect(assembler.size).toBe(0);
+    expect(assembler.retainedBytes).toBe(0);
+
+    vi.useFakeTimers();
+    const expiringAssembler = new background.UploadAssembler(5);
+    expiringAssembler.addChunk({
+      upload_id: 'expiring',
+      index: 0,
+      total: 2,
+      filename: 'expiring.txt',
+      mime_type: 'text/plain',
+      chunk: 'Yg==',
+    }, 7, 'expiring-ref');
+    expect(expiringAssembler.retainedBytes).toBe(1);
+    vi.advanceTimersByTime(5);
+    expect(expiringAssembler.size).toBe(0);
+    expect(expiringAssembler.retainedBytes).toBe(0);
+    vi.useRealTimers();
 
     const contextAssembler = new background.UploadAssembler();
     contextAssembler.addChunk({
@@ -168,6 +189,11 @@ describe('native tab borrowing approval', () => {
       permissions: {
         currentOrigin: 'https://example.test/*',
         currentOriginAccess: true,
+      },
+      runtime: {
+        inflight_requests: 0,
+        incomplete_uploads: 0,
+        incomplete_upload_bytes: 0,
       },
     });
     await expect(background.dispatch({ version: 1, kind: 'request', request_id: 'console-start', command: 'console.start' }, { cancelled: false }))

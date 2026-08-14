@@ -22,6 +22,7 @@ export class SessionManager {
   private state: SessionState | null = null;
   private loadPromise: Promise<void> | null = null;
   private lifecycle: Promise<void> = Promise.resolve();
+  private refreshPromise: Promise<Browser.tabs.Tab[]> | null = null;
 
   constructor(private readonly releaseHook?: SessionReleaseHook) {}
 
@@ -51,7 +52,6 @@ export class SessionManager {
       if (this.state?.sessionId !== checkedState.sessionId) return;
       this.state = null;
       await this.persist();
-      if (this.state) await this.persist();
     }
   }
 
@@ -74,22 +74,35 @@ export class SessionManager {
     }
   }
 
-  private async refreshAgentTabs(): Promise<Browser.tabs.Tab[]> {
+  private refreshAgentTabs(): Promise<Browser.tabs.Tab[]> {
+    this.refreshPromise ??= this.refreshAgentTabsNow().finally(() => {
+      this.refreshPromise = null;
+    });
+    return this.refreshPromise;
+  }
+
+  private async refreshAgentTabsNow(): Promise<Browser.tabs.Tab[]> {
     const state = this.state;
     if (!state) return [];
     const tabs = await browser.tabs.query({ windowId: state.agentWindowId });
+    if (this.state?.sessionId !== state.sessionId) return [];
     const ids = tabs.map((tab) => tab.id).filter((id): id is number => id !== undefined);
-    state.ownedTabIds = ids;
     const activeOwnedTabId = tabs.find((tab) => tab.active && tab.id !== undefined)?.id;
+    let selectedTabId = state.selectedTabId;
     if (
-      state.selectedTabId === undefined ||
-      (!state.ownedTabIds.includes(state.selectedTabId) && !state.borrowedTabIds.includes(state.selectedTabId))
+      selectedTabId === undefined ||
+      (!ids.includes(selectedTabId) && !state.borrowedTabIds.includes(selectedTabId))
     ) {
-      state.selectedTabId = activeOwnedTabId ?? ids[0] ?? state.borrowedTabIds[0];
-    } else if (state.ownedTabIds.includes(state.selectedTabId) && activeOwnedTabId !== undefined) {
-      state.selectedTabId = activeOwnedTabId;
+      selectedTabId = activeOwnedTabId ?? ids[0] ?? state.borrowedTabIds[0];
+    } else if (ids.includes(selectedTabId) && activeOwnedTabId !== undefined) {
+      selectedTabId = activeOwnedTabId;
     }
-    await this.persist();
+    const ownedTabsChanged = ids.length !== state.ownedTabIds.length ||
+      ids.some((id, index) => id !== state.ownedTabIds[index]);
+    const selectionChanged = selectedTabId !== state.selectedTabId;
+    if (ownedTabsChanged) state.ownedTabIds = ids;
+    if (selectionChanged) state.selectedTabId = selectedTabId;
+    if (ownedTabsChanged || selectionChanged) await this.persist();
     return tabs;
   }
 
@@ -188,27 +201,31 @@ export class SessionManager {
   }
 
   async createTab(url?: string): Promise<Browser.tabs.Tab> {
-    const state = await this.requireState();
-    if (url !== undefined && (!isNavigableUrl(url) || !(await canControlUrl(url)))) {
-      throw new SessionError('permission_required', 'Optional site access is required for this URL.', 'Grant site access from the popup.');
-    }
-    const tab = await browser.tabs.create({ windowId: state.agentWindowId, url: url ?? 'about:blank', active: true });
-    if (tab.id === undefined) throw new Error('Chrome did not return a tab id.');
-    if (!state.ownedTabIds.includes(tab.id)) state.ownedTabIds.push(tab.id);
-    state.selectedTabId = tab.id;
-    await this.persist();
-    return tab;
+    return this.serializeLifecycle(async () => {
+      const state = await this.requireState();
+      if (url !== undefined && (!isNavigableUrl(url) || !(await canControlUrl(url)))) {
+        throw new SessionError('permission_required', 'Optional site access is required for this URL.', 'Grant site access from the popup.');
+      }
+      const tab = await browser.tabs.create({ windowId: state.agentWindowId, url: url ?? 'about:blank', active: true });
+      if (tab.id === undefined) throw new Error('Chrome did not return a tab id.');
+      if (!state.ownedTabIds.includes(tab.id)) state.ownedTabIds.push(tab.id);
+      state.selectedTabId = tab.id;
+      await this.persist();
+      return tab;
+    });
   }
 
   async selectTab(tabId: number): Promise<Browser.tabs.Tab> {
-    const state = await this.requireState();
-    if (!(await this.ownsTab(tabId))) throw new SessionError('tab_not_owned', 'Tab is not owned or borrowed by this session.');
-    const tab = await browser.tabs.get(tabId);
-    if (tab.windowId !== undefined) await browser.windows.update(tab.windowId, { focused: true });
-    await browser.tabs.update(tabId, { active: true });
-    state.selectedTabId = tabId;
-    await this.persist();
-    return { ...tab, active: true };
+    return this.serializeLifecycle(async () => {
+      const state = await this.requireState();
+      if (!(await this.ownsTab(tabId))) throw new SessionError('tab_not_owned', 'Tab is not owned or borrowed by this session.');
+      const tab = await browser.tabs.get(tabId);
+      if (tab.windowId !== undefined) await browser.windows.update(tab.windowId, { focused: true });
+      await browser.tabs.update(tabId, { active: true });
+      state.selectedTabId = tabId;
+      await this.persist();
+      return { ...tab, active: true };
+    });
   }
 
   async closeTab(tabId: number): Promise<{ closed: boolean }> {
@@ -240,30 +257,34 @@ export class SessionManager {
   }
 
   async borrowTab(tabId: number): Promise<Browser.tabs.Tab> {
-    const state = await this.requireState();
-    const tab = await browser.tabs.get(tabId);
-    if (tab.windowId === state.agentWindowId || state.ownedTabIds.includes(tabId) || state.borrowedTabIds.includes(tabId)) {
-      if (tab.windowId === state.agentWindowId && !state.ownedTabIds.includes(tabId)) state.ownedTabIds.push(tabId);
+    return this.serializeLifecycle(async () => {
+      const state = await this.requireState();
+      const tab = await browser.tabs.get(tabId);
+      if (tab.windowId === state.agentWindowId || state.ownedTabIds.includes(tabId) || state.borrowedTabIds.includes(tabId)) {
+        if (tab.windowId === state.agentWindowId && !state.ownedTabIds.includes(tabId)) state.ownedTabIds.push(tabId);
+        state.selectedTabId = tabId;
+        await this.persist();
+        return tab;
+      }
+      if (!tab.url || !(await canControlUrl(tab.url))) {
+        throw new SessionError('permission_required', 'Optional site access is required before borrowing this tab.', 'Grant site access from the popup.');
+      }
+      state.borrowedTabIds.push(tabId);
       state.selectedTabId = tabId;
       await this.persist();
       return tab;
-    }
-    if (!tab.url || !(await canControlUrl(tab.url))) {
-      throw new SessionError('permission_required', 'Optional site access is required before borrowing this tab.', 'Grant site access from the popup.');
-    }
-    state.borrowedTabIds.push(tabId);
-    state.selectedTabId = tabId;
-    await this.persist();
-    return tab;
+    });
   }
   async returnTab(tabId: number): Promise<{ returned: boolean }> {
-    const state = await this.requireState();
-    const wasBorrowed = state.borrowedTabIds.includes(tabId);
-    if (wasBorrowed) await this.releaseTabBestEffort(tabId);
-    state.borrowedTabIds = state.borrowedTabIds.filter((id) => id !== tabId);
-    if (state.selectedTabId === tabId) state.selectedTabId = state.ownedTabIds[0] ?? state.borrowedTabIds[0];
-    await this.persist();
-    return { returned: wasBorrowed };
+    return this.serializeLifecycle(async () => {
+      const state = await this.requireState();
+      const wasBorrowed = state.borrowedTabIds.includes(tabId);
+      if (wasBorrowed) await this.releaseTabBestEffort(tabId);
+      state.borrowedTabIds = state.borrowedTabIds.filter((id) => id !== tabId);
+      if (state.selectedTabId === tabId) state.selectedTabId = state.ownedTabIds[0] ?? state.borrowedTabIds[0];
+      await this.persist();
+      return { returned: wasBorrowed };
+    });
   }
 
   async cleanupTab(tabId: number): Promise<void> {

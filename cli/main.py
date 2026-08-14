@@ -31,6 +31,8 @@ MAX_UPLOAD_BYTES = 8 * 1024 * 1024
 MAX_UPLOAD_CHUNKS = 32
 MAX_UPLOAD_FILES = 16
 MAX_BATCH_ACTIONS = 20
+MAX_PARALLEL_BATCH_ACTIONS = 8
+CONNECT_RETRY_DELAYS = (0.0, 0.005, 0.015, 0.03, 0.06)
 # The extension rejects a serialized forwarded request above 512 KiB. Keep the
 # source bound below that parser limit even after adding the complete envelope.
 MAX_EXTENSION_REQUEST_BYTES = 512 * 1024
@@ -166,8 +168,8 @@ def _parse_batch_payload(source: str) -> dict[str, Any]:
     if isinstance(parsed, list):
         payload: dict[str, Any] = {"actions": parsed}
     elif isinstance(parsed, dict):
-        if set(parsed) - {"actions", "stop_on_error"}:
-            raise CLIError("usage", "batch object may contain only actions and stop_on_error")
+        if set(parsed) - {"actions", "stop_on_error", "max_parallel"}:
+            raise CLIError("usage", "batch object may contain only actions, stop_on_error, and max_parallel")
         payload = dict(parsed)
     else:
         raise CLIError("usage", "batch requires a JSON array or object contract")
@@ -185,6 +187,12 @@ def _parse_batch_payload(source: str) -> dict[str, Any]:
             raise CLIError("usage", f"batch action {index} params must be an object")
     if "stop_on_error" in payload and not isinstance(payload["stop_on_error"], bool):
         raise CLIError("usage", "batch stop_on_error must be boolean")
+    if "max_parallel" in payload and (
+        isinstance(payload["max_parallel"], bool)
+        or not isinstance(payload["max_parallel"], int)
+        or not 1 <= payload["max_parallel"] <= MAX_PARALLEL_BATCH_ACTIONS
+    ):
+        raise CLIError("usage", f"batch max_parallel must be an integer between 1 and {MAX_PARALLEL_BATCH_ACTIONS}")
     try:
         if _serialized_batch_request_bytes(payload) > MAX_EXTENSION_REQUEST_BYTES:
             raise ValueError("batch request envelope exceeds the request bound")
@@ -216,10 +224,33 @@ def request_once(
         raise CLIError("host_unavailable", "native host is not running; open the extension or run status")
     request_id = _checked_request_id(request_id) if request_id is not None else f"cli-{uuid.uuid4().hex}"
     request = {"version": 1, "kind": "request", "request_id": request_id, "command": command, "params": params, "token": token}
+    deadline = time.monotonic() + timeout_value
+    connection: socket.socket | None = None
+    last_refused: ConnectionRefusedError | None = None
     try:
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
-            connection.settimeout(timeout_value)
-            connection.connect(str(paths.socket))
+        for delay in CONNECT_RETRY_DELAYS:
+            if delay > 0:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                time.sleep(min(delay, remaining))
+            candidate = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            candidate.settimeout(max(0.001, deadline - time.monotonic()))
+            try:
+                candidate.connect(str(paths.socket))
+            except ConnectionRefusedError as exc:
+                candidate.close()
+                last_refused = exc
+                continue
+            except BaseException:
+                candidate.close()
+                raise
+            connection = candidate
+            break
+        if connection is None:
+            raise last_refused or ConnectionRefusedError("native host is not accepting connections")
+        with connection:
+            connection.settimeout(max(0.001, deadline - time.monotonic()))
             connection.sendall(encode_frame(request, byteorder="big"))
             response = read_frame(connection, byteorder="big")
     except FileNotFoundError as exc:

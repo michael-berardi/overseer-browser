@@ -58,6 +58,7 @@ DEFAULT_REQUEST_TIMEOUT = 30.0
 MAX_PENDING = 128
 MAX_CLIENT_REQUEST_IDS = 4_096
 MAX_ABANDONED_REQUEST_IDS = 16_384
+DEADLINE_WORKER_IDLE_SECONDS = 0.25
 
 
 @dataclass(eq=False)
@@ -72,8 +73,8 @@ class Client:
 class Pending:
     request_id: str
     client: Client
-    timer: threading.Timer
     created_at: float
+    deadline_at: float
 
 
 class NativeHost:
@@ -108,6 +109,8 @@ class NativeHost:
         self._pending: dict[str, Pending] = {}
         self._abandoned_request_ids: OrderedDict[str, None] = OrderedDict()
         self._pending_lock = threading.Lock()
+        self._pending_condition = threading.Condition(self._pending_lock)
+        self._expiry_thread: threading.Thread | None = None
         self._clients: set[Client] = set()
         self._clients_lock = threading.Lock()
 
@@ -119,8 +122,7 @@ class NativeHost:
         try:
             server.bind(str(self.paths.socket))
             os.chmod(self.paths.socket, 0o600)
-            server.listen(16)
-            server.settimeout(0.4)
+            server.listen(MAX_PENDING)
             accept_thread = threading.Thread(target=self._accept_loop, name="browser-host-cli", daemon=True)
             accept_thread.start()
             self._native_loop()
@@ -128,11 +130,11 @@ class NativeHost:
             self._stop.set()
             server.close()
             self.paths.socket.unlink(missing_ok=True)
-            with self._pending_lock:
+            with self._pending_condition:
                 pending = list(self._pending.values())
                 self._pending.clear()
+                self._pending_condition.notify_all()
             for item in pending:
-                item.timer.cancel()
                 self._send_response(item.client, item.request_id, False, error=error("host_stopped", "native host stopped"))
             with self._clients_lock:
                 clients = list(self._clients)
@@ -177,13 +179,10 @@ class NativeHost:
 
     def _client_loop(self, client: Client) -> None:
         connection = client.connection
-        connection.settimeout(0.5)
         try:
             while not self._stop.is_set():
                 try:
                     message = read_frame(connection, byteorder="big")
-                except socket.timeout:
-                    continue
                 except EOFError:
                     break
                 except ProtocolError as exc:
@@ -206,7 +205,7 @@ class NativeHost:
             self._send_response(client, request_id, False, error=error(_error_code(str(exc)), str(exc)))
             return
         request_id = request["request_id"]
-        with self._pending_lock:
+        with self._pending_condition:
             if request_id in self._abandoned_request_ids:
                 self._send_response(client, request_id, False, error=error("duplicate_request", "request_id was abandoned on a previous connection"))
                 return
@@ -224,24 +223,62 @@ class NativeHost:
             if request_id in self._pending:
                 self._send_response(client, request_id, False, error=error("duplicate_request", "request_id is already pending"))
                 return
-            timer = threading.Timer(self.request_timeout, self._expire, args=(request_id,))
-            timer.daemon = True
-            self._pending[request_id] = Pending(request_id, client, timer, time.monotonic())
-            timer.start()
+            created_at = time.monotonic()
+            self._pending[request_id] = Pending(
+                request_id,
+                client,
+                created_at,
+                created_at + self.request_timeout,
+            )
+            self._ensure_expiry_worker_locked()
+            self._pending_condition.notify()
         try:
             self._write_native(request)
         except ProtocolError as exc:
-            with self._pending_lock:
+            with self._pending_condition:
                 pending = self._pending.pop(request_id, None)
-            if pending is not None:
-                pending.timer.cancel()
+                self._pending_condition.notify_all()
             self._send_response(client, request_id, False, error=error("request_too_large", str(exc)))
         except (BrokenPipeError, OSError) as exc:
-            with self._pending_lock:
+            with self._pending_condition:
                 pending = self._pending.pop(request_id, None)
-            if pending is not None:
-                pending.timer.cancel()
+                self._pending_condition.notify_all()
             self._send_response(client, request_id, False, error=error("native_disconnected", str(exc)))
+
+    def _ensure_expiry_worker_locked(self) -> None:
+        if self._expiry_thread is not None and self._expiry_thread.is_alive():
+            return
+        self._expiry_thread = threading.Thread(
+            target=self._expiry_loop,
+            name="browser-host-deadlines",
+            daemon=True,
+        )
+        self._expiry_thread.start()
+
+    def _expiry_loop(self) -> None:
+        while True:
+            with self._pending_condition:
+                if self._stop.is_set():
+                    self._expiry_thread = None
+                    return
+                if not self._pending:
+                    self._pending_condition.wait(DEADLINE_WORKER_IDLE_SECONDS)
+                    if self._stop.is_set() or not self._pending:
+                        self._expiry_thread = None
+                        return
+                now = time.monotonic()
+                next_deadline = min(item.deadline_at for item in self._pending.values())
+                wait_seconds = next_deadline - now
+                if wait_seconds > 0:
+                    self._pending_condition.wait(wait_seconds)
+                    continue
+                expired_ids = [
+                    request_id
+                    for request_id, item in self._pending.items()
+                    if item.deadline_at <= now
+                ]
+            for request_id in expired_ids:
+                self._expire(request_id)
 
     def _write_native(self, request: dict[str, Any]) -> None:
         payload = encode_frame(request, byteorder="little")
@@ -313,20 +350,21 @@ class NativeHost:
 
     def _route_extension_response(self, message: dict[str, Any]) -> None:
         request_id = message["request_id"]
-        with self._pending_lock:
+        with self._pending_condition:
             pending = self._pending.pop(request_id, None)
+            self._pending_condition.notify_all()
             if pending is None:
                 self._abandoned_request_ids.pop(request_id, None)
                 return
-        pending.timer.cancel()
         if message.get("ok"):
             self._send_response(pending.client, request_id, True, result=message.get("result"))
         else:
             self._send_response(pending.client, request_id, False, error=_normalise_error(message.get("error")))
 
     def _expire(self, request_id: str) -> None:
-        with self._pending_lock:
+        with self._pending_condition:
             pending = self._pending.pop(request_id, None)
+            self._pending_condition.notify_all()
             if pending is not None:
                 self._remember_abandoned_request_id(request_id)
         if pending is not None:
@@ -343,13 +381,13 @@ class NativeHost:
 
     def _drop_client_pending(self, client: Client) -> None:
         abandoned: list[str] = []
-        with self._pending_lock:
+        with self._pending_condition:
             stale = [item for item in self._pending.values() if item.client is client]
             for item in stale:
                 self._pending.pop(item.request_id, None)
-                item.timer.cancel()
                 self._remember_abandoned_request_id(item.request_id)
                 abandoned.append(item.request_id)
+            self._pending_condition.notify_all()
         if not self._stop.is_set():
             for request_id in abandoned:
                 self._cancel_extension_request(request_id)

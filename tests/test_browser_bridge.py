@@ -187,8 +187,7 @@ class HostRoutingTests(unittest.TestCase):
             finally:
                 right.close()
                 left.close()
-                for pending in list(host._pending.values()):
-                    pending.timer.cancel()
+                host._drop_client_pending(client)
 
     def test_timeout_returns_structured_error(self) -> None:
         host = NativeHost(native_in=io.BytesIO(), native_out=io.BytesIO(), request_timeout=0.2)
@@ -200,6 +199,35 @@ class HostRoutingTests(unittest.TestCase):
             response = read_frame(right, byteorder="big")
             self.assertFalse(response["ok"])
             self.assertEqual(response["error"]["code"], "timeout")
+        finally:
+            right.close()
+            left.close()
+    def test_pending_requests_share_one_deadline_worker(self) -> None:
+        host = NativeHost(native_in=io.BytesIO(), native_out=io.BytesIO(), request_timeout=5)
+        host.token = "secret"
+        left, right = socket.socketpair()
+        client = Client(left)
+        try:
+            for index in range(64):
+                host._route_request(
+                    client,
+                    {
+                        "version": 1,
+                        "kind": "request",
+                        "request_id": f"shared-deadline-{index}",
+                        "command": "snapshot",
+                        "params": {},
+                        "token": "secret",
+                    },
+                )
+            worker = host._expiry_thread
+            self.assertIsNotNone(worker)
+            self.assertTrue(worker.is_alive())
+            self.assertEqual(len(host._pending), 64)
+            self.assertTrue(all(not hasattr(item, "timer") for item in host._pending.values()))
+            host._drop_client_pending(client)
+            worker.join(timeout=1)
+            self.assertFalse(worker.is_alive())
         finally:
             right.close()
             left.close()
@@ -464,6 +492,10 @@ class CLIMappingTests(unittest.TestCase):
             _command_request("batch", ['{"actions":[{"command":"snapshot"}],"stop_on_error":false}']),
             ("batch", {"actions": [{"command": "snapshot"}], "stop_on_error": False}),
         )
+        self.assertEqual(
+            _command_request("batch", ['{"actions":[{"command":"tabs.list"}],"stop_on_error":false,"max_parallel":4}']),
+            ("batch", {"actions": [{"command": "tabs.list"}], "stop_on_error": False, "max_parallel": 4}),
+        )
         self.assertEqual(_command_request("capture", ["start"]), ("capture.start", {}))
         for args in (["read", "--bad"], ["read", "--clear", "extra"], ["read", "0"]):
             with self.subTest(args=args):
@@ -471,7 +503,16 @@ class CLIMappingTests(unittest.TestCase):
                     _command_request("console" if args[0] == "read" else "network", args)
 
     def test_batch_rejects_unsafe_json_contract(self) -> None:
-        for source in ("{}", '{"actions":[]}', '{"actions":[{"command":"upload"}]}', "[1]", "not-json"):
+        for source in (
+            "{}",
+            '{"actions":[]}',
+            '{"actions":[{"command":"upload"}]}',
+            '{"actions":[{"command":"tabs.list"}],"max_parallel":0}',
+            '{"actions":[{"command":"tabs.list"}],"max_parallel":true}',
+            '{"actions":[{"command":"tabs.list"}],"max_parallel":9}',
+            "[1]",
+            "not-json",
+        ):
             with self.subTest(source=source):
                 with self.assertRaises(CLIError):
                     _command_request("batch", [source])
@@ -522,6 +563,54 @@ class CLIMappingTests(unittest.TestCase):
             request = read_frame(io.BytesIO(connection.sent[0]), byteorder="big")
             self.assertEqual(response["request_id"], "caller-request")
             self.assertEqual(request["request_id"], "caller-request")
+    def test_request_once_retries_a_transient_full_socket_backlog(self) -> None:
+        class RefusingSocket:
+            def settimeout(self, value: float) -> None:
+                del value
+
+            def connect(self, path: str) -> None:
+                del path
+                raise ConnectionRefusedError
+
+            def close(self) -> None:
+                pass
+
+        class WorkingSocket:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args) -> None:
+                del args
+
+            def settimeout(self, value: float) -> None:
+                del value
+
+            def connect(self, path: str) -> None:
+                del path
+
+            def sendall(self, payload: bytes) -> None:
+                del payload
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            token = root / "token"
+            socket_path = root / "browser.sock"
+            token.write_text("secret\n", encoding="utf-8")
+            os.chmod(token, 0o600)
+            socket_path.touch()
+            paths = RuntimePaths(root=root, socket=socket_path, token=token)
+            response = {"version": 1, "kind": "response", "request_id": "retry", "ok": True}
+            with (
+                patch("cli.main.socket.socket", side_effect=[RefusingSocket(), WorkingSocket()]) as socket_factory,
+                patch("cli.main.time.sleep") as sleep,
+                patch("cli.main.read_frame", return_value=response),
+            ):
+                self.assertEqual(
+                    request_once("snapshot", {}, timeout=1, paths=paths, request_id="retry"),
+                    response,
+                )
+        self.assertEqual(socket_factory.call_count, 2)
+        sleep.assert_called_once()
     def test_request_once_converts_native_eof_to_structured_cli_error(self) -> None:
         class FakeSocket:
             def __enter__(self):

@@ -263,6 +263,31 @@ describe('session ownership', () => {
     await manager.stop();
   });
 
+  it('coalesces concurrent tab refreshes and skips unchanged session writes', async () => {
+    delete sessionStore['overseer.session.v1'];
+    tabStore.clear();
+    tabStore.set(11, { id: 11, windowId: 10, url: 'about:blank', active: true });
+    const query = vi.spyOn(browser.tabs, 'query').mockImplementation(async (details) => (
+      [...tabStore.values()].filter((tab) => details.windowId === undefined || tab.windowId === details.windowId)
+    ));
+    const persist = vi.spyOn(browser.storage.session, 'set');
+    const manager = new SessionManager();
+    await manager.start();
+    query.mockClear();
+    persist.mockClear();
+
+    await Promise.all(Array.from({ length: 32 }, () => manager.listTabs()));
+
+    expect(query).toHaveBeenCalledTimes(1);
+    expect(persist).not.toHaveBeenCalled();
+    await manager.listTabs();
+    expect(query).toHaveBeenCalledTimes(2);
+    expect(persist).not.toHaveBeenCalled();
+    query.mockRestore();
+    persist.mockRestore();
+    await manager.stop();
+  });
+
   it('retries an offscreen resize on the primary display', async () => {
     delete sessionStore['overseer.session.v1'];
     const update = vi.spyOn(browser.windows, 'update')

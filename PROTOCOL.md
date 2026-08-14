@@ -91,7 +91,7 @@ The required command families are:
 - visible-tab or element screenshots
 - bounded chunked upload of 1–16 files
 - opt-in bounded console capture and redacted Resource Timing metadata
-- sequential batches of up to 20 explicit actions
+- sequential batches of up to 20 explicit actions, or bounded parallel read batches across distinct explicit tab IDs
 - `help` / visible `takeover` prompt
 - `cancel`
 - `capture.start`, `capture.stop`
@@ -99,7 +99,9 @@ The required command families are:
 Commands operate on the active session/tab selected by the caller or on IDs supplied in `params`. Automation code is injected only into session-owned or explicitly borrowed tabs. The isolated-world traversal covers the top document, open shadow roots, and visible same-origin nested frames; cross-origin frame DOM remains opaque. Direct synchronous calls through the current page dialog globals caused by click, Enter, or Space are bounded: alerts are acknowledged, confirmations and prompts are dismissed, and captured dialog metadata is returned with the action. Page-retained references to native dialog functions that predate the guard require debugger-level interception and remain unsupported. There is no passive general-browsing collection.
 
 A session owns a dedicated Agent Window by default. A normal user tab is read-only until `tabs.borrow` succeeds. `tabs.return` restores ownership to the user, and stopping a session returns all borrowed tabs before releasing session state.
-Uploads are explicit and bounded. The CLI accepts `upload REF PATH [PATH...]`, limits each set to 1–16 files, 8 MiB aggregate, and at most 32 chunks of 256 KiB. It transmits only a bounded element reference plus ordered file/chunk metadata, basenames, MIME types, and contents; local filesystem paths and the token never enter the extension payload. A receiver must reject missing, duplicated, oversized, inconsistent, or out-of-order files and chunks before assigning the complete set atomically to a file input.
+Uploads are explicit and bounded. The CLI accepts `upload REF PATH [PATH...]`, limits each set to 1–16 files, 8 MiB aggregate, and at most 32 chunks of 256 KiB. The extension retains at most eight incomplete transactions and 32 MiB of incomplete bytes, expires abandoned transactions after 60 seconds, and clears retained data on native disconnect or session stop. It transmits only a bounded element reference plus ordered file/chunk metadata, basenames, MIME types, and contents; local filesystem paths and the token never enter the extension payload. A receiver must reject missing, duplicated, oversized, inconsistent, or out-of-order files and chunks before assigning the complete set atomically to a file input.
+
+Batch execution is sequential unless the request sets `stop_on_error: false` and `max_parallel` between 2 and 8. Parallel mode accepts only one `tabs.list` action plus read-only `snapshot`, `observe`, or `network.read` actions with distinct explicit `tab_id` values. The extension validates the complete batch before starting work, preserves result order, shares the outer deadline/cancellation state, and rejects mutation or same-tab parallelism because those actions cannot be rolled back deterministically.
 
 ## Unsupported capabilities
 
