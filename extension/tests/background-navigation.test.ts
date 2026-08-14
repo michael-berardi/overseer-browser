@@ -102,7 +102,7 @@ describe('background navigation waits', () => {
   });
   it('allows fill to clear an existing field value', async () => {
     const { background, browserStub } = await loadBackground();
-    browserStub.scripting.executeScript.mockResolvedValueOnce([{ result: { changed: true } }]);
+    browserStub.scripting.executeScript.mockResolvedValueOnce([{ result: { ok: true, value: { changed: true } } }]);
     await background.dispatch({ version: 1, kind: 'request', request_id: 'start', command: 'sessions.start' }, { cancelled: false });
 
     await expect(background.dispatch({
@@ -113,7 +113,7 @@ describe('background navigation waits', () => {
       params: { ref: 'osr-field', value: '' },
     }, { cancelled: false })).resolves.toEqual({ changed: true });
     expect(browserStub.scripting.executeScript).toHaveBeenCalledWith(expect.objectContaining({
-      args: [{ kind: 'fill', ref: 'osr-field', value: '' }],
+      args: [{ kind: 'fill', ref: 'osr-field', value: '' }, null],
     }));
   });
 
@@ -139,6 +139,21 @@ describe('background navigation waits', () => {
     vi.advanceTimersByTime(15_000);
     await expect(timedOut).rejects.toMatchObject({ code: 'navigation_timeout' });
     vi.useRealTimers();
+  });
+
+  it('rejects unknown command parameters instead of silently ignoring them', async () => {
+    const { background } = await loadBackground();
+
+    await expect(background.dispatch({
+      version: 1,
+      kind: 'request',
+      request_id: 'invalid-observe-param',
+      command: 'observe',
+      params: { maxNodes: 500 },
+    }, { cancelled: false })).rejects.toMatchObject({
+      code: 'invalid_params',
+      message: 'The request contains unsupported parameters for this command.',
+    });
   });
 });
 

@@ -19,6 +19,7 @@ type ActiveTab = {
 
 type PopupState = {
   connected: boolean;
+  native_enabled: boolean;
   evaluate_enabled: boolean;
   takeover_requested: boolean;
   native_error: { code: string; message: string } | null;
@@ -50,6 +51,11 @@ export function connectionStatusPresentation(connected: boolean): {
   };
 }
 
+export function connectionActionLabel(connected: boolean, nativeEnabled: boolean): 'Disconnect' | 'Stop reconnecting' | 'Connect local host' {
+  if (connected) return 'Disconnect';
+  return nativeEnabled ? 'Stop reconnecting' : 'Connect local host';
+}
+
 export function isFailedRuntimeReply(reply: RuntimeReply | null | undefined): boolean {
   return reply?.ok === false;
 }
@@ -74,6 +80,7 @@ function runtimeReplyError(reply: RuntimeReply | null | undefined, fallback: str
 
 const initialState: PopupState = {
   connected: false,
+  native_enabled: false,
   evaluate_enabled: false,
   takeover_requested: false,
   native_error: null,
@@ -118,10 +125,10 @@ export default function App() {
       const reply = (await browser.runtime.sendMessage({ kind: 'set_connection', enabled })) as RuntimeReply;
       const failure = runtimeReplyError(reply, 'The local host rejected the connection change.');
       if (failure) throw failure;
-      if (enabled && reply.connected !== true) {
+      await refresh();
+      if (enabled && reply.connected !== true && !reply.native_error) {
         setNotice('Local host handshake is pending; status will update when it succeeds.');
       }
-      await refresh();
     } catch (error) {
       setNotice(formatPopupError('Unable to change local connection', error));
     } finally {
@@ -253,8 +260,8 @@ export default function App() {
           />
         </div>
         <p className="body-copy">Extension and native-host transport stay local. Page content and screenshots are returned only for explicit commands and may be sent to the configured AI provider. Meeting reminders send only a minimized opaque payload locally.</p>
-        <button className={state.connected ? 'button secondary' : 'button primary'} type="button" onClick={() => void setConnection(!state.connected)} disabled={busy}>
-          {state.connected ? 'Disconnect' : 'Connect local host'}
+        <button className={state.native_enabled ? 'button secondary' : 'button primary'} type="button" onClick={() => void setConnection(!state.native_enabled)} disabled={busy}>
+          {connectionActionLabel(state.connected, state.native_enabled)}
         </button>
       </section>
 

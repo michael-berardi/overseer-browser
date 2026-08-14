@@ -176,4 +176,104 @@ describe('session ownership', () => {
     expect(tabStore.has(20)).toBe(true);
     await manager.stop();
   });
+
+  it('refuses to close the last Agent Window tab', async () => {
+    delete sessionStore['overseer.session.v1'];
+    tabStore.delete(21);
+    const manager = new SessionManager();
+    await manager.start();
+
+    await expect(manager.closeTab(11)).rejects.toMatchObject({
+      code: 'last_owned_tab_close_forbidden',
+      fallback: 'Navigate the existing tab or create another owned tab before closing it.',
+    });
+    await manager.stop();
+  });
+
+  it('reconciles the selected target with an active tab opened by the page', async () => {
+    delete sessionStore['overseer.session.v1'];
+    tabStore.set(22, { id: 22, windowId: 10, url: 'https://example.com/report', active: true });
+    const query = vi.spyOn(browser.tabs, 'query').mockResolvedValue([
+      { id: 22, windowId: 10, url: 'https://example.com/report', active: true },
+    ]);
+    const manager = new SessionManager();
+    await manager.start();
+
+    await expect(manager.getSelectedTabId()).resolves.toBe(22);
+    expect((await manager.requireState()).selectedTabId).toBe(22);
+    query.mockRestore();
+    tabStore.delete(22);
+    await manager.stop();
+  });
+
+  it('clears persisted state when the dedicated window has closed', async () => {
+    delete sessionStore['overseer.session.v1'];
+    const manager = new SessionManager();
+    await manager.start();
+    const get = vi.spyOn(browser.windows, 'get').mockRejectedValueOnce(new Error('No window'));
+
+    await expect(manager.list()).resolves.toEqual([]);
+    expect(sessionStore['overseer.session.v1']).toBeUndefined();
+    get.mockRestore();
+  });
+
+  it('does not clear a replacement session after a stale window check fails', async () => {
+    delete sessionStore['overseer.session.v1'];
+    const manager = new SessionManager();
+    await manager.start('original');
+    let rejectWindowCheck!: (reason?: unknown) => void;
+    const staleWindowCheck = new Promise<chrome.windows.Window>((_resolve, reject) => {
+      rejectWindowCheck = reject;
+    });
+    const get = vi.spyOn(browser.windows, 'get')
+      .mockReturnValueOnce(staleWindowCheck)
+      .mockResolvedValue({ id: 10 });
+    const staleList = manager.list();
+    await Promise.resolve();
+
+    await manager.stop();
+    const replacement = await manager.start('replacement');
+    rejectWindowCheck(new Error('Original window closed'));
+
+    await expect(staleList).resolves.toEqual([expect.objectContaining({ sessionId: replacement.sessionId, name: 'replacement' })]);
+    expect(sessionStore['overseer.session.v1']).toEqual(expect.objectContaining({ sessionId: replacement.sessionId }));
+    get.mockRestore();
+    await manager.stop();
+  });
+
+  it('serializes concurrent closes so one owned tab always remains', async () => {
+    delete sessionStore['overseer.session.v1'];
+    tabStore.clear();
+    tabStore.set(11, { id: 11, windowId: 10, url: 'about:blank', active: true });
+    const query = vi.spyOn(browser.tabs, 'query').mockImplementation(async (details) => (
+      [...tabStore.values()].filter((tab) => details.windowId === undefined || tab.windowId === details.windowId)
+    ));
+    const manager = new SessionManager();
+    await manager.start();
+    const second = await manager.createTab();
+
+    const outcomes = await Promise.allSettled([manager.closeTab(11), manager.closeTab(second.id!)]);
+
+    expect(outcomes.filter((outcome) => outcome.status === 'fulfilled')).toHaveLength(1);
+    expect(outcomes.filter((outcome) => outcome.status === 'rejected')).toEqual([
+      expect.objectContaining({ reason: expect.objectContaining({ code: 'last_owned_tab_close_forbidden' }) }),
+    ]);
+    expect((await manager.requireState()).ownedTabIds).toHaveLength(1);
+    query.mockRestore();
+    await manager.stop();
+  });
+
+  it('retries an offscreen resize on the primary display', async () => {
+    delete sessionStore['overseer.session.v1'];
+    const update = vi.spyOn(browser.windows, 'update')
+      .mockRejectedValueOnce(new Error('Bounds must be within visible screen space'))
+      .mockResolvedValueOnce({ id: 10, width: 500, height: 812, left: 0, top: 0 } as chrome.windows.Window);
+    const manager = new SessionManager();
+    await manager.start();
+
+    await expect(manager.resize({ width: 500, height: 812 })).resolves.toMatchObject({ left: 0, top: 0 });
+    expect(update).toHaveBeenNthCalledWith(2, 10, { width: 500, height: 812, left: 0, top: 0 });
+    update.mockRestore();
+    await manager.stop();
+  });
 });

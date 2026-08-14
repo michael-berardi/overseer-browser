@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   MEETING_HOST_POLICY,
+  connectionActionLabel,
   connectionStatusPresentation,
   formatPopupError,
   isFailedRuntimeReply,
@@ -28,6 +29,12 @@ describe('popup connection status accessibility', () => {
       ariaLive: 'polite',
       ariaAtomic: 'true',
     });
+  });
+
+  it('distinguishes disconnect, reconnect cancellation, and initial connection actions', () => {
+    expect(connectionActionLabel(true, true)).toBe('Disconnect');
+    expect(connectionActionLabel(false, true)).toBe('Stop reconnecting');
+    expect(connectionActionLabel(false, false)).toBe('Connect local host');
   });
 });
 

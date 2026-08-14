@@ -17,7 +17,7 @@ describe('screenshot target selection', () => {
     const blob = { arrayBuffer: async () => png.buffer };
     const query = vi.fn(async () => [{ id: 21, windowId: 7, active: true }]);
     const captureVisibleTab = vi.fn(async () => 'data:image/png;base64,');
-    const executeScript = vi.fn(async () => [{ result: { width: 2, height: 2, devicePixelRatio: 1 } }]);
+    const executeScript = vi.fn(async () => [{ result: { ok: true, value: { width: 2, height: 2, devicePixelRatio: 1 } } }]);
     const canvas = {
       getContext: vi.fn(() => ({ drawImage: vi.fn() })),
       convertToBlob: vi.fn(async (options: { type: string }) => {

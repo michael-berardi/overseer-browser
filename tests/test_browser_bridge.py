@@ -21,6 +21,7 @@ from cli.main import (
     _command_request,
     _materialize_screenshot,
     _serialized_batch_request_bytes,
+    _manifest_paths,
     iter_upload_chunks,
     iter_upload_file_chunks,
     local_health,
@@ -403,6 +404,19 @@ class CLIMappingTests(unittest.TestCase):
             }.issubset(commands)
         )
 
+    def test_macos_manifest_discovery_includes_chrome_for_testing(self) -> None:
+        with (
+            patch("cli.main.sys.platform", "darwin"),
+            patch("cli.main.Path.home", return_value=Path("/Users/test")),
+        ):
+            self.assertEqual(
+                _manifest_paths(),
+                [
+                    Path("/Users/test/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.imploselabs.overseer_browser.json"),
+                    Path("/Users/test/Library/Application Support/Google/Chrome for Testing/NativeMessagingHosts/com.imploselabs.overseer_browser.json"),
+                ],
+            )
+
     def test_status_combines_local_and_extension_readiness(self) -> None:
         extension = {
             "version": 1,
@@ -738,6 +752,7 @@ class InstallerContractTests(unittest.TestCase):
         self.assertIn("# OverSeer Browser managed launcher", script)
         self.assertIn('Preserved unrelated CLI launcher', script)
         self.assertIn('rm -rf "$HOST_DIR" "$CLI_DIR"', script)
+        self.assertIn('"$ROOT/scripts/generate_manifest.py" "$TESTING_MANIFEST" "$HOST_PATH"', script)
 
     def test_installed_cli_has_private_native_host_import_fallback(self) -> None:
         source = (Path(__file__).resolve().parents[1] / "cli" / "main.py").read_text(encoding="utf-8")
