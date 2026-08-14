@@ -55,7 +55,7 @@ The equivalent installed CLI commands are `overseer-browser install`, `overseer-
 3. Start a session. A dedicated Agent Window is created by default.
 4. Use the CLI commands below to inspect the session, create or select a tab, navigate, observe, and perform visible actions.
 5. To use a normal user tab, open that tab and click **Borrow active tab** in the extension popup. Return it before ending work, or stop the session and verify it was returned.
-6. Disconnect when finished. The extension reconnects only when enabled and the local host is available; no remote connection is attempted.
+6. End agent work in a `finally`/cleanup path with `sessions stop`, confirm borrowed tabs were returned, then disconnect. The extension reconnects only when enabled and the local host is available; no remote connection is attempted.
 
 ### CLI surface
 
@@ -112,13 +112,19 @@ overseer-browser takeover
 overseer-browser cancel <request-id>
 ```
 
-`eval <script>` is an alias for `evaluate <script>` and is intentionally capability-gated. `upload` accepts 1–16 files with an aggregate 8 MiB/32-chunk limit. `console` captures a bounded in-page console buffer only after an explicit start; `network read` returns bounded Resource Timing metadata with query strings, fragments, and response bodies omitted. `batch` executes up to 20 explicit actions sequentially in one local request and is rejected locally when its complete forwarded request would exceed the extension's 512 KiB parser limit. `--json` emits the structured response; `--timeout <seconds>` bounds a request. Automation callers may supply `--request-id <id>` before the command so that a concurrent `cancel <id>` can target the in-flight operation. Commands return stable structured error codes; unsupported debugger-only capabilities are not emulated.
+`eval <script>` is an alias for `evaluate <script>` and is intentionally capability-gated. `upload` accepts 1–16 files with an aggregate 8 MiB/32-chunk limit. At most eight incomplete upload transactions and 32 MiB of incomplete upload bytes are retained; abandoned chunks expire after 60 seconds and disconnect/session cleanup releases them immediately. `console` captures a bounded in-page console buffer only after an explicit start; `network read` returns bounded Resource Timing metadata with query strings, fragments, and response bodies omitted. `batch` accepts up to 20 explicit actions in one local request and is rejected locally when its complete forwarded request would exceed the extension's 512 KiB parser limit. It is sequential by default. An object contract may set `{"stop_on_error":false,"max_parallel":2..8}` for `tabs.list` or read-only `snapshot`, `observe`, and `network.read` actions targeting distinct explicit tab IDs; mutation, duplicate-target, and rollback-ambiguous parallel batches fail before any action starts. `--json` emits the structured response; `--timeout <seconds>` bounds a request. Automation callers may supply `--request-id <id>` before the command so that a concurrent `cancel <id>` can target the in-flight operation.
+
+For multi-agent work, give each agent an explicit tab ID, combine independent reads into a bounded parallel batch, and keep navigation or page mutations sequential per tab. Example:
+
+```sh
+overseer-browser batch '{"actions":[{"command":"observe","params":{"tab_id":101}},{"command":"network.read","params":{"tab_id":102,"limit":50}}],"stop_on_error":false,"max_parallel":2}' --json
+```
 
 `observe` and ref-based actions traverse the top document, open shadow roots, and visible same-origin nested frames; cross-origin frame DOM remains opaque. For direct calls through the page's current dialog globals, `click`, Enter, and Space acknowledge synchronous alerts, safely dismiss confirmations/prompts, and return bounded dialog metadata. A page-retained reference to a native dialog function predating the guard cannot be intercepted without debugger privileges; use OverSeer cloud/desktop tooling for that unsupported case.
 
 Run `overseer-browser --help` for the installed command list. Commands return structured errors with stable error codes; unsupported debugger-only capabilities are not emulated.
 
-`health` checks the installed local runtime without requiring an extension connection. `status` additionally queries the connected extension and reports its identity, evaluation capability, current selected-origin access, takeover state, and sessions; automation readiness should use `status --json`.
+`health` checks the installed local runtime without requiring an extension connection. `status` additionally queries the connected extension and reports its identity, evaluation capability, current selected-origin access, takeover state, sessions, in-flight request count, and retained incomplete-upload count/bytes; automation readiness and cleanup monitoring should use `status --json`.
 
 The CLI request contract is documented in [PROTOCOL.md](PROTOCOL.md). The CLI token authenticates the local client to the host; it is stripped before a request is sent to the extension.
 

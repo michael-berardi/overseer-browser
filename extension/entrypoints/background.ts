@@ -25,15 +25,29 @@ const COMMAND_TIMEOUT_MS = 45_000;
 const NATIVE_HANDSHAKE_TIMEOUT_MS = 5_000;
 const NAVIGATION_TIMEOUT_MS = 15_000;
 const MAX_BATCH_ACTIONS = 20;
+const MAX_PARALLEL_BATCH_ACTIONS = 8;
 const MAX_UPLOAD_FILES = 16;
 const MAX_UPLOAD_CHUNKS = 32;
 const MAX_UPLOAD_CHUNK_BYTES = 256 * 1024;
-export const MAX_INCOMPLETE_UPLOADS = 32;
+export const MAX_INCOMPLETE_UPLOADS = 8;
+export const MAX_INCOMPLETE_UPLOAD_BYTES = 32 * 1024 * 1024;
+const UPLOAD_TTL_MS = 60_000;
 const MEETING_RETRY_MS = 5_000;
 const CONSOLE_LEASE_MS = 60_000;
 const CAPABILITY_STORAGE_KEY = 'overseer.capability.evaluate.v1';
 const CONNECTION_STORAGE_KEY = 'overseer.connection.enabled.v1';
 const TAKEOVER_STORAGE_KEY = 'overseer.takeover.requested.v1';
+const BATCHABLE_COMMANDS: ReadonlySet<Command> = new Set([
+  'windows.resize', 'tabs.list', 'tabs.create', 'tabs.select', 'tabs.close', 'tabs.return',
+  'navigate', 'back', 'forward', 'reload', 'snapshot', 'observe', 'click', 'hover', 'fill',
+  'type', 'select', 'press', 'scroll', 'evaluate', 'console.start', 'console.read',
+  'console.stop', 'network.read', 'screenshot.visible', 'screenshot.element',
+]);
+const PARALLEL_BATCH_COMMANDS: ReadonlySet<Command> = new Set([
+  'tabs.list', 'snapshot', 'observe', 'network.read',
+]);
+type TimerHandle = number | NodeJS.Timeout;
+
 
 interface InflightRequest {
   cancelled: boolean;
@@ -42,6 +56,22 @@ interface InflightRequest {
   cancelSignal?: Promise<never>;
   cancelSignalReject?: (error: DispatchError) => void;
 }
+interface NormalizedDispatchError {
+  code: string;
+  message: string;
+  reason?: string;
+  fallback?: string;
+}
+
+interface BatchAction {
+  command: Command;
+  params?: Record<string, unknown>;
+}
+
+type BatchResult =
+  | { ok: true; result: unknown }
+  | { ok: false; error: NormalizedDispatchError };
+
 
 interface UploadFilePayload {
   filename: string;
@@ -71,6 +101,18 @@ interface UploadState {
 
 export class UploadAssembler {
   private readonly uploads = new Map<string, UploadState>();
+  private retainedByteCount = 0;
+  private pruneTimer: TimerHandle | undefined;
+  constructor(private readonly uploadTtlMs = UPLOAD_TTL_MS) {}
+
+
+  get size(): number {
+    return this.uploads.size;
+  }
+
+  get retainedBytes(): number {
+    return this.retainedByteCount;
+  }
   addChunk(params: Record<string, unknown>, tabId = -1, ref = typeof params.ref === 'string' ? params.ref : ''):
     | { complete: false; received: number; total: number; filesReceived: number; fileTotal: number }
     | { complete: true; files: UploadFilePayload[] } {
@@ -112,16 +154,18 @@ export class UploadAssembler {
         files: [],
         bytes: 0,
         chunks: 0,
-        expiresAt: Date.now() + 60_000,
+        expiresAt: Date.now() + this.uploadTtlMs,
       };
       this.uploads.set(uploadId, state);
     }
     if (state.tabId !== tabId || state.ref !== ref) {
-      this.uploads.delete(uploadId);
+      this.deleteUpload(uploadId);
+      this.schedulePrune();
       throw new DispatchError('upload_context_mismatch', 'Upload continuation does not match its original tab and element.');
     }
     if (state.fileTotal !== fileTotal || fileIndex !== state.nextFileIndex) {
-      this.uploads.delete(uploadId);
+      this.deleteUpload(uploadId);
+      this.schedulePrune();
       throw new DispatchError('invalid_upload_order', 'Upload chunks and files must arrive in declared order.');
     }
     state.current ??= { filename, mimeType, total, nextIndex: 0, chunks: [] };
@@ -132,20 +176,30 @@ export class UploadAssembler {
       current.total !== total ||
       current.nextIndex !== index
     ) {
-      this.uploads.delete(uploadId);
+      this.deleteUpload(uploadId);
+      this.schedulePrune();
       throw new DispatchError('invalid_upload_order', 'Upload chunks and metadata must remain stable and arrive in order.');
     }
+    if (this.retainedByteCount + decoded.byteLength > MAX_INCOMPLETE_UPLOAD_BYTES) {
+      this.deleteUpload(uploadId);
+      this.schedulePrune();
+      throw new DispatchError('upload_memory_limit', 'Incomplete uploads reached the 32 MiB memory limit; retry after active uploads finish.');
+    }
     current.chunks.push(decoded);
+    this.retainedByteCount += decoded.byteLength;
     current.nextIndex += 1;
     state.bytes += decoded.byteLength;
     state.chunks += 1;
-    state.expiresAt = Date.now() + 60_000;
+    state.expiresAt = Date.now() + this.uploadTtlMs;
+    this.schedulePrune();
     if (state.bytes > 8 * 1024 * 1024) {
-      this.uploads.delete(uploadId);
+      this.deleteUpload(uploadId);
+      this.schedulePrune();
       throw new DispatchError('upload_too_large', 'Upload file set exceeds the 8 MiB limit.');
     }
     if (state.chunks > MAX_UPLOAD_CHUNKS) {
-      this.uploads.delete(uploadId);
+      this.deleteUpload(uploadId);
+      this.schedulePrune();
       throw new DispatchError('upload_too_many_chunks', `Upload file sets are limited to ${MAX_UPLOAD_CHUNKS} chunks.`);
     }
     if (current.nextIndex < current.total) {
@@ -175,16 +229,41 @@ export class UploadAssembler {
         fileTotal,
       };
     }
-    this.uploads.delete(uploadId);
+    this.deleteUpload(uploadId);
+    this.schedulePrune();
     return { complete: true, files: state.files };
   }
 
   clear(): void {
     this.uploads.clear();
+    this.retainedByteCount = 0;
+    clearTimeout(this.pruneTimer);
+    this.pruneTimer = undefined;
   }
   private prune(): void {
     const now = Date.now();
-    for (const [key, state] of this.uploads) if (state.expiresAt <= now) this.uploads.delete(key);
+    for (const [key, state] of this.uploads) {
+      if (state.expiresAt <= now) this.deleteUpload(key);
+    }
+    this.schedulePrune();
+  }
+
+  private deleteUpload(uploadId: string): void {
+    const state = this.uploads.get(uploadId);
+    if (!state) return;
+    this.retainedByteCount = Math.max(0, this.retainedByteCount - state.bytes);
+    this.uploads.delete(uploadId);
+  }
+
+  private schedulePrune(): void {
+    if (this.pruneTimer !== undefined) clearTimeout(this.pruneTimer);
+    this.pruneTimer = undefined;
+    if (this.uploads.size === 0) return;
+    const nextExpiry = Math.min(...[...this.uploads.values()].map((state) => state.expiresAt));
+    this.pruneTimer = setTimeout(() => {
+      this.pruneTimer = undefined;
+      this.prune();
+    }, Math.max(1, nextExpiry - Date.now()));
   }
 }
 function decodeBase64(value: string): Uint8Array {
@@ -207,10 +286,10 @@ const uploads = new UploadAssembler();
 const inflight = new Map<string, InflightRequest>();
 let nativeEnabled = false;
 let nativePort: chrome.runtime.Port | null = null;
-let nativeHandshakeTimer: ReturnType<typeof setTimeout> | undefined;
-let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+let nativeHandshakeTimer: TimerHandle | undefined;
+let reconnectTimer: TimerHandle | undefined;
 let reconnectDelayMs = 250;
-let meetingRetryTimer: ReturnType<typeof setTimeout> | undefined;
+let meetingRetryTimer: TimerHandle | undefined;
 let connected = false;
 let lastNativeError: { code: string; message: string; reason?: string; fallback?: string } | null = null;
 let evaluateEnabled = false;
@@ -249,7 +328,7 @@ const COMMAND_PARAM_KEYS: Record<Command, readonly string[]> = {
   'screenshot.visible': ['tab_id', 'format'],
   'screenshot.element': ['tab_id', 'ref', 'format'],
   upload: ['tab_id', 'ref', 'upload_id', 'index', 'total', 'chunk', 'filename', 'mime_type', 'file_index', 'file_total'],
-  batch: ['actions', 'stop_on_error'],
+  batch: ['actions', 'stop_on_error', 'max_parallel'],
   'console.start': ['tab_id', 'clear'],
   'console.read': ['tab_id', 'clear'],
   'console.stop': ['tab_id', 'clear'],
@@ -637,6 +716,11 @@ export async function dispatch(request: NativeRequest, state: InflightRequest): 
       takeover_requested: takeoverRequested,
       permissions: await getPermissionState(currentUrl),
       sessions: await sessions.list(),
+      runtime: {
+        inflight_requests: Math.max(0, inflight.size - 1),
+        incomplete_uploads: uploads.size,
+        incomplete_upload_bytes: uploads.retainedBytes,
+      },
     };
   }
   if (command === 'sessions.start') return sessions.start(optionalString(params, 'name'));
@@ -764,7 +848,7 @@ function isPausedCommand(command: Command): boolean {
 }
 
 async function ownedTab(params: Record<string, unknown>): Promise<number> {
-  const requested = optionalInteger(params, 'tab_id');
+  const requested = optionalTabId(params);
   const tabId = requested ?? (await sessions.getSelectedTabId());
   if (!(await sessions.ownsTab(tabId))) throw new DispatchError('tab_not_owned', 'Target tab is not owned or borrowed by the active session.');
   return tabId;
@@ -1012,47 +1096,94 @@ async function runBatch(params: Record<string, unknown>, state: InflightRequest)
   if (params.stop_on_error !== undefined && typeof params.stop_on_error !== 'boolean') {
     throw new DispatchError('invalid_batch', 'stop_on_error must be boolean when supplied.');
   }
-  const batchable = new Set<Command>([
-    'windows.resize', 'tabs.list', 'tabs.create', 'tabs.select', 'tabs.close', 'tabs.return',
-    'navigate', 'back', 'forward', 'reload', 'snapshot', 'observe', 'click', 'hover', 'fill',
-    'type', 'select', 'press', 'scroll', 'evaluate', 'console.start', 'console.read',
-    'console.stop', 'network.read', 'screenshot.visible', 'screenshot.element',
-  ]);
-  const results: Array<{ ok: true; result: unknown } | { ok: false; error: ReturnType<typeof normalizeError> }> = [];
-  for (let index = 0; index < rawActions.length; index += 1) {
-    assertNotCancelled(state);
-    const rawAction = rawActions[index];
+  const maxParallel = params.max_parallel === undefined
+    ? 1
+    : readInteger(params, 'max_parallel', 1, MAX_PARALLEL_BATCH_ACTIONS);
+  const actions = rawActions.map((rawAction, index): BatchAction => {
     if (!rawAction || typeof rawAction !== 'object' || Array.isArray(rawAction)) {
       throw new DispatchError('invalid_batch', `Batch action ${index} must be an object.`);
     }
     const value = rawAction as Record<string, unknown>;
-    if (typeof value.command !== 'string' || !COMMANDS.includes(value.command as Command) || !batchable.has(value.command as Command)) {
+    if (typeof value.command !== 'string' || !COMMANDS.includes(value.command as Command) || !BATCHABLE_COMMANDS.has(value.command as Command)) {
       throw new DispatchError('invalid_batch_command', `Batch action ${index} uses an unsupported command.`);
     }
     if (value.params !== undefined && (!value.params || typeof value.params !== 'object' || Array.isArray(value.params))) {
       throw new DispatchError('invalid_batch', `Batch action ${index} params must be an object.`);
     }
+    return {
+      command: value.command as Command,
+      ...(value.params === undefined ? {} : { params: value.params as Record<string, unknown> }),
+    };
+  });
+  if (maxParallel > 1) {
+    if (params.stop_on_error !== false) {
+      throw new DispatchError('invalid_batch_parallel', 'Parallel batches require stop_on_error=false because already-started actions cannot be rolled back.');
+    }
+    const targets = new Set<number | string>();
+    for (const [index, action] of actions.entries()) {
+      if (!PARALLEL_BATCH_COMMANDS.has(action.command)) {
+        throw new DispatchError('invalid_batch_parallel', `Batch action ${index} is not safe for parallel execution.`);
+      }
+      const target = action.command === 'tabs.list'
+        ? 'tabs.list'
+        : readInteger(action.params ?? {}, 'tab_id', 1);
+      if (targets.has(target)) {
+        throw new DispatchError('invalid_batch_parallel', 'Parallel batch actions must target distinct tabs and may include tabs.list only once.');
+      }
+      targets.add(target);
+    }
+  }
+
+  const execute = async (action: BatchAction, index: number): Promise<BatchResult> => {
+    assertNotCancelled(state);
     try {
       const result = await dispatchWithinDeadline({
         version: 1,
         kind: 'request',
         request_id: `batch-${index}`,
-        command: value.command,
-        params: value.params as Record<string, unknown> | undefined,
+        command: action.command,
+        params: action.params,
       }, state);
       assertNotCancelled(state);
-      results.push({ ok: true, result });
+      return { ok: true, result };
     } catch (error) {
       if (state.timedOut) throw timeoutError();
       if (state.cancelled) throw cancellationError();
-      results.push({ ok: false, error: normalizeError(error) });
-      if (params.stop_on_error !== false) break;
+      return { ok: false, error: normalizeError(error) };
     }
-    if (!isBoundedNativeFrame(responseOk('batch', { results }))) {
-      throw new DispatchError('batch_result_too_large', 'Batch results exceed the native response limit.', 'Use fewer actions or smaller observation limits.');
+  };
+
+  let results: BatchResult[];
+  if (maxParallel === 1) {
+    results = [];
+    for (const [index, action] of actions.entries()) {
+      const result = await execute(action, index);
+      results.push(result);
+      if (!result.ok && params.stop_on_error !== false) break;
+      if (!isBoundedNativeFrame(responseOk('batch', { results }))) {
+        throw new DispatchError('batch_result_too_large', 'Batch results exceed the native response limit.', 'Use fewer actions or smaller observation limits.');
+      }
     }
+  } else {
+    results = new Array<BatchResult>(actions.length);
+    let nextIndex = 0;
+    const worker = async (): Promise<void> => {
+      while (nextIndex < actions.length) {
+        const index = nextIndex;
+        nextIndex += 1;
+        results[index] = await execute(actions[index]!, index);
+      }
+    };
+    await Promise.all(Array.from(
+      { length: Math.min(maxParallel, actions.length) },
+      () => worker(),
+    ));
   }
-  return { results, completed: results.length, requested: rawActions.length };
+  const batchResult = { results, completed: results.length, requested: actions.length, max_parallel: maxParallel };
+  if (!isBoundedNativeFrame(responseOk('batch', batchResult))) {
+    throw new DispatchError('batch_result_too_large', 'Batch results exceed the native response limit.', 'Use fewer actions or smaller observation limits.');
+  }
+  return batchResult;
 }
 
 function popupTabDetails(tab: chrome.tabs.Tab, session?: { ownedTabIds: number[]; borrowedTabIds: number[] }): Record<string, unknown> {
@@ -1160,7 +1291,7 @@ export async function dispatchWithinDeadline(request: NativeRequest, state: Infl
   return Promise.race([action, cancellationSignal(state)]);
 }
 
-function normalizeError(error: unknown): { code: string; message: string; reason?: string; fallback?: string } {
+function normalizeError(error: unknown): NormalizedDispatchError {
   if (error instanceof DispatchError || error instanceof SessionError || error instanceof AutomationError || error instanceof ScreenshotError) {
     return { code: error.code, message: error.message, fallback: error.fallback };
   }
@@ -1205,8 +1336,13 @@ function optionalInteger(params: Record<string, unknown>, key: string): number |
   if (value === undefined) return undefined;
   return readInteger(params, key, -10_000, 10_000);
 }
+
+function optionalTabId(params: Record<string, unknown>): number | undefined {
+  if (params.tab_id === undefined) return undefined;
+  return readInteger(params, 'tab_id', 1);
+}
 export async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, onTimeout?: () => void): Promise<T> {
-  let timeout: ReturnType<typeof setTimeout> | undefined;
+  let timeout: TimerHandle | undefined;
   try {
     return await Promise.race([
       promise,

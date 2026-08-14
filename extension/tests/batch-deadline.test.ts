@@ -21,8 +21,11 @@ function storageArea(store: Record<string, unknown>) {
 
 async function loadBackground() {
   const browserStub = {
-    storage: { local: storageArea({}), session: storageArea({}) },
-    permissions: { contains: async () => true },
+    storage: {
+      local: storageArea({ 'overseer.automation.origins.v1': ['https://example.test/*'] }),
+      session: storageArea({}),
+    },
+    permissions: { contains: vi.fn(async () => true) },
     tabs: {
       onUpdated: event(),
       onRemoved: event(),
@@ -95,4 +98,90 @@ describe('batch request deadlines', () => {
     expect(query).toHaveBeenCalledTimes(1);
     vi.useRealTimers();
   });
+
+  it('runs bounded read-only actions concurrently across distinct tabs', async () => {
+    const { background, browserStub } = await loadBackground();
+    await background.dispatch({ version: 1, kind: 'request', request_id: 'start', command: 'sessions.start' }, { cancelled: false });
+    const gates = Array.from(
+      { length: 4 },
+      () => Promise.withResolvers<chrome.scripting.InjectionResult<unknown>[]>(),
+    );
+    let started = 0;
+    browserStub.scripting.executeScript.mockImplementation(() => {
+      const gate = gates[started];
+      started += 1;
+      return gate.promise;
+    });
+    const batch = background.dispatch({
+      version: 1,
+      kind: 'request',
+      request_id: 'parallel-batch',
+      command: 'batch',
+      params: {
+        stop_on_error: false,
+        max_parallel: 4,
+        actions: [1_935_869_450, 1_935_869_451, 1_935_869_452, 1_935_869_453].map((tabId) => ({
+          command: 'network.read',
+          params: { tab_id: tabId, limit: 10 },
+        })),
+      },
+    }, { cancelled: false });
+    let earlyFailure: unknown;
+    void batch.catch((error: unknown) => {
+      earlyFailure = error;
+    });
+    await vi.waitFor(() => {
+      if (earlyFailure) throw earlyFailure;
+      expect(started).toBe(4);
+    });
+    for (const gate of gates) gate.resolve([{ result: [] }]);
+
+    await expect(batch).resolves.toMatchObject({
+      completed: 4,
+      requested: 4,
+      max_parallel: 4,
+      results: [
+        { ok: true },
+        { ok: true },
+        { ok: true },
+        { ok: true },
+      ],
+    });
+  });
+
+  it('rejects unsafe or overlapping parallel batch actions before execution', async () => {
+    const { background } = await loadBackground();
+    await background.dispatch({ version: 1, kind: 'request', request_id: 'start', command: 'sessions.start' }, { cancelled: false });
+    const state = { cancelled: false };
+
+    await expect(background.dispatch({
+      version: 1,
+      kind: 'request',
+      request_id: 'overlap',
+      command: 'batch',
+      params: {
+        stop_on_error: false,
+        max_parallel: 2,
+        actions: [
+          { command: 'snapshot', params: { tab_id: 7 } },
+          { command: 'observe', params: { tab_id: 7 } },
+        ],
+      },
+    }, state)).rejects.toMatchObject({ code: 'invalid_batch_parallel' });
+    await expect(background.dispatch({
+      version: 1,
+      kind: 'request',
+      request_id: 'mutation',
+      command: 'batch',
+      params: {
+        stop_on_error: false,
+        max_parallel: 2,
+        actions: [
+          { command: 'click', params: { tab_id: 7, ref: 'osr-button' } },
+          { command: 'network.read', params: { tab_id: 8 } },
+        ],
+      },
+    }, state)).rejects.toMatchObject({ code: 'invalid_batch_parallel' });
+  });
+
 });
