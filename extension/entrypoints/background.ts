@@ -220,6 +220,53 @@ let meetingStateReady: Promise<void> = Promise.resolve();
 let meetingPersistChain: Promise<void> = Promise.resolve();
 let backgroundStateReady: Promise<void> = Promise.resolve();
 
+const COMMAND_PARAM_KEYS: Record<Command, readonly string[]> = {
+  'health.status': [],
+  'sessions.start': ['name'],
+  'sessions.stop': [],
+  'sessions.list': [],
+  'windows.resize': ['width', 'height', 'left', 'top'],
+  'tabs.list': [],
+  'tabs.create': ['url'],
+  'tabs.select': ['tab_id'],
+  'tabs.close': ['tab_id'],
+  'tabs.borrow': ['tab_id'],
+  'tabs.return': ['tab_id'],
+  navigate: ['tab_id', 'url'],
+  back: ['tab_id'],
+  forward: ['tab_id'],
+  reload: ['tab_id'],
+  snapshot: ['tab_id', 'max_nodes'],
+  observe: ['tab_id', 'max_nodes'],
+  click: ['tab_id', 'ref'],
+  hover: ['tab_id', 'ref'],
+  fill: ['tab_id', 'ref', 'value'],
+  type: ['tab_id', 'ref', 'text'],
+  select: ['tab_id', 'ref', 'value'],
+  press: ['tab_id', 'ref', 'key', 'code'],
+  scroll: ['tab_id', 'ref', 'x', 'y'],
+  evaluate: ['tab_id', 'source'],
+  'screenshot.visible': ['tab_id', 'format'],
+  'screenshot.element': ['tab_id', 'ref', 'format'],
+  upload: ['tab_id', 'ref', 'upload_id', 'index', 'total', 'chunk', 'filename', 'mime_type', 'file_index', 'file_total'],
+  batch: ['actions', 'stop_on_error'],
+  'console.start': ['tab_id', 'clear'],
+  'console.read': ['tab_id', 'clear'],
+  'console.stop': ['tab_id', 'clear'],
+  'network.read': ['tab_id', 'limit'],
+  'takeover.prompt': [],
+  cancel: ['request_id'],
+  'capture.start': [],
+  'capture.stop': [],
+};
+
+export function assertKnownCommandParams(command: Command, params: Record<string, unknown>): void {
+  const allowed = COMMAND_PARAM_KEYS[command];
+  if (Object.keys(params).some((key) => !allowed.includes(key))) {
+    throw new DispatchError('invalid_params', 'The request contains unsupported parameters for this command.');
+  }
+}
+
 async function restoreBackgroundState(): Promise<void> {
   try {
     const stored = (await browser.storage.local.get([CONNECTION_STORAGE_KEY]))[CONNECTION_STORAGE_KEY];
@@ -277,8 +324,8 @@ function startBackground(): void {
     }
     if (value.kind === 'set_connection' && typeof value.enabled === 'boolean') {
       void setConnectionEnabled(value.enabled)
-        .then(() => sendResponse({ enabled: nativeEnabled, connected }))
-        .catch(() => sendResponse({ enabled: nativeEnabled, connected }));
+        .then(() => sendResponse({ enabled: nativeEnabled, native_enabled: nativeEnabled, connected, native_error: lastNativeError }))
+        .catch(() => sendResponse({ enabled: nativeEnabled, native_enabled: nativeEnabled, connected, native_error: lastNativeError }));
       return true;
     }
     if (value.kind === 'popup_state') {
@@ -564,6 +611,7 @@ export async function dispatch(request: NativeRequest, state: InflightRequest): 
   if (!COMMANDS.includes(request.command as Command)) throw new DispatchError('unsupported_command', `Unsupported command: ${request.command}`, 'Use health.status or help from the CLI.');
   const command = request.command as Command;
   const params = request.params ?? {};
+  assertKnownCommandParams(command, params);
   if (command === 'cancel') {
     const target = readString(params, 'request_id', 128);
     const targetState = inflight.get(target);
@@ -1025,6 +1073,7 @@ async function popupState(): Promise<unknown> {
   const session = sessionsState[0];
   return {
     connected,
+    native_enabled: nativeEnabled,
     native_error: lastNativeError,
     evaluate_enabled: evaluateEnabled,
     takeover_requested: takeoverRequested,

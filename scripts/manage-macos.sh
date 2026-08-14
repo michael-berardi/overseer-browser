@@ -25,6 +25,7 @@ fi
 CLI_FALLBACK="$CLI_DIR/overseer-browser"
 TOKEN_PATH="$APP_SUPPORT/token"
 MANIFEST="$HOME/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.imploselabs.overseer_browser.json"
+TESTING_MANIFEST="$HOME/Library/Application Support/Google/Chrome for Testing/NativeMessagingHosts/com.imploselabs.overseer_browser.json"
 CHROME_EXTENSIONS_PAGE="chrome://extensions"
 
 say() { printf '%s\n' "$*"; }
@@ -101,6 +102,7 @@ EOF
   install_manager
   install_cli_launcher
   "$PYTHON" "$ROOT/scripts/generate_manifest.py" "$MANIFEST" "$HOST_PATH"
+  "$PYTHON" "$ROOT/scripts/generate_manifest.py" "$TESTING_MANIFEST" "$HOST_PATH"
 }
 
 
@@ -123,6 +125,7 @@ if [ -r "$cli_launcher_path_file" ]; then
   [ -z "$saved_cli_launcher" ] || cli_launcher="$saved_cli_launcher"
 fi
 manifest="$HOME/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.imploselabs.overseer_browser.json"
+testing_manifest="$HOME/Library/Application Support/Google/Chrome for Testing/NativeMessagingHosts/com.imploselabs.overseer_browser.json"
 source_root_file="$app_support/source-root"
 
 status() {
@@ -148,7 +151,7 @@ uninstall() {
   elif [ -e "$cli_launcher" ]; then
     printf 'Preserved unrelated CLI launcher: %s\n' "$cli_launcher"
   fi
-  rm -f "$manifest" "$host_path" "$app_support/token" "$source_root_file" "$cli_launcher_path_file"
+  rm -f "$manifest" "$testing_manifest" "$host_path" "$app_support/token" "$source_root_file" "$cli_launcher_path_file"
   rm -rf "$app_support/native_host" "$app_support/cli" "$app_support/scripts"
   printf 'Removed native host and manifest\n'
 }
@@ -233,6 +236,7 @@ install_or_update() {
   install_host
   say "Installed $HOST_PATH"
   say "Native messaging manifest: $MANIFEST"
+  say "Chrome for Testing native messaging manifest: $TESTING_MANIFEST"
   reload_chrome
 }
 
@@ -242,7 +246,7 @@ uninstall() {
   elif [ -e "$CLI_LAUNCHER" ]; then
     say "Preserved unrelated CLI launcher: $CLI_LAUNCHER"
   fi
-  rm -f "$MANIFEST" "$HOST_PATH" "$TOKEN_PATH" "$SOURCE_ROOT_PATH" "$CLI_LAUNCHER_PATH"
+  rm -f "$MANIFEST" "$TESTING_MANIFEST" "$HOST_PATH" "$TOKEN_PATH" "$SOURCE_ROOT_PATH" "$CLI_LAUNCHER_PATH"
   rm -rf "$HOST_DIR" "$CLI_DIR" "$MANAGER_DIR"
   say "Removed native host and manifest"
   say "If Chrome still shows the extension, remove/reload it from $CHROME_EXTENSIONS_PAGE."

@@ -42,6 +42,19 @@ export class SessionManager {
     }
   }
 
+  private async discardClosedAgentWindow(): Promise<void> {
+    const checkedState = this.state;
+    if (!checkedState) return;
+    try {
+      await browser.windows.get(checkedState.agentWindowId);
+    } catch {
+      if (this.state?.sessionId !== checkedState.sessionId) return;
+      this.state = null;
+      await this.persist();
+      if (this.state) await this.persist();
+    }
+  }
+
   private serializeLifecycle<T>(operation: () => Promise<T>): Promise<T> {
     const result = this.lifecycle.then(operation, operation);
     this.lifecycle = result.then(() => undefined, () => undefined);
@@ -67,10 +80,15 @@ export class SessionManager {
     const tabs = await browser.tabs.query({ windowId: state.agentWindowId });
     const ids = tabs.map((tab) => tab.id).filter((id): id is number => id !== undefined);
     state.ownedTabIds = ids;
+    const activeOwnedTabId = tabs.find((tab) => tab.active && tab.id !== undefined)?.id;
     if (
       state.selectedTabId === undefined ||
       (!state.ownedTabIds.includes(state.selectedTabId) && !state.borrowedTabIds.includes(state.selectedTabId))
-    ) state.selectedTabId = ids[0] ?? state.borrowedTabIds[0];
+    ) {
+      state.selectedTabId = activeOwnedTabId ?? ids[0] ?? state.borrowedTabIds[0];
+    } else if (state.ownedTabIds.includes(state.selectedTabId) && activeOwnedTabId !== undefined) {
+      state.selectedTabId = activeOwnedTabId;
+    }
     await this.persist();
     return tabs;
   }
@@ -78,6 +96,7 @@ export class SessionManager {
   async start(name?: string): Promise<SessionSummary> {
     return this.serializeLifecycle(async () => {
       await this.load();
+      await this.discardClosedAgentWindow();
       const requestedName = normalizeSessionName(name);
       if (this.state) {
         if (requestedName !== undefined && this.state.name !== requestedName) {
@@ -90,7 +109,7 @@ export class SessionManager {
         await this.refreshAgentTabs();
         return { ...this.state, connected: true };
       }
-      const agentWindow = await browser.windows.create({ focused: true, type: 'normal', url: 'about:blank' });
+      const agentWindow = await browser.windows.create({ focused: true, type: 'normal', url: 'about:blank', left: 0, top: 0 });
       if (!agentWindow || agentWindow.id === undefined) throw new Error('Chrome did not return an Agent Window id.');
       const tabIds = (agentWindow.tabs ?? []).map((tab) => tab.id).filter((id): id is number => id !== undefined);
       this.state = {
@@ -126,6 +145,7 @@ export class SessionManager {
 
   async list(): Promise<SessionSummary[]> {
     await this.load();
+    await this.discardClosedAgentWindow();
     if (!this.state) return [];
     await this.refreshAgentTabs();
     return [{ ...this.state, connected: true }];
@@ -140,7 +160,18 @@ export class SessionManager {
         updates[key as keyof chrome.windows.UpdateInfo] = value as never;
       }
     }
-    return browser.windows.update(state.agentWindowId, updates);
+    try {
+      return await browser.windows.update(state.agentWindowId, updates);
+    } catch {
+      if (updates.left !== undefined || updates.top !== undefined) {
+        throw new SessionError('window_resize_failed', 'The Agent Window could not be resized.', 'Move the dedicated window onto a visible display and retry.');
+      }
+      try {
+        return await browser.windows.update(state.agentWindowId, { ...updates, left: 0, top: 0 });
+      } catch {
+        throw new SessionError('window_resize_failed', 'The Agent Window could not be resized or recovered on the primary display.', 'Disable window-manager rules for the Agent Window, move it onto a visible display, and retry.');
+      }
+    }
   }
 
   async listTabs(): Promise<Browser.tabs.Tab[]> {
@@ -181,21 +212,31 @@ export class SessionManager {
   }
 
   async closeTab(tabId: number): Promise<{ closed: boolean }> {
-    const state = await this.requireState();
-    if (!(await this.ownsTab(tabId))) throw new SessionError('tab_not_owned', 'Tab is not owned or borrowed by this session.');
-    if (state.borrowedTabIds.includes(tabId)) {
-      throw new SessionError(
-        'borrowed_tab_close_forbidden',
-        'Borrowed user tabs cannot be closed by the agent.',
-        'Return the borrowed tab, or close it yourself in the browser.',
-      );
-    }
-    await browser.tabs.remove(tabId);
-    state.ownedTabIds = state.ownedTabIds.filter((id) => id !== tabId);
-    state.borrowedTabIds = state.borrowedTabIds.filter((id) => id !== tabId);
-    if (state.selectedTabId === tabId) state.selectedTabId = state.ownedTabIds[0] ?? state.borrowedTabIds[0];
-    await this.persist();
-    return { closed: true };
+    return this.serializeLifecycle(async () => {
+      const state = await this.requireState();
+      await this.refreshAgentTabs();
+      if (!(await this.ownsTab(tabId))) throw new SessionError('tab_not_owned', 'Tab is not owned or borrowed by this session.');
+      if (state.borrowedTabIds.includes(tabId)) {
+        throw new SessionError(
+          'borrowed_tab_close_forbidden',
+          'Borrowed user tabs cannot be closed by the agent.',
+          'Return the borrowed tab, or close it yourself in the browser.',
+        );
+      }
+      if (state.ownedTabIds.length <= 1) {
+        throw new SessionError(
+          'last_owned_tab_close_forbidden',
+          'The last Agent Window tab cannot be closed because it would invalidate the active session.',
+          'Navigate the existing tab or create another owned tab before closing it.',
+        );
+      }
+      await browser.tabs.remove(tabId);
+      state.ownedTabIds = state.ownedTabIds.filter((id) => id !== tabId);
+      state.borrowedTabIds = state.borrowedTabIds.filter((id) => id !== tabId);
+      if (state.selectedTabId === tabId) state.selectedTabId = state.ownedTabIds[0] ?? state.borrowedTabIds[0];
+      await this.persist();
+      return { closed: true };
+    });
   }
 
   async borrowTab(tabId: number): Promise<Browser.tabs.Tab> {
@@ -236,6 +277,7 @@ export class SessionManager {
 
   async requireState(): Promise<SessionState> {
     await this.load();
+    await this.discardClosedAgentWindow();
     if (!this.state) throw new SessionError('session_required', 'Start a browser session before using this command.');
     return this.state;
   }
@@ -270,6 +312,17 @@ export class SessionManager {
 
   async getSelectedTabId(): Promise<number> {
     const state = await this.requireState();
+    if (state.selectedTabId !== undefined && state.borrowedTabIds.includes(state.selectedTabId) && await this.ownsTab(state.selectedTabId)) {
+      return state.selectedTabId;
+    }
+    const [activeOwnedTab] = await browser.tabs.query({ windowId: state.agentWindowId, active: true });
+    if (activeOwnedTab?.id !== undefined && await this.ownsTab(activeOwnedTab.id)) {
+      if (state.selectedTabId !== activeOwnedTab.id) {
+        state.selectedTabId = activeOwnedTab.id;
+        await this.persist();
+      }
+      return activeOwnedTab.id;
+    }
     if (state.selectedTabId !== undefined && await this.ownsTab(state.selectedTabId)) return state.selectedTabId;
     const tabs = await this.listTabs();
     const fallback = tabs.find((tab) => tab.id !== undefined)?.id;

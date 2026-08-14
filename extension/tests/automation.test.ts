@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { isBoundedUpload, runInIsolatedWorld, runPageEvaluation, snapshotPriorityForNode, stableRefForPath } from '../src/automation';
+import { installDialogGuards, isBoundedUpload, runInIsolatedWorld, runPageEvaluation, snapshotPriorityForNode, stableRefForPath } from '../src/automation';
 
 const uploadBase = {
   kind: 'upload' as const,
@@ -70,10 +70,42 @@ describe('isolated automation contracts', () => {
   });
 
 
-  it('returns a structured error for isolated-world automation failures', async () => {
+  it('returns stable automation errors from the isolated executor', async () => {
+    const executeScript = vi.fn()
+      .mockResolvedValueOnce([{ result: true }])
+      .mockResolvedValueOnce([{ result: { ok: false, error: { code: 'stale_ref', message: 'The element reference is no longer present in the target document.', fallback: 'Observe the page again and retry with a current ref.' } } }])
+      .mockResolvedValueOnce([{ result: [] }]);
+    vi.stubGlobal('chrome', { scripting: { executeScript } });
+
+    await expect(runInIsolatedWorld(7, { kind: 'click', ref: 'osr-stale' })).rejects.toMatchObject({
+      code: 'stale_ref',
+      message: 'The element reference is no longer present in the target document.',
+      fallback: 'Observe the page again and retry with a current ref.',
+    });
+  });
+
+  it('returns bounded dialog results instead of leaving click blocked', async () => {
+    const dialog = { type: 'confirm', message: 'Continue?', response: false };
+    const executeScript = vi.fn()
+      .mockResolvedValueOnce([{ result: true }])
+      .mockResolvedValueOnce([{ result: { ok: true, value: { changed: true } } }])
+      .mockResolvedValueOnce([{ result: [dialog] }]);
+    vi.stubGlobal('chrome', { scripting: { executeScript } });
+
+    await expect(runInIsolatedWorld(7, { kind: 'click', ref: 'osr-confirm' })).resolves.toEqual({
+      changed: true,
+      dialogs: [dialog],
+    });
+    expect(executeScript).toHaveBeenCalledTimes(3);
+  });
+
+  it('rejects missing isolated-world envelopes instead of reporting false success', async () => {
     vi.stubGlobal('chrome', {
       scripting: {
-        executeScript: vi.fn(async () => [{ error: 'Error: Stable ref not found: osr-stale' }]),
+        executeScript: vi.fn()
+          .mockResolvedValueOnce([{ result: true }])
+          .mockResolvedValueOnce([{ result: null }])
+          .mockResolvedValueOnce([{ result: [] }]),
       },
     });
 
@@ -83,22 +115,12 @@ describe('isolated automation contracts', () => {
     });
   });
 
-  it('rejects missing isolated-world results instead of reporting false success', async () => {
-    vi.stubGlobal('chrome', {
-      scripting: {
-        executeScript: vi.fn(async () => [{ result: null }]),
-      },
-    });
-
-    await expect(runInIsolatedWorld(7, { kind: 'click', ref: 'osr-stale' })).rejects.toMatchObject({
-      code: 'automation_failed',
-      message: 'Browser automation failed in the target tab.',
-    });
-  });
   it('returns a structured error for page-world evaluation failures', async () => {
     vi.stubGlobal('chrome', {
       scripting: {
-        executeScript: vi.fn(async () => [{ error: 'Uncaught SyntaxError: secret source' }]),
+        executeScript: vi.fn(async () => [{
+          result: { ok: false, error: { code: 'evaluation_failed', message: 'Page evaluation failed in the target tab.' } },
+        }]),
       },
     });
 
@@ -106,5 +128,88 @@ describe('isolated automation contracts', () => {
       code: 'evaluation_failed',
       message: 'Page evaluation failed in the target tab.',
     });
+  });
+
+  it('rejects non-serializable evaluation results with their stable code', async () => {
+    vi.stubGlobal('chrome', {
+      scripting: {
+        executeScript: vi.fn(async () => [{
+          result: { ok: false, error: { code: 'evaluation_result_invalid', message: 'Page evaluation must return a JSON-serializable value.' } },
+        }]),
+      },
+    });
+
+    await expect(runPageEvaluation(7, '1n')).rejects.toMatchObject({
+      code: 'evaluation_result_invalid',
+      message: 'Page evaluation must return a JSON-serializable value.',
+    });
+  });
+
+
+  it('collects partial frame guards before reporting installation failure', async () => {
+    const executeScript = vi.fn()
+      .mockResolvedValueOnce([{ result: false }])
+      .mockResolvedValueOnce([{ result: [] }]);
+    vi.stubGlobal('chrome', { scripting: { executeScript } });
+
+    await expect(runInIsolatedWorld(7, { kind: 'click', ref: 'osr-action' })).rejects.toMatchObject({
+      code: 'dialog_guard_failed',
+    });
+    expect(executeScript).toHaveBeenCalledTimes(2);
+    expect(executeScript).toHaveBeenNthCalledWith(2, expect.objectContaining({ world: 'MAIN' }));
+  });
+  it('rolls back partially installed dialog guards', () => {
+    const originalAlert = vi.fn();
+    const originalConfirm = vi.fn(() => true);
+    const originalPrompt = vi.fn(() => 'value');
+    const fakeDocument = {
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    };
+    const fakeWindow = {
+      alert: originalAlert,
+      confirm: originalConfirm,
+      prompt: originalPrompt,
+      frames: [],
+      document: fakeDocument,
+    } as unknown as Window;
+    Object.defineProperty(fakeWindow, 'confirm', {
+      value: originalConfirm,
+      configurable: false,
+      writable: false,
+    });
+    vi.stubGlobal('window', fakeWindow);
+
+    expect(installDialogGuards('dialog-test-token')).toBe(false);
+    expect(fakeWindow.alert).toBe(originalAlert);
+    expect((fakeWindow as unknown as Record<string, unknown>)['dialog-test-token']).toBeUndefined();
+    expect(fakeDocument.removeEventListener).toHaveBeenCalledWith('dialog-test-token', expect.any(Function));
+  });
+
+  it('restores dialog globals from the in-page cleanup signal without extension reinjection', () => {
+    const originalAlert = vi.fn();
+    const originalConfirm = vi.fn(() => true);
+    const originalPrompt = vi.fn(() => 'value');
+    let release!: EventListener;
+    const fakeDocument = {
+      addEventListener: vi.fn((_type: string, listener: EventListener) => {
+        release = listener;
+      }),
+      removeEventListener: vi.fn(),
+    };
+    const fakeWindow = {
+      alert: originalAlert,
+      confirm: originalConfirm,
+      prompt: originalPrompt,
+      frames: [],
+      document: fakeDocument,
+    } as unknown as Window;
+    vi.stubGlobal('window', fakeWindow);
+
+    expect(installDialogGuards('dialog-release-token')).toBe(true);
+    expect(fakeWindow.alert).not.toBe(originalAlert);
+    release({} as Event);
+    expect(fakeWindow.alert).toBe(originalAlert);
+    expect((fakeWindow as unknown as Record<string, unknown>)['dialog-release-token']).toBeDefined();
   });
 });

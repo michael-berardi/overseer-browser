@@ -276,7 +276,12 @@ def _manifest_paths() -> list[Path]:
     if override:
         return [Path(override).expanduser()]
     if sys.platform == "darwin":
-        return [Path.home() / "Library" / "Application Support" / "Google" / "Chrome" / "NativeMessagingHosts" / "com.imploselabs.overseer_browser.json"]
+        base = Path.home() / "Library" / "Application Support" / "Google"
+        filename = "com.imploselabs.overseer_browser.json"
+        return [
+            base / "Chrome" / "NativeMessagingHosts" / filename,
+            base / "Chrome for Testing" / "NativeMessagingHosts" / filename,
+        ]
     if os.name == "nt":
         return [Path(os.environ.get("LOCALAPPDATA", Path.home())) / "OverSeer" / "browser" / "native-host.json"]
     return [Path.home() / ".config" / "google-chrome" / "NativeMessagingHosts" / "com.imploselabs.overseer_browser.json"]

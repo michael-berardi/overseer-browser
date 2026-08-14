@@ -96,7 +96,7 @@ The required command families are:
 - `cancel`
 - `capture.start`, `capture.stop`
 
-Commands operate on the active session/tab selected by the caller or on IDs supplied in `params`. Automation code is injected only into session-owned or explicitly borrowed tabs and uses isolated-world content scripts in permitted frames. There is no passive general-browsing collection.
+Commands operate on the active session/tab selected by the caller or on IDs supplied in `params`. Automation code is injected only into session-owned or explicitly borrowed tabs. The isolated-world traversal covers the top document, open shadow roots, and visible same-origin nested frames; cross-origin frame DOM remains opaque. Direct synchronous calls through the current page dialog globals caused by click, Enter, or Space are bounded: alerts are acknowledged, confirmations and prompts are dismissed, and captured dialog metadata is returned with the action. Page-retained references to native dialog functions that predate the guard require debugger-level interception and remain unsupported. There is no passive general-browsing collection.
 
 A session owns a dedicated Agent Window by default. A normal user tab is read-only until `tabs.borrow` succeeds. `tabs.return` restores ownership to the user, and stopping a session returns all borrowed tabs before releasing session state.
 Uploads are explicit and bounded. The CLI accepts `upload REF PATH [PATH...]`, limits each set to 1–16 files, 8 MiB aggregate, and at most 32 chunks of 256 KiB. It transmits only a bounded element reference plus ordered file/chunk metadata, basenames, MIME types, and contents; local filesystem paths and the token never enter the extension payload. A receiver must reject missing, duplicated, oversized, inconsistent, or out-of-order files and chunks before assigning the complete set atomically to a file input.
@@ -109,6 +109,8 @@ The following operations require debugger/CDP privileges and are intentionally u
 - print-to-PDF through debugger control;
 - device emulation;
 - trusted CDP input or equivalent browser-privileged input;
+- cross-origin frame DOM access;
+- interception of dialogs invoked through page-retained native function references;
 - any other operation whose only safe implementation requires `chrome.debugger`.
 
 Return `unsupported_capability` with a fallback hint for OverSeer cloud/desktop tooling. Never request `debugger` or silently substitute a less trustworthy action. `<all_urls>` is permitted only as optional operator-granted host access needed by Chrome's screenshot API; it must never be a required host permission, and automation remains limited to session-owned or explicitly borrowed HTTP(S) tabs.
