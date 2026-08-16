@@ -64,6 +64,10 @@ async function writeExplicitAutomationOrigins(origins: string[]): Promise<void> 
 }
 
 async function hasExplicitAutomationOrigin(rawUrl: string): Promise<boolean> {
+  // A granted <all_urls> optional permission means the operator trusts the
+  // agent on any site; the per-origin list is only the fallback for the
+  // narrower configuration.
+  if (await hasOptionalSiteAccess()) return isNavigableUrl(rawUrl);
   const pattern = originPatternForUrl(rawUrl);
   if (pattern === null || !(await readExplicitAutomationOrigins()).includes(pattern)) return false;
   return isMeetingUrl(rawUrl) || browser.permissions.contains({ origins: [pattern] });

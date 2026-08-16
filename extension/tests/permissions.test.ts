@@ -20,16 +20,19 @@ describe('permission gating', () => {
   it('keeps full-site control optional while enabling explicitly granted screenshots', () => {
     expect(OPTIONAL_ORIGINS).toEqual(['<all_urls>']);
   });
-  it('keeps broad screenshot access separate from exact automation grants', async () => {
+  it('treats a granted all_urls permission as trust for any site, with per-origin grants as fallback', async () => {
     const localStore: Record<string, unknown> = {};
     let exactOriginGranted = false;
+    let allUrlsGranted = true;
     const contains = vi.fn(async ({ origins }: { origins: string[] }) =>
-      origins[0] === '<all_urls>' || (origins[0] === 'https://example.test/*' && exactOriginGranted));
+      (origins[0] === '<all_urls>' && allUrlsGranted) || (origins[0] === 'https://example.test/*' && exactOriginGranted));
     const request = vi.fn(async ({ origins }: { origins: string[] }) => {
+      if (origins[0] === '<all_urls>') { allUrlsGranted = true; return true; }
       exactOriginGranted = origins[0] === 'https://example.test/*';
       return exactOriginGranted;
     });
     const remove = vi.fn(async ({ origins }: { origins: string[] }) => {
+      if (origins[0] === '<all_urls>') allUrlsGranted = false;
       if (origins[0] === 'https://example.test/*') exactOriginGranted = false;
       return true;
     });
@@ -37,29 +40,30 @@ describe('permission gating', () => {
       permissions: { contains, request, remove },
       storage: {
         local: {
-          get: async (keys: string[]) => Object.fromEntries(keys.filter((key) => key in localStore).map((key) => [key, localStore[key]])),
+          get: async (keys: string[]) => Object.fromEntries(keys.filter((key) => key in localStore).map((key, ) => [key, localStore[key]])),
           set: async (values: Record<string, unknown>) => Object.assign(localStore, values),
         },
       },
     });
 
+    // Broad trust: any navigable site is controllable without a per-site grant.
     await expect(hasOptionalSiteAccess()).resolves.toBe(true);
-    await expect(canControlUrl('https://example.test/path')).resolves.toBe(false);
+    await expect(canControlUrl('https://example.test/path')).resolves.toBe(true);
+    await expect(canControlUrl('https://never-seen-before.test/page')).resolves.toBe(true);
+    await expect(canControlUrl('file:///tmp/file')).resolves.toBe(false);
     await expect(getPermissionState('https://example.test/path')).resolves.toMatchObject({
       optionalSiteAccess: true,
-      currentOriginAccess: false,
+      currentOriginAccess: true,
     });
+    expect(request).not.toHaveBeenCalled();
+
+    // Revoking the broad grant falls back to exact per-origin gating.
+    await expect(revokeOptionalSiteAccess()).resolves.toBe(true);
+    await expect(canControlUrl('https://example.test/path')).resolves.toBe(false);
     await expect(requestOriginAccess('https://example.test/path')).resolves.toBe(true);
     expect(request).toHaveBeenCalledWith({ origins: ['https://example.test/*'] });
     await expect(canControlUrl('https://example.test/path')).resolves.toBe(true);
-    exactOriginGranted = false;
-    await expect(getPermissionState('https://example.test/path')).resolves.toMatchObject({ currentOriginAccess: false });
-    await expect(canControlUrl('https://example.test/path')).resolves.toBe(false);
-    await expect(requestOriginAccess('https://example.test/path')).resolves.toBe(true);
     await expect(revokeOriginAccess('https://example.test/path')).resolves.toBe(true);
-    await expect(canControlUrl('https://example.test/path')).resolves.toBe(false);
-    await expect(revokeOptionalSiteAccess()).resolves.toBe(true);
-    expect(remove).toHaveBeenCalledWith({ origins: ['<all_urls>'] });
     await expect(canControlUrl('https://example.test/path')).resolves.toBe(false);
   });
 
