@@ -32,8 +32,8 @@ def _read_exact(stream: BinaryIO, count: int, *, idle_timeout: bool = False) -> 
     chunks: list[bytes] = []
     remaining = count
     while remaining:
-        reader = getattr(stream, "recv", None)
         try:
+            reader = getattr(stream, "recv", None)
             chunk = reader(remaining) if reader is not None else stream.read(remaining)
         except TimeoutError as exc:
             if chunks or not idle_timeout:

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { COMMANDS, isBoundedNativeFrame, isMeetingDetection, isNativeHandshakeAck, isNativeHostError, isNativeMeetingAck, parseNativeRequest, serializedFrameBytes, type NativeHello } from '../src/protocol';
 import { MAX_SCREENSHOT_FRAME_BYTES } from '../src/screenshot';
 
@@ -62,6 +62,20 @@ describe('native protocol validation', () => {
     expect(serializedFrameBytes(response)).toBeLessThan(900 * 1024);
     expect(isBoundedNativeFrame(response)).toBe(true);
     expect(MAX_SCREENSHOT_FRAME_BYTES).toBeLessThan(900 * 1024);
+  });
+  it('avoids TextEncoder allocation for ASCII frame checks without changing UTF-8 sizes', () => {
+    const ascii = { version: 1, kind: 'response', request_id: 'action-1', ok: true, result: { changed: true } };
+    const unicode = { version: 1, kind: 'response', request_id: 'action-2', ok: true, result: { text: 'café' } };
+    const unicodeBytes = new TextEncoder().encode(JSON.stringify(unicode)).byteLength;
+    const encode = vi.spyOn(TextEncoder.prototype, 'encode');
+    try {
+      expect(serializedFrameBytes(ascii)).toBe(JSON.stringify(ascii).length);
+      expect(encode).not.toHaveBeenCalled();
+      expect(serializedFrameBytes(unicode)).toBe(unicodeBytes);
+      expect(encode).toHaveBeenCalledTimes(1);
+    } finally {
+      encode.mockRestore();
+    }
   });
 
   it('rejects non-serializable evaluation results without throwing', () => {
