@@ -38,6 +38,7 @@ class FramingTests(unittest.TestCase):
         message = {"version": 1, "kind": "request", "request_id": "x", "params": {"ok": True}}
         self.assertEqual(read_frame(io.BytesIO(encode_frame(message, byteorder="little")), byteorder="little"), message)
         self.assertEqual(read_frame(io.BytesIO(encode_frame(message, byteorder="big")), byteorder="big"), message)
+
     def test_timeout_after_complete_header_is_fatal(self) -> None:
         class HeaderThenTimeout:
             def __init__(self) -> None:

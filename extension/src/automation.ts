@@ -465,27 +465,35 @@ function isolatedAutomation(action: AutomationAction, dialogToken: string | null
       const actionableTags = ['button', 'input', 'select', 'textarea', 'summary'];
       const actionableRoles = ['button', 'checkbox', 'combobox', 'link', 'menuitem', 'option', 'radio', 'searchbox', 'slider', 'spinbutton', 'switch', 'tab', 'textbox'];
       const semanticTags = ['address', 'article', 'aside', 'details', 'figcaption', 'figure', 'footer', 'form', 'header', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'main', 'nav', 'section', 'table'];
-      const snapshotPriority = (element: HTMLElement): 0 | 1 | 2 => {
+      type SnapshotCandidate = HTMLElement;
+      // Priority has only three values; buckets preserve DOM order without sorting every visible node.
+      const buckets: [SnapshotCandidate[], SnapshotCandidate[], SnapshotCandidate[]] = [[], [], []];
+      for (const element of allElements()) {
+        if (!visible(element)) continue;
         const tag = tagOf(element);
-        const role = element.getAttribute('role')?.toLowerCase();
-        const href = tag === 'a' ? (element as HTMLAnchorElement).href : undefined;
-        const name = element.getAttribute('aria-label') ?? element.getAttribute('name') ?? undefined;
-        if (actionableTags.includes(tag) || (tag === 'a' && Boolean(href)) || (role !== undefined && actionableRoles.includes(role))) return 0;
-        if (role || name || semanticTags.includes(tag)) return 1;
-        return 2;
-      };
-      const ordered = allElements()
-        .filter(visible)
-        .map((element, index) => ({ element, index, priority: snapshotPriority(element) }))
-        .sort((left, right) => left.priority - right.priority || left.index - right.index)
-        .slice(0, maxNodes)
-        .map(({ element }) => element);
-      return succeed(ordered.map((element) => {
-        const tag = tagOf(element);
-        const rawText = element.innerText?.replace(/\s+/g, ' ').trim();
         const role = element.getAttribute('role') ?? undefined;
         const name = element.getAttribute('aria-label') ?? element.getAttribute('name') ?? undefined;
         const href = tag === 'a' ? (element as HTMLAnchorElement).href : undefined;
+        const priority: 0 | 1 | 2 = actionableTags.includes(tag) || (tag === 'a' && Boolean(href)) ||
+          (role !== undefined && actionableRoles.includes(role.toLowerCase()))
+          ? 0
+          : (role || name || semanticTags.includes(tag)) ? 1 : 2;
+        buckets[priority].push(element);
+      }
+      const ordered: SnapshotCandidate[] = [];
+      for (const bucket of buckets) {
+        for (const candidate of bucket) {
+          if (ordered.length >= maxNodes) break;
+          ordered.push(candidate);
+        }
+        if (ordered.length >= maxNodes) break;
+      }
+      return succeed(ordered.map((element) => {
+        const tag = tagOf(element);
+        const role = element.getAttribute('role') ?? undefined;
+        const name = element.getAttribute('aria-label') ?? element.getAttribute('name') ?? undefined;
+        const href = tag === 'a' ? (element as HTMLAnchorElement).href : undefined;
+        const rawText = element.innerText?.replace(/\s+/g, ' ').trim();
         return {
           ref: refFor(element),
           tag,

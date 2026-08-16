@@ -4,6 +4,7 @@ export const EXTENSION_ID = 'iabfdeokmilpklblkgccpjlekchfjcno';
 export const MAX_REQUEST_BYTES = 512 * 1024;
 export const MAX_NATIVE_FRAME_BYTES = 900 * 1024;
 export const MAX_UPLOAD_BYTES = 8 * 1024 * 1024;
+const ASCII_JSON_RE = /^[\x00-\x7F]*$/;
 
 export const COMMANDS = [
   'health.status', 'sessions.start', 'sessions.stop', 'sessions.list', 'windows.resize',
@@ -121,7 +122,12 @@ export function parseNativeRequest(value: unknown): { ok: true; request: NativeR
 export function serializedFrameBytes(value: unknown): number {
   try {
     const serialized = JSON.stringify(value);
-    return typeof serialized === 'string' ? new TextEncoder().encode(serialized).byteLength : Number.POSITIVE_INFINITY;
+    if (typeof serialized !== 'string') return Number.POSITIVE_INFINITY;
+    // JSON.stringify escapes control characters and lone surrogates, so an ASCII
+    // result is already byte-for-byte identical to its UTF-8 representation.
+    return ASCII_JSON_RE.test(serialized)
+      ? serialized.length
+      : new TextEncoder().encode(serialized).byteLength;
   } catch {
     return Number.POSITIVE_INFINITY;
   }
