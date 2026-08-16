@@ -7,10 +7,7 @@
     "build": "wxt build",
     "check": "tsc --noEmit",
     "dev": "wxt",
-    "test": "vitest run",
-    "release:verify": "python3 ../scripts/test_publish_chrome_web_store.py && python3 ../scripts/verify_release.py .output/chrome-mv3",
-    "release:package": "python3 ../scripts/publish_chrome_web_store.py --artifact .output/chrome-mv3",
-    "release:publish": "python3 ../scripts/publish_chrome_web_store.py --artifact .output/chrome-mv3 --publish"
+    "test": "vitest run"
   },
   "dependencies": {
     "@wxt-dev/module-react": "^1.2.2",
