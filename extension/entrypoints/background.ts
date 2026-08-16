@@ -367,6 +367,8 @@ function startBackground(): void {
     pendingMeetings.restore(meetingSessionStore),
   ]).then(() => undefined);
   backgroundStateReady = restoreBackgroundState();
+  chrome.runtime.onStartup?.addListener(() => {
+  });
   void backgroundStateReady.then(() => {
     if (nativeEnabled) connectNative();
   });
@@ -406,6 +408,14 @@ function startBackground(): void {
         .then(() => sendResponse({ enabled: nativeEnabled, native_enabled: nativeEnabled, connected, native_error: lastNativeError }))
         .catch(() => sendResponse({ enabled: nativeEnabled, native_enabled: nativeEnabled, connected, native_error: lastNativeError }));
       return true;
+    }
+      return true;
+    }
+      sendResponse({ ok: true });
+      return false;
+    }
+      sendResponse({ ok: true });
+      return false;
     }
     if (value.kind === 'popup_state') {
       void popupState().then(sendResponse);
@@ -685,7 +695,35 @@ async function handleRequest(request: NativeRequest): Promise<void> {
   }
 }
 
+  if (
+    command === 'sessions.start'
+    && result !== null
+    && typeof result === 'object'
+    && 'started' in result
+    && result.started === true
+  ) return 'sessionsStarted';
+  if (
+    command === 'sessions.stop'
+    && result !== null
+    && typeof result === 'object'
+    && 'stopped' in result
+    && result.stopped === true
+  ) return 'sessionsEnded';
+  if (command === 'tabs.create') return 'tabsOpened';
+  if (command === 'tabs.close') return 'tabsClosed';
+  if (command === 'navigate' || command === 'back' || command === 'forward' || command === 'reload') {
+    return 'navigations';
+  }
+  if (command === 'screenshot.visible' || command === 'screenshot.element') return 'screenshots';
+  return undefined;
+}
+
 export async function dispatch(request: NativeRequest, state: InflightRequest): Promise<unknown> {
+  const result = await dispatchCommand(request, state);
+  return result;
+}
+
+async function dispatchCommand(request: NativeRequest, state: InflightRequest): Promise<unknown> {
   if (state.deadlineAt === undefined) state.deadlineAt = Date.now() + COMMAND_TIMEOUT_MS;
   if (!COMMANDS.includes(request.command as Command)) throw new DispatchError('unsupported_command', `Unsupported command: ${request.command}`, 'Use health.status or help from the CLI.');
   const command = request.command as Command;

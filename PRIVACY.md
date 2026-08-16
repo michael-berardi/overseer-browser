@@ -62,7 +62,6 @@ The project does not request `debugger` and never invokes `chrome.debugger`. It 
 
 ## Retention and deletion
 
-There is no server-side account or cloud retention. Runtime state is bounded and local; session ownership and pending meeting delivery clear on browser restart. On uninstall, stop sessions, return borrowed tabs, revoke automation access in the popup or browser controls, remove the extension, unregister the native host, and remove this application's socket, token, configuration, logs, and generated artifacts using the platform cleanup command. Do not delete shared browser profile data. UltraVox users should also disable its meeting-detection setting and remove only the adapter's local state.
 
 ## Privacy review checklist
 

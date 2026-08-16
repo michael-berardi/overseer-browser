@@ -7,6 +7,7 @@ The browser contract is model-agnostic. Claude, Codex, Kimi, and other general a
 
 ## Guarantees and boundaries
 
+  Usage contains only these counters: `sessionsStarted`, `sessionsEnded`, `tabsOpened`, `tabsClosed`, `navigations`, `screenshots`, `meetingsDetected`, `popupsHandled`, `permissionsGranted`, and `permissionsDenied`. It never contains URLs, titles, page data, screenshots, form values, command arguments, meeting details, or identifiers derived from browser content. Disable sharing from the popup to delete the identifier, cadence markers, and pending counters.
 - **Least privilege.** Meeting reminders use only the exact first-party meeting hosts declared by the extension. General site access is optional and is requested only after a popup user gesture.
 - **Visible control.** A dedicated Agent Window is the default. Normal tabs are read-only until explicitly borrowed and are returned when a session stops.
 - **No debugger path.** Debugger-only operations such as response-body capture, print-to-PDF, device emulation, and trusted CDP input return structured `unsupported` errors; they are never silently downgraded.
@@ -43,6 +44,36 @@ cd overseer-browser
 ```
 
 Load `./chrome-extension` using Chrome's **Load unpacked** flow (`chrome://extensions`, with Developer mode enabled). Confirm that the loaded ID is `iabfdeokmilpklblkgccpjlekchfjcno`. Never accept a different ID by weakening `allowed_origins`; fix the build key or use the release artifact.
+
+## Chrome Web Store releases and updates
+
+The stable public release uses extension ID `iabfdeokmilpklblkgccpjlekchfjcno`. Chrome manages updates automatically for builds installed from the Web Store; the Store package intentionally omits the external-hosting-only `update_url` manifest key. This repository does not claim that a Web Store release has been published.
+
+For a manual release, build the extension, verify the generated artifact, and create a ZIP without committing generated output:
+
+```sh
+npm run build --prefix extension
+npm run release:verify --prefix extension
+npm run release:package --prefix extension
+```
+
+To submit the verified package manually through the Chrome Web Store API V2, enter the publisher ID and read OAuth values silently into a temporary Bash subshell. They are exported only to the publisher process and disappear when it exits; the secret values never appear in shell history, files, CI configuration, or logs:
+
+```bash
+(
+  read -r -p 'Chrome Web Store publisher ID: ' CHROME_WEB_STORE_PUBLISHER_ID
+  read -r -s -p 'Chrome Web Store client ID: ' CHROME_WEB_STORE_CLIENT_ID; printf '\n'
+  read -r -s -p 'Chrome Web Store client secret: ' CHROME_WEB_STORE_CLIENT_SECRET; printf '\n'
+  read -r -s -p 'Chrome Web Store refresh token: ' CHROME_WEB_STORE_REFRESH_TOKEN; printf '\n'
+  export CHROME_WEB_STORE_PUBLISHER_ID CHROME_WEB_STORE_CLIENT_ID
+  export CHROME_WEB_STORE_CLIENT_SECRET CHROME_WEB_STORE_REFRESH_TOKEN
+  npm run release:publish --prefix extension
+)
+```
+
+The publish command uses the current Chrome Web Store API V2 to upload, wait for asynchronous validation, and request publication for the exact stable ID; it does not print or persist credentials. Publication still requires a Chrome Web Store developer account, its publisher ID, an OAuth client with Chrome Web Store API access, completed listing/privacy forms, and dashboard review/approval. See the official [Chrome Web Store API guide](https://developer.chrome.com/docs/webstore/using-api).
+
+An unpacked `chrome-extension/` directory is a local development/install output. It does not receive Web Store automatic updates: rebuild it with `./scripts/manage-macos.sh update`, then manually reload the unpacked extension from `chrome://extensions`. Keep generated `.output/` and `chrome-extension/` output out of commits; the source under `extension/` and the lockfile are authoritative.
 
 The equivalent installed CLI commands are `overseer-browser install`, `overseer-browser status`, `overseer-browser update`, and `overseer-browser uninstall`. Installed `status` and `uninstall` are self-contained; `install` and `update` require the recorded source checkout so the extension and native host can be rebuilt together. The registration must use the exact host name `com.imploselabs.overseer_browser`, the loaded extension ID in `allowed_origins`, and a user-owned host executable. Use the platform adapter for Linux or Windows when provided; it must preserve the same per-user and exact-origin rules. Do not place a token, private key, absolute home path, or production endpoint in source, manifests, or shell history.
 
@@ -155,7 +186,7 @@ overseer-browser update
 overseer-browser status
 ```
 
-If the recorded checkout moved or was deleted, clone the public repository again and run `./scripts/manage-macos.sh update` from that checkout. Confirm the stable extension ID and exact `allowed_origins` after every update; never broaden permissions to repair an ID mismatch.
+If the recorded checkout moved or was deleted, clone the public repository again and run `./scripts/manage-macos.sh update` from that checkout. Confirm the stable extension ID and exact `allowed_origins` after every update; never broaden permissions to repair an ID mismatch. This path is for unpacked local installs and always requires a manual reload. Store-installed builds follow Chrome's automatic update checks after a release is reviewed and published.
 
 
 ## Uninstall and revoke access completely
@@ -168,7 +199,6 @@ If the recorded checkout moved or was deleted, clone the public repository again
 6. Remove only this application's user configuration, socket, token, logs, and generated build artifacts using the documented platform cleanup command. Do not delete shared browser data.
 7. If UltraVox was connected, disable its meeting-detection setting and remove only the adapter's local configuration.
 
-The extension has no cloud account and no server-side deletion step. Native-host uninstall must not silently leave a runnable host or a valid token behind.
 
 ## Development and tests
 

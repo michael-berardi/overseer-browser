@@ -1,6 +1,6 @@
 # Contributing
 
-Contributions are welcome when they preserve the local-only, least-privilege contract. Read [README.md](README.md), [PROTOCOL.md](PROTOCOL.md), [PRIVACY.md](PRIVACY.md), and [SECURITY.md](SECURITY.md) first.
+Contributions are welcome when they preserve the local-first, least-privilege contract. Read [README.md](README.md), [PROTOCOL.md](PROTOCOL.md), [PRIVACY.md](PRIVACY.md), and [SECURITY.md](SECURITY.md) first.
 
 ## Design rules
 
@@ -13,7 +13,7 @@ Contributions are welcome when they preserve the local-only, least-privilege con
 
 ## Local setup
 
-Use a clean checkout and a supported Node.js/npm version. Do not commit generated output or personal configuration.
+Use a clean checkout and a supported Node.js/npm version. Do not commit generated output, release ZIPs, credentials, or personal configuration. Generated `.output/` and `chrome-extension/` directories are local staging output and are ignored by Git.
 
 ```sh
 npm ci --prefix extension
@@ -22,7 +22,7 @@ npm run dev --prefix extension
 
 `npm run dev` is for local extension development. Load the generated development directory through the browser's **Load unpacked** flow, and use a test browser profile whenever possible. Native-host registration should be per-user and use the documented installer/OS adapter; never paste an absolute home path, token, or private key into a public manifest.
 
-For a reproducible extension build, keep the lockfile under review, start from a clean checkout, use `npm ci --prefix extension`, and build with `npm run build --prefix extension`. Compare the generated manifest, extension ID, permissions, and artifact checksums before release; never hand-edit generated output.
+For a reproducible extension build, keep the lockfile under review, start from a clean checkout, use `npm ci --prefix extension`, and build with `npm run build --prefix extension`. Run `npm run release:verify --prefix extension` against the generated artifact before packaging; never hand-edit generated output.
 
 ## Before opening a change
 
@@ -39,12 +39,11 @@ The test suite should cover observable behavior, not implementation snapshots. A
 - protocol schema, framing, request IDs, bounded messages, timeouts, cancellation, and host authentication;
 - session ownership, Agent Window defaults, borrow/return transitions, and disconnect cleanup;
 - required meeting-host parsing, opaque hash format, deduplication, capture suppression, and payload minimization;
-- optional permission gating and the no-debugger manifest invariant;
 - explicit unsupported errors and UltraVox accept/decline state.
 
 Exercise the smoke path in a real Chromium profile when browser behavior changes: connect, create an Agent Window, navigate, observe, click/fill, screenshot, borrow/return, stop, and confirm no debugger infobar. Use deterministic Meet/Zoom fixtures or local pages and verify that only the opaque meeting event reaches the host.
 
-Do not add GitHub Actions. Use local/manual release checks and document any platform-specific command needed to reproduce them.
+Do not add GitHub Actions. Use the local/manual release verifier and Chrome Web Store path documented in [README.md](README.md). Publishing requires environment-only OAuth credentials and dashboard review; do not claim publication unless the dashboard confirms it.
 
 ## Accessibility and interaction review
 
