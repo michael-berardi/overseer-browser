@@ -9,7 +9,7 @@ export default defineConfig({
     name: 'OverSeer Browser',
     short_name: 'OverSeer',
     description: 'Local-first browser control with optional anonymous usage sharing.',
-    version: '0.1.1',
+    version: '0.1.2',
     key: publicKey,
     permissions: ['nativeMessaging', 'storage', 'scripting', 'tabs', 'windows', 'activeTab'],
     host_permissions: ['https://meet.google.com/*', 'https://zoom.us/*', 'https://*.zoom.us/*'],

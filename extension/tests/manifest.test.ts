@@ -8,7 +8,7 @@ describe('manifest privacy invariants', () => {
     expect(config).toContain('key: publicKey');
     expect(config).toContain('MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8A');
     expect(config).toContain('IDAQAB');
-    expect(config).toContain("version: '0.1.1'");
+    expect(config).toContain("version: '0.1.2'");
     expect(config).toContain("permissions: ['nativeMessaging', 'storage', 'scripting', 'tabs', 'windows', 'activeTab']");
     expect(config).toContain("host_permissions: ['https://meet.google.com/*', 'https://zoom.us/*', 'https://*.zoom.us/*']");
     expect(config).toContain("optional_host_permissions: ['<all_urls>']");
@@ -29,7 +29,7 @@ describe('manifest privacy invariants', () => {
     const verifier = readFileSync(new URL('../../scripts/verify_release.py', import.meta.url), 'utf8');
     const publisher = readFileSync(new URL('../../scripts/publish_chrome_web_store.py', import.meta.url), 'utf8');
     const packageJson = readFileSync(new URL('../package.json', import.meta.url), 'utf8');
-    expect(verifier).toContain("EXPECTED_VERSION = \"0.1.1\"");
+    expect(verifier).toContain("EXPECTED_VERSION = \"0.1.2\"");
     expect(verifier).toContain("EXPECTED_EXTENSION_ID = \"iabfdeokmilpklblkgccpjlekchfjcno\"");
     expect(verifier).toContain('must not declare an external update_url');
     expect(verifier).toContain("EXPECTED_EXTENSION_CSP");

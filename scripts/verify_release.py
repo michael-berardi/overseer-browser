@@ -10,7 +10,7 @@ import json
 import sys
 from pathlib import Path
 
-EXPECTED_VERSION = "0.1.1"
+EXPECTED_VERSION = "0.1.2"
 EXPECTED_EXTENSION_ID = "iabfdeokmilpklblkgccpjlekchfjcno"
 EXPECTED_TELEMETRY_ENDPOINT = "https://analytics.libertydesign.studio/api/app-telemetry/event"
 EXPECTED_TELEMETRY_SCHEMA = "lds.app-telemetry.event.v2"
