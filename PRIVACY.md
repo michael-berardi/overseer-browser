@@ -1,6 +1,6 @@
 # Privacy
 
-OverSeer Browser is designed for local, operator-directed automation. It has no account, cloud control plane, analytics SDK, telemetry pipeline, or external server. This document describes the intended data boundary; the built manifest and protocol are authoritative for a particular release.
+OverSeer Browser is designed for local-first, operator-directed automation. It has no account or cloud browser-control plane. A separate, explicit popup choice enables a minimal anonymous telemetry stream described below; the built manifest and protocol are authoritative for a particular release.
 
 ## What stays local
 
@@ -12,7 +12,21 @@ The extension, native host, CLI, and optional meeting adapter communicate on the
 - a random local host token and connection metadata;
 - a bounded allowlist of exact origins for which the operator explicitly enabled automation.
 
-The extension and native host do not independently send these values to a vendor, external API, remote browser, or telemetry service. Page observations, screenshots, and action results explicitly requested by the operator are returned to the calling OverSeer runtime and may be sent to its configured AI provider under that runtime's privacy terms. A local shell history, browser profile, operating-system logs, browser sync, or user-selected upload destination can also retain data independently; the project does not control those facilities.
+The extension and native host do not independently send these values to a vendor, external API, remote browser, or telemetry service. Page observations, screenshots, and action results explicitly requested by the operator are returned to the calling OverSeer runtime and may be sent to its configured AI provider under that runtime's privacy terms. If telemetry is enabled, it is the separate minimal event described below and never contains these values. A local shell history, browser profile, operating-system logs, browser sync, or user-selected upload destination can also retain data independently; the project does not control those facilities.
+
+## Optional anonymous telemetry
+
+Telemetry is **off by default** and requires an affirmative popup choice. Before acceptance, the extension creates no telemetry identifier, stores no telemetry counters, and makes no telemetry request. Declining is silent. The endpoint is `https://analytics.libertydesign.studio/api/app-telemetry/event` and accepts schema `lds.app-telemetry.event.v2` for app `overseer-browser`.
+
+After acceptance, events contain only:
+
+```text
+schema, app, event, installId, version, platform, arch, day, batchId (usage only)
+```
+
+`event` is `launch`, `heartbeat`, or `usage`. Only `usage` includes `batchId`, a random lowercase RFC 4122 UUID v4 that remains unchanged for retries; `launch` and `heartbeat` never include it. `day` is the current UTC calendar day. `installId` is a random UUID generated locally after acceptance and is not derived from a URL, title, page, account, meeting, or command. A daily heartbeat is attempted at most once per UTC day. Normally one successful usage event is sent per UTC day; failed delivery may retry while sharing remains enabled and counters remain pending.
+
+Telemetry never sends URLs, titles, page data, screenshots, form values, command arguments, meeting details, raw meeting identifiers, cookies, credentials, or content. Failed usage delivery remains locally pending only while sharing is enabled and may retry when the background cadence is invoked. Disabling sharing deletes the local telemetry identifier, cadence markers, and pending counters; it does not recall an event already accepted by the endpoint. No telemetry request is needed for browser control, and decline/disable is silent.
 
 ## Permissions
 
@@ -64,13 +78,13 @@ The project does not request `debugger` and never invokes `chrome.debugger`. It 
 
 ## Retention and deletion
 
-There is no server-side account or cloud retention. Runtime state is bounded and local; session ownership and pending meeting delivery clear on browser restart. On uninstall, stop sessions, return borrowed tabs, revoke automation access in the popup or browser controls, remove the extension, unregister the native host, and remove this application's socket, token, configuration, logs, and generated artifacts using the platform cleanup command. Do not delete shared browser profile data. UltraVox users should also disable its meeting-detection setting and remove only the adapter's local state.
+Runtime state is bounded and local; session ownership and pending meeting delivery clear on browser restart. Telemetry events already accepted by the disclosed endpoint are not recalled by uninstall or disable; disabling first removes the local telemetry identifier, cadence markers, and pending counters. Server-side rows containing the random installation ID are retained for at most 34 UTC days. ID-free daily totals contain only app/event/counter aggregates and are retained for at most 360 UTC days; a scheduled deletion worker enforces both limits even when no new events arrive. On uninstall, stop sessions, return borrowed tabs, revoke automation access in the popup or browser controls, remove the extension, unregister the native host, and remove this application's socket, token, configuration, logs, and generated artifacts using the platform cleanup command. Do not delete shared browser profile data. UltraVox users should also disable its meeting-detection setting and remove only the adapter's local state.
 
 ## Privacy review checklist
 
 Before publishing a build, reviewers should inspect the manifest and source for:
 
-- no telemetry, analytics, external fetch, remote logging, or cloud endpoint;
+- no telemetry before explicit acceptance; when enabled, only the documented endpoint and v2 event schema with the exact allowlisted counters;
 - exact meeting host permissions separated from popup user-gesture-gated automation origins and optional broad screenshot access;
 - no debugger API or `debugger` permission;
 - no raw meeting identifiers in host or adapter messages;

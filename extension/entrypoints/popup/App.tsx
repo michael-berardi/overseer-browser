@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { requestOptionalSiteAccess, requestOriginAccess, revokeOptionalSiteAccess, revokeOriginAccess } from '../../src/permissions';
+import type { TelemetryConsent } from '../../src/telemetry';
 
 type PermissionState = {
   meetingHosts: true;
@@ -25,6 +26,7 @@ type PopupState = {
   native_error: { code: string; message: string } | null;
   permissions: PermissionState;
   sessions: Array<{ sessionId: string; agentWindowId: number; startedAtMs: number }>;
+  telemetry_consent: TelemetryConsent;
   active_tab: ActiveTab | null;
 };
 
@@ -84,6 +86,7 @@ const initialState: PopupState = {
   evaluate_enabled: false,
   takeover_requested: false,
   native_error: null,
+  telemetry_consent: 'undecided',
   permissions: { meetingHosts: true, optionalSiteAccess: false, currentOriginAccess: false },
   sessions: [],
   active_tab: null,
@@ -91,6 +94,7 @@ const initialState: PopupState = {
 
 export default function App() {
   const [state, setState] = useState(initialState);
+  const [hydrated, setHydrated] = useState(false);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState('');
 
@@ -99,12 +103,20 @@ export default function App() {
       const reply = (await browser.runtime.sendMessage({ kind: 'popup_state' })) as RuntimeReply;
       const failure = runtimeReplyError(reply, 'The background state request was rejected.');
       if (failure) throw failure;
+      if (
+        reply.telemetry_consent !== 'accepted'
+        && reply.telemetry_consent !== 'declined'
+        && reply.telemetry_consent !== 'undecided'
+      ) {
+        throw new Error('The persisted privacy preference was unavailable.');
+      }
       setState((current) => ({
         ...current,
         ...reply,
         permissions: reply.permissions ?? current.permissions,
         active_tab: reply.active_tab !== undefined ? reply.active_tab : current.active_tab,
       }));
+      setHydrated(true);
       return true;
     } catch (error) {
       setNotice(formatPopupError('Unable to refresh local status', error));
@@ -114,6 +126,7 @@ export default function App() {
 
   useEffect(() => {
     void refresh();
+    void browser.runtime.sendMessage({ kind: 'telemetry_popup_opened' });
     const timer = window.setInterval(() => void refresh(), 2_000);
     return () => window.clearInterval(timer);
   }, []);
@@ -135,6 +148,28 @@ export default function App() {
       setBusy(false);
     }
   };
+  const setTelemetry = async (enabled: boolean): Promise<void> => {
+    setBusy(true);
+    setNotice('');
+    try {
+      const reply = (await browser.runtime.sendMessage({ kind: 'set_telemetry_consent', enabled })) as RuntimeReply;
+      const failure = runtimeReplyError(reply, 'The privacy preference could not be saved.');
+      if (failure) throw failure;
+      const consent = reply.telemetry_consent;
+      if (consent !== 'accepted' && consent !== 'declined') {
+        throw new Error('The privacy preference was not persisted.');
+      }
+      setState((current) => ({ ...current, telemetry_consent: consent }));
+      if (consent === 'accepted') {
+        void browser.runtime.sendMessage({ kind: 'telemetry_popup_opened' });
+      }
+    } catch (error) {
+      setNotice(formatPopupError('Unable to change anonymous usage sharing', error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
 
 
   const requestCurrentOrigin = async (): Promise<void> => {
@@ -151,6 +186,7 @@ export default function App() {
         setNotice(revoked ? `Access disabled for ${origin}` : 'No explicit site access was found for this origin.');
       } else {
         const granted = await requestOriginAccess(origin);
+        void browser.runtime.sendMessage({ kind: 'telemetry_permission_result', granted });
         setNotice(granted ? `Access enabled for ${origin}` : 'No additional site access was granted.');
       }
       await refresh();
@@ -169,6 +205,9 @@ export default function App() {
       const changed = shouldEnable
         ? await requestOptionalSiteAccess()
         : await revokeOptionalSiteAccess();
+      if (shouldEnable) {
+        void browser.runtime.sendMessage({ kind: 'telemetry_permission_result', granted: changed });
+      }
       setNotice(changed
         ? shouldEnable
           ? 'Broad screenshot access enabled. Grant each automation origin separately.'
@@ -245,6 +284,20 @@ export default function App() {
         </div>
       </header>
 
+      {hydrated && state.telemetry_consent === 'undecided' ? (
+        <div className="consent-scrim">
+          <section className="consent-modal" role="dialog" aria-modal="true" aria-labelledby="telemetry-consent-heading">
+            <p className="eyebrow">PRIVACY CHOICE</p>
+            <h2 id="telemetry-consent-heading">Help improve OverSeer Browser?</h2>
+            <p className="body-copy">Share a random installation ID, app version, coarse platform/architecture, UTC day, daily launch/heartbeat, and normally one successful daily batch of coarse action totals. Usage batches carry a random lowercase UUID v4 that stays the same if delivery retries. Failed delivery may retry while sharing remains enabled. Identifier rows expire within 34 UTC days; ID-free daily totals within 360 days. URLs, titles, page content, screenshots, form values, command arguments, meeting details, and other browser content are never sent.</p>
+            <div className="consent-actions">
+              <button className="button secondary" type="button" onClick={() => void setTelemetry(false)} disabled={busy}>No thanks</button>
+              <button className="button primary" type="button" onClick={() => void setTelemetry(true)} disabled={busy}>Share anonymous usage</button>
+            </div>
+          </section>
+        </div>
+      ) : null}
+
       <section className="connection-panel" aria-labelledby="connection-heading">
         <div className="section-heading">
           <div>
@@ -259,7 +312,7 @@ export default function App() {
             aria-atomic={connectionStatus.ariaAtomic}
           />
         </div>
-        <p className="body-copy">Extension and native-host transport stay local. Page content and screenshots are returned only for explicit commands and may be sent to the configured AI provider. Meeting reminders send only a minimized opaque payload locally.</p>
+        <p className="body-copy">Browser control and native-host transport stay local. Page content and screenshots are returned only for explicit commands and may be sent to the configured AI provider. Optional anonymous telemetry uses only the disclosed coarse event fields. Meeting reminders send only a minimized opaque payload locally.</p>
         <button className={state.native_enabled ? 'button secondary' : 'button primary'} type="button" onClick={() => void setConnection(!state.native_enabled)} disabled={busy}>
           {connectionActionLabel(state.connected, state.native_enabled)}
         </button>
@@ -317,6 +370,24 @@ export default function App() {
         </label>
       </section>
 
+      <section className="section" aria-labelledby="privacy-heading">
+        <div className="section-heading compact">
+          <div>
+            <p className="eyebrow">PRIVACY</p>
+            <h2 id="privacy-heading">Anonymous usage</h2>
+          </div>
+          <span className={`tag ${state.telemetry_consent === 'accepted' ? 'tag-on' : ''}`}>{state.telemetry_consent === 'accepted' ? 'ON' : 'OFF'}</span>
+        </div>
+        <p className="body-copy">Optional launch, daily heartbeat, and coarse action totals only. No browsing data or user content. Turning this off deletes the local telemetry ID and pending counters.</p>
+        <label className="capability-row">
+          <input type="checkbox" checked={state.telemetry_consent === 'accepted'} onChange={(event) => void setTelemetry(event.target.checked)} disabled={busy} />
+          <span>
+            <strong>Share anonymous usage</strong>
+            <small>You can change this at any time.</small>
+          </span>
+        </label>
+      </section>
+
       {state.takeover_requested ? (
         <section className="takeover" aria-labelledby="takeover-heading">
           <strong id="takeover-heading">Human takeover active</strong>
@@ -330,7 +401,7 @@ export default function App() {
         </p>
       ) : null}
       {notice ? <p className="notice" role="status">{notice}</p> : null}
-      <footer>v0.1 · local-only by design</footer>
+      <footer>v{browser.runtime.getManifest().version} · local control, optional anonymous metrics</footer>
     </main>
   );
 }

@@ -106,7 +106,7 @@ export class SessionManager {
     return tabs;
   }
 
-  async start(name?: string): Promise<SessionSummary> {
+  async start(name?: string): Promise<SessionSummary & { started: boolean }> {
     return this.serializeLifecycle(async () => {
       await this.load();
       await this.discardClosedAgentWindow();
@@ -120,7 +120,7 @@ export class SessionManager {
           );
         }
         await this.refreshAgentTabs();
-        return { ...this.state, connected: true };
+        return { ...this.state, connected: true, started: false };
       }
       const agentWindow = await browser.windows.create({ focused: true, type: 'normal', url: 'about:blank', left: 0, top: 0 });
       if (!agentWindow || agentWindow.id === undefined) throw new Error('Chrome did not return an Agent Window id.');
@@ -135,7 +135,7 @@ export class SessionManager {
         startedAtMs: Date.now(),
       };
       await this.persist();
-      return { ...this.state, connected: true };
+      return { ...this.state, connected: true, started: true };
     });
   }
 

@@ -8,8 +8,8 @@ export default defineConfig({
   manifest: {
     name: 'OverSeer Browser',
     short_name: 'OverSeer',
-    description: 'Local-only browser control and meeting reminders.',
-    version: '0.1.0',
+    description: 'Local-first browser control with optional anonymous usage sharing.',
+    version: '0.1.1',
     key: publicKey,
     permissions: ['nativeMessaging', 'storage', 'scripting', 'tabs', 'windows', 'activeTab'],
     host_permissions: ['https://meet.google.com/*', 'https://zoom.us/*', 'https://*.zoom.us/*'],
@@ -30,7 +30,7 @@ export default defineConfig({
       },
     },
     content_security_policy: {
-      extension_pages: "script-src 'self'; object-src 'self'",
+      extension_pages: "script-src 'self'; object-src 'self'; connect-src https://analytics.libertydesign.studio",
     },
   },
 });

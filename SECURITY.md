@@ -22,7 +22,7 @@ A release is not acceptable if it violates any of these:
 
 - no `chrome.debugger` call and no `debugger` permission;
 - no broad required origins, history, bookmarks, or webRequest permission; optional `<all_urls>` access is permitted only through the labeled popup grant needed for screenshots;
-- no telemetry, external server, remote logging, or unreviewed network endpoint;
+- no telemetry before explicit opt-in; opted-in telemetry must use only the documented endpoint, schema, required identity/day fields, and exact allowlisted counters;
 - exact extension ID and native-host `allowed_origins` binding;
 - CLI socket directory mode `0700`, socket/token mode `0600` where supported, and peer-UID validation where supported;
 - native and CLI length-prefixed frames are bounded and authenticated;

@@ -56,6 +56,7 @@ describe('session ownership', () => {
     const manager = new SessionManager();
     const started = await manager.start();
     expect(started.agentWindowId).toBe(10);
+    expect(started.started).toBe(true);
     expect(await manager.ownsTab(11)).toBe(true);
     expect(await manager.ownsTab(21)).toBe(true);
     tabStore.set(21, { id: 21, windowId: 99, url: 'about:blank', active: false });
@@ -88,6 +89,8 @@ describe('session ownership', () => {
     expect(create).toHaveBeenCalledTimes(1);
     expect(second.sessionId).toBe(first.sessionId);
     expect(second.agentWindowId).toBe(first.agentWindowId);
+    expect(first.started).toBe(true);
+    expect(second.started).toBe(false);
   });
 
   it('preserves a bounded session name and rejects a conflicting active name', async () => {

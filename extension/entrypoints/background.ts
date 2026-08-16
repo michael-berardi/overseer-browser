@@ -20,6 +20,7 @@ import { getPermissionState, canControlUrl, isNavigableUrl } from '../src/permis
 import { MeetingDeduper, PendingMeetingQueue } from '../src/meeting';
 import { SessionError, SessionManager } from '../src/session';
 import { captureScreenshot, requireActiveScreenshotTarget, ScreenshotError } from '../src/screenshot';
+import { browserTelemetry, type BrowserUsageCounter } from '../src/telemetry';
 
 const COMMAND_TIMEOUT_MS = 45_000;
 const NATIVE_HANDSHAKE_TIMEOUT_MS = 5_000;
@@ -367,6 +368,10 @@ function startBackground(): void {
     pendingMeetings.restore(meetingSessionStore),
   ]).then(() => undefined);
   backgroundStateReady = restoreBackgroundState();
+  void browserTelemetry().maybeSendDaily();
+  chrome.runtime.onStartup?.addListener(() => {
+    void browserTelemetry().recordLaunch();
+  });
   void backgroundStateReady.then(() => {
     if (nativeEnabled) connectNative();
   });
@@ -388,6 +393,7 @@ function startBackground(): void {
       if (isMeetingDetection(payload)) {
         void meetingStateReady.then(async () => {
           if (deduper.accept(payload)) {
+            void browserTelemetry().recordUsage('meetingsDetected');
             pendingMeetings.enqueue(payload);
             await persistMeetingState();
             flushPendingMeetings();
@@ -406,6 +412,22 @@ function startBackground(): void {
         .then(() => sendResponse({ enabled: nativeEnabled, native_enabled: nativeEnabled, connected, native_error: lastNativeError }))
         .catch(() => sendResponse({ enabled: nativeEnabled, native_enabled: nativeEnabled, connected, native_error: lastNativeError }));
       return true;
+    }
+    if (value.kind === 'set_telemetry_consent' && typeof value.enabled === 'boolean') {
+      void browserTelemetry().setConsent(value.enabled)
+        .then((consent) => sendResponse({ ok: true, telemetry_consent: consent }))
+        .catch(() => sendResponse({ ok: false, error: 'telemetry_state_unavailable' }));
+      return true;
+    }
+    if (value.kind === 'telemetry_permission_result' && typeof value.granted === 'boolean') {
+      void browserTelemetry().recordPermissionResult(value.granted);
+      sendResponse({ ok: true });
+      return false;
+    }
+    if (value.kind === 'telemetry_popup_opened') {
+      void browserTelemetry().recordUsage('popupsHandled');
+      sendResponse({ ok: true });
+      return false;
     }
     if (value.kind === 'popup_state') {
       void popupState().then(sendResponse);
@@ -685,7 +707,38 @@ async function handleRequest(request: NativeRequest): Promise<void> {
   }
 }
 
+function usageCounterForCommand(command: string, result: unknown): BrowserUsageCounter | undefined {
+  if (
+    command === 'sessions.start'
+    && result !== null
+    && typeof result === 'object'
+    && 'started' in result
+    && result.started === true
+  ) return 'sessionsStarted';
+  if (
+    command === 'sessions.stop'
+    && result !== null
+    && typeof result === 'object'
+    && 'stopped' in result
+    && result.stopped === true
+  ) return 'sessionsEnded';
+  if (command === 'tabs.create') return 'tabsOpened';
+  if (command === 'tabs.close') return 'tabsClosed';
+  if (command === 'navigate' || command === 'back' || command === 'forward' || command === 'reload') {
+    return 'navigations';
+  }
+  if (command === 'screenshot.visible' || command === 'screenshot.element') return 'screenshots';
+  return undefined;
+}
+
 export async function dispatch(request: NativeRequest, state: InflightRequest): Promise<unknown> {
+  const result = await dispatchCommand(request, state);
+  const counter = usageCounterForCommand(request.command, result);
+  if (counter) void browserTelemetry().recordUsage(counter);
+  return result;
+}
+
+async function dispatchCommand(request: NativeRequest, state: InflightRequest): Promise<unknown> {
   if (state.deadlineAt === undefined) state.deadlineAt = Date.now() + COMMAND_TIMEOUT_MS;
   if (!COMMANDS.includes(request.command as Command)) throw new DispatchError('unsupported_command', `Unsupported command: ${request.command}`, 'Use health.status or help from the CLI.');
   const command = request.command as Command;
@@ -1210,6 +1263,7 @@ async function popupState(): Promise<unknown> {
     takeover_requested: takeoverRequested,
     permissions: await getPermissionState(activeTab?.url),
     sessions: sessionsState,
+    telemetry_consent: await browserTelemetry().getConsent(),
     active_tab: activeTab ? popupTabDetails(activeTab, session) : null,
   };
 }

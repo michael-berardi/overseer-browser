@@ -1,10 +1,10 @@
 # Contributing
 
-Contributions are welcome when they preserve the local-only, least-privilege contract. Read [README.md](README.md), [PROTOCOL.md](PROTOCOL.md), [PRIVACY.md](PRIVACY.md), and [SECURITY.md](SECURITY.md) first.
+Contributions are welcome when they preserve the local-first, least-privilege contract. Read [README.md](README.md), [PROTOCOL.md](PROTOCOL.md), [PRIVACY.md](PRIVACY.md), and [SECURITY.md](SECURITY.md) first.
 
 ## Design rules
 
-- Keep all browser control local. Do not add telemetry, analytics, external servers, remote logging, or hidden network fallbacks.
+- Keep all browser control local. Do not add telemetry or network behavior beyond the existing explicit-consent v2 telemetry contract; never add hidden network fallbacks, remote logging, or external control servers.
 - Never use `chrome.debugger`, CDP, the `debugger` permission, history, bookmarks, or webRequest to make a feature easier. `<all_urls>` may be offered only as an optional user-gesture grant for Chrome's screenshot API; it must never be a required host permission.
 - Preserve exact meeting-host permissions, popup user-gesture gating for automation origins, and the separate warning for optional broad screenshot access.
 - Keep the Agent Window as the default. Require an explicit borrow for normal tabs and return borrowed tabs on stop.
@@ -14,7 +14,7 @@ Contributions are welcome when they preserve the local-only, least-privilege con
 
 ## Local setup
 
-Use a clean checkout and a supported Node.js/npm version. Do not commit generated output or personal configuration.
+Use a clean checkout and a supported Node.js/npm version. Do not commit generated output, release ZIPs, credentials, or personal configuration. Generated `.output/` and `chrome-extension/` directories are local staging output and are ignored by Git.
 
 ```sh
 npm ci --prefix extension
@@ -23,7 +23,7 @@ npm run dev --prefix extension
 
 `npm run dev` is for local extension development. Load the generated development directory through the browser's **Load unpacked** flow, and use a test browser profile whenever possible. Native-host registration should be per-user and use the documented installer/OS adapter; never paste an absolute home path, token, or private key into a public manifest.
 
-For a reproducible extension build, keep the lockfile under review, start from a clean checkout, use `npm ci --prefix extension`, and build with `npm run build --prefix extension`. Compare the generated manifest, extension ID, permissions, and artifact checksums before release; never hand-edit generated output.
+For a reproducible extension build, keep the lockfile under review, start from a clean checkout, use `npm ci --prefix extension`, and build with `npm run build --prefix extension`. Run `npm run release:verify --prefix extension` against the generated artifact before packaging; never hand-edit generated output.
 
 ## Before opening a change
 
@@ -40,12 +40,12 @@ The test suite should cover observable behavior, not implementation snapshots. A
 - protocol schema, framing, request IDs, bounded messages, timeouts, cancellation, and host authentication;
 - session ownership, Agent Window defaults, borrow/return transitions, and disconnect cleanup;
 - required meeting-host parsing, opaque hash format, deduplication, capture suppression, and payload minimization;
-- optional permission gating and the no-debugger manifest invariant;
+- explicit telemetry consent, no pre-consent identifier/network/counters, cadence, disable cleanup, and exact payload minimization;
 - explicit unsupported errors and UltraVox accept/decline state.
 
 Exercise the smoke path in a real Chromium profile when browser behavior changes: connect, create an Agent Window, navigate, observe, click/fill, screenshot, borrow/return, stop, and confirm no debugger infobar. Use deterministic Meet/Zoom fixtures or local pages and verify that only the opaque meeting event reaches the host.
 
-Do not add GitHub Actions. Use local/manual release checks and document any platform-specific command needed to reproduce them.
+Do not add GitHub Actions. Use the local/manual release verifier and Chrome Web Store path documented in [README.md](README.md). Publishing requires environment-only OAuth credentials and dashboard review; do not claim publication unless the dashboard confirms it.
 
 ## Accessibility and interaction review
 
@@ -63,7 +63,7 @@ The popup and takeover surfaces are operator tools, not decorative dashboards:
 
 Describe the user-visible behavior, permissions affected, data flow, and tests run. Call out any protocol or error-code change and update [PROTOCOL.md](PROTOCOL.md). Include screenshots only from deterministic fixtures; remove URLs, tokens, page content, and personal data.
 
-Reviewers should inspect the manifest diff, generated permissions, native-host registration, and public artifacts—not only the TypeScript or Rust diff. A change is not ready if it weakens the no-debugger, no-telemetry, exact-host, or explicit-consent invariants.
+Reviewers should inspect the manifest diff, generated permissions, native-host registration, release verifier output, and public artifacts—not only the TypeScript diff. A change is not ready if it weakens the no-debugger, exact-host, opt-in-telemetry, or explicit-consent invariants.
 
 ## Commit and license
 
