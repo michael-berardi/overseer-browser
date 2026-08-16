@@ -94,14 +94,14 @@ export function calculateCrop(rect: RectResult, viewport: { width: number; heigh
 function captureDataUrlToBlob(dataUrl: string): Blob {
   const separator = dataUrl.indexOf(',');
   const metadata = separator >= 0 ? dataUrl.slice(0, separator) : '';
-  if (!metadata.startsWith('data:image/') || !metadata.endsWith(';base64')) {
+  if (metadata !== 'data:image/png;base64' && metadata !== 'data:image/jpeg;base64') {
     throw new ScreenshotError('screenshot_capture_failed', 'Chrome returned an invalid screenshot data URL.');
   }
   try {
     const binary = atob(dataUrl.slice(separator + 1));
     const bytes = new Uint8Array(binary.length);
     for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
-    return new Blob([bytes], { type: metadata.slice(5, -7) });
+    return new Blob([bytes], { type: metadata === 'data:image/png;base64' ? 'image/png' : 'image/jpeg' });
   } catch {
     throw new ScreenshotError('screenshot_capture_failed', 'Chrome returned an invalid base64 screenshot payload.');
   }

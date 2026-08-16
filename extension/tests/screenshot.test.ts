@@ -12,17 +12,19 @@ describe('screenshot target selection', () => {
     expect(query).toHaveBeenCalledWith({ windowId: 7, active: true });
     expect(captureVisibleTab).not.toHaveBeenCalled();
   });
-  it('decodes capture data URLs without relying on service-worker fetch', async () => {
-    const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-    const encoded = btoa(String.fromCharCode(...png));
-    const outputBlob = { arrayBuffer: async () => png.buffer };
+  it.each([
+    { format: 'png' as const, mimeType: 'image/png', bytes: new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) },
+    { format: 'jpeg' as const, mimeType: 'image/jpeg', bytes: new Uint8Array([0xff, 0xd8, 0xff, 0xe0]) },
+  ])('decodes $format capture data URLs without relying on service-worker fetch', async ({ format, mimeType, bytes }) => {
+    const encoded = btoa(String.fromCharCode(...bytes));
+    const outputBlob = { arrayBuffer: async () => bytes.buffer };
     const query = vi.fn(async () => [{ id: 21, windowId: 7, active: true }]);
-    const captureVisibleTab = vi.fn(async () => `data:image/png;base64,${encoded}`);
+    const captureVisibleTab = vi.fn(async () => `data:${mimeType};base64,${encoded}`);
     const executeScript = vi.fn(async () => [{ result: { ok: true, value: { width: 2, height: 2, devicePixelRatio: 1 } } }]);
     const canvas = {
       getContext: vi.fn(() => ({ drawImage: vi.fn() })),
       convertToBlob: vi.fn(async (options: { type: string }) => {
-        expect(options.type).toBe('image/png');
+        expect(options.type).toBe(mimeType);
         return outputBlob;
       }),
     };
@@ -32,17 +34,35 @@ describe('screenshot target selection', () => {
       throw new TypeError('Failed to fetch');
     }));
     vi.stubGlobal('createImageBitmap', vi.fn(async (blob: Blob) => {
-      expect(new Uint8Array(await blob.arrayBuffer())).toEqual(png);
+      expect(blob.type).toBe(mimeType);
+      expect(new Uint8Array(await blob.arrayBuffer())).toEqual(bytes);
       return { width: 2, height: 2, close: vi.fn() };
     }));
     vi.stubGlobal('OffscreenCanvas', vi.fn(() => canvas));
 
-    const result = await captureScreenshot(21, 7, undefined, 'png');
+    const result = await captureScreenshot(21, 7, undefined, format);
 
-    expect(captureVisibleTab).toHaveBeenCalledWith(7, { format: 'png' });
+    expect(captureVisibleTab).toHaveBeenCalledWith(7, format === 'jpeg' ? { format, quality: 82 } : { format });
     expect(fetch).not.toHaveBeenCalled();
-    expect(result.format).toBe('png');
-    expect(atob(result.data).slice(0, 8)).toBe(String.fromCharCode(...png));
+    expect(result.format).toBe(format);
+    expect(atob(result.data).slice(0, bytes.length)).toBe(String.fromCharCode(...bytes));
+  });
+
+  it.each([
+    'data:image/webp;base64,AAAA',
+    'data:image/svg+xml;base64,AAAA',
+    'data:image/;base64,AAAA',
+    'not-a-data-url',
+  ])('rejects unsupported capture data URL %s', async (dataUrl) => {
+    const query = vi.fn(async () => [{ id: 21, windowId: 7, active: true }]);
+    const captureVisibleTab = vi.fn(async () => dataUrl);
+    const createImageBitmap = vi.fn();
+    vi.stubGlobal('browser', { tabs: { query } });
+    vi.stubGlobal('chrome', { tabs: { captureVisibleTab } });
+    vi.stubGlobal('createImageBitmap', createImageBitmap);
+
+    await expect(captureScreenshot(21, 7)).rejects.toMatchObject({ code: 'screenshot_capture_failed' });
+    expect(createImageBitmap).not.toHaveBeenCalled();
   });
 
 
