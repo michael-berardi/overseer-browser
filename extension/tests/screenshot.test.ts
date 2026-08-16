@@ -12,28 +12,35 @@ describe('screenshot target selection', () => {
     expect(query).toHaveBeenCalledWith({ windowId: 7, active: true });
     expect(captureVisibleTab).not.toHaveBeenCalled();
   });
-  it('encodes an explicitly requested PNG and preserves the magic bytes', async () => {
+  it('decodes capture data URLs without relying on service-worker fetch', async () => {
     const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-    const blob = { arrayBuffer: async () => png.buffer };
+    const encoded = btoa(String.fromCharCode(...png));
+    const outputBlob = { arrayBuffer: async () => png.buffer };
     const query = vi.fn(async () => [{ id: 21, windowId: 7, active: true }]);
-    const captureVisibleTab = vi.fn(async () => 'data:image/png;base64,');
+    const captureVisibleTab = vi.fn(async () => `data:image/png;base64,${encoded}`);
     const executeScript = vi.fn(async () => [{ result: { ok: true, value: { width: 2, height: 2, devicePixelRatio: 1 } } }]);
     const canvas = {
       getContext: vi.fn(() => ({ drawImage: vi.fn() })),
       convertToBlob: vi.fn(async (options: { type: string }) => {
         expect(options.type).toBe('image/png');
-        return blob;
+        return outputBlob;
       }),
     };
     vi.stubGlobal('browser', { tabs: { query } });
     vi.stubGlobal('chrome', { tabs: { captureVisibleTab }, scripting: { executeScript } });
-    vi.stubGlobal('fetch', vi.fn(async () => ({ blob: async () => blob })));
-    vi.stubGlobal('createImageBitmap', vi.fn(async () => ({ width: 2, height: 2, close: vi.fn() })));
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      throw new TypeError('Failed to fetch');
+    }));
+    vi.stubGlobal('createImageBitmap', vi.fn(async (blob: Blob) => {
+      expect(new Uint8Array(await blob.arrayBuffer())).toEqual(png);
+      return { width: 2, height: 2, close: vi.fn() };
+    }));
     vi.stubGlobal('OffscreenCanvas', vi.fn(() => canvas));
 
     const result = await captureScreenshot(21, 7, undefined, 'png');
 
     expect(captureVisibleTab).toHaveBeenCalledWith(7, { format: 'png' });
+    expect(fetch).not.toHaveBeenCalled();
     expect(result.format).toBe('png');
     expect(atob(result.data).slice(0, 8)).toBe(String.fromCharCode(...png));
   });

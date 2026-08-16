@@ -35,7 +35,7 @@ export async function captureScreenshot(
   await requireActiveScreenshotTarget(tabId, windowId);
   const captureOptions = format === 'jpeg' ? { format: 'jpeg' as const, quality: 82 } : { format: 'png' as const };
   const dataUrl = await chrome.tabs.captureVisibleTab(windowId, captureOptions);
-  const source = await createImageBitmap(await (await fetch(dataUrl)).blob());
+  const source = await createImageBitmap(captureDataUrlToBlob(dataUrl));
   const viewport = (await runInIsolatedWorld(tabId, { kind: 'viewport' })) as { width: number; height: number; devicePixelRatio: number };
   try {
     const crop = rect ? calculateCrop(rect, viewport, source.width, source.height) : { left: 0, top: 0, width: source.width, height: source.height };
@@ -89,6 +89,22 @@ export function calculateCrop(rect: RectResult, viewport: { width: number; heigh
   const cropRight = Math.max(cropLeft + 1, Math.min(imageWidth, Math.round(right * scaleX)));
   const cropBottom = Math.max(cropTop + 1, Math.min(imageHeight, Math.round(bottom * scaleY)));
   return { left: cropLeft, top: cropTop, width: cropRight - cropLeft, height: cropBottom - cropTop };
+}
+
+function captureDataUrlToBlob(dataUrl: string): Blob {
+  const separator = dataUrl.indexOf(',');
+  const metadata = separator >= 0 ? dataUrl.slice(0, separator) : '';
+  if (!metadata.startsWith('data:image/') || !metadata.endsWith(';base64')) {
+    throw new ScreenshotError('screenshot_capture_failed', 'Chrome returned an invalid screenshot data URL.');
+  }
+  try {
+    const binary = atob(dataUrl.slice(separator + 1));
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+    return new Blob([bytes], { type: metadata.slice(5, -7) });
+  } catch {
+    throw new ScreenshotError('screenshot_capture_failed', 'Chrome returned an invalid base64 screenshot payload.');
+  }
 }
 
 function bytesToBase64(bytes: Uint8Array): string {
