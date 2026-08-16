@@ -48,35 +48,24 @@ cd overseer-browser
 
 Load `./chrome-extension` using Chrome's **Load unpacked** flow (`chrome://extensions`, with Developer mode enabled). Confirm that the loaded ID is `iabfdeokmilpklblkgccpjlekchfjcno`. Never accept a different ID by weakening `allowed_origins`; fix the build key or use the release artifact.
 
-## Chrome Web Store releases and updates
+## GitHub source updates
 
-The stable public release uses extension ID `iabfdeokmilpklblkgccpjlekchfjcno`. Chrome manages updates automatically for builds installed from the Web Store; the Store package intentionally omits the external-hosting-only `update_url` manifest key. This repository does not claim that a Web Store release has been published.
+GitHub is the distribution source for this extension. Chrome loads the generated
+`chrome-extension/` directory as an unpacked extension; there is no Chrome Web
+Store listing or store-managed update channel.
 
-For a manual release, build the extension, verify the generated artifact, and create a ZIP without committing generated output:
+Update the checkout and rebuild both the extension and native host:
 
 ```sh
-npm run build --prefix extension
-npm run release:verify --prefix extension
-npm run release:package --prefix extension
+git pull --ff-only
+./scripts/manage-macos.sh update
 ```
 
-To submit the verified package manually through the Chrome Web Store API V2, enter the publisher ID and read OAuth values silently into a temporary Bash subshell. They are exported only to the publisher process and disappear when it exits; the secret values never appear in shell history, files, CI configuration, or logs:
-
-```bash
-(
-  read -r -p 'Chrome Web Store publisher ID: ' CHROME_WEB_STORE_PUBLISHER_ID
-  read -r -s -p 'Chrome Web Store client ID: ' CHROME_WEB_STORE_CLIENT_ID; printf '\n'
-  read -r -s -p 'Chrome Web Store client secret: ' CHROME_WEB_STORE_CLIENT_SECRET; printf '\n'
-  read -r -s -p 'Chrome Web Store refresh token: ' CHROME_WEB_STORE_REFRESH_TOKEN; printf '\n'
-  export CHROME_WEB_STORE_PUBLISHER_ID CHROME_WEB_STORE_CLIENT_ID
-  export CHROME_WEB_STORE_CLIENT_SECRET CHROME_WEB_STORE_REFRESH_TOKEN
-  npm run release:publish --prefix extension
-)
-```
-
-The publish command uses the current Chrome Web Store API V2 to upload, wait for asynchronous validation, and request publication for the exact stable ID; it does not print or persist credentials. Publication still requires a Chrome Web Store developer account, its publisher ID, an OAuth client with Chrome Web Store API access, completed listing/privacy forms, and dashboard review/approval. See the official [Chrome Web Store API guide](https://developer.chrome.com/docs/webstore/using-api).
-
-An unpacked `chrome-extension/` directory is a local development/install output. It does not receive Web Store automatic updates: rebuild it with `./scripts/manage-macos.sh update`, then manually reload the unpacked extension from `chrome://extensions`. Keep generated `.output/` and `chrome-extension/` output out of commits; the source under `extension/` and the lockfile are authoritative.
+Then open `chrome://extensions` and choose **Reload** on OverSeer Browser. Confirm
+that the extension ID remains `iabfdeokmilpklblkgccpjlekchfjcno`. The public
+manifest key keeps that identity stable across source rebuilds. Generated
+`.output/` and `chrome-extension/` directories stay out of Git; source under
+`extension/` and the lockfile are authoritative.
 
 The equivalent installed CLI commands are `overseer-browser install`, `overseer-browser status`, `overseer-browser update`, and `overseer-browser uninstall`. Installed `status` and `uninstall` are self-contained; `install` and `update` require the recorded source checkout so the extension and native host can be rebuilt together. The registration must use the exact host name `com.imploselabs.overseer_browser`, the loaded extension ID in `allowed_origins`, and a user-owned host executable. Use the platform adapter for Linux or Windows when provided; it must preserve the same per-user and exact-origin rules. Do not place a token, private key, absolute home path, or production endpoint in source, manifests, or shell history.
 

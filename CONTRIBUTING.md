@@ -23,7 +23,7 @@ npm run dev --prefix extension
 
 `npm run dev` is for local extension development. Load the generated development directory through the browser's **Load unpacked** flow, and use a test browser profile whenever possible. Native-host registration should be per-user and use the documented installer/OS adapter; never paste an absolute home path, token, or private key into a public manifest.
 
-For a reproducible extension build, keep the lockfile under review, start from a clean checkout, use `npm ci --prefix extension`, and build with `npm run build --prefix extension`. Run `npm run release:verify --prefix extension` against the generated artifact before packaging; never hand-edit generated output.
+For a reproducible extension build, keep the lockfile under review, start from a clean checkout, use `npm ci --prefix extension`, and build with `npm run build --prefix extension`. Never hand-edit generated output.
 
 ## Before opening a change
 
@@ -45,7 +45,7 @@ The test suite should cover observable behavior, not implementation snapshots. A
 
 Exercise the smoke path in a real Chromium profile when browser behavior changes: connect, create an Agent Window, navigate, observe, click/fill, screenshot, borrow/return, stop, and confirm no debugger infobar. Use deterministic Meet/Zoom fixtures or local pages and verify that only the opaque meeting event reaches the host.
 
-Do not add GitHub Actions. Use the local/manual release verifier and Chrome Web Store path documented in [README.md](README.md). Publishing requires environment-only OAuth credentials and dashboard review; do not claim publication unless the dashboard confirms it.
+Do not add GitHub Actions. GitHub source is the only distribution path: contributors build the unpacked extension locally with the documented installer and update commands.
 
 ## Accessibility and interaction review
 
