@@ -8,7 +8,7 @@ export default defineConfig({
   manifest: {
     name: 'OverSeer Browser',
     short_name: 'OverSeer',
-    version: '0.1.1',
+    version: '0.1.2',
     key: publicKey,
     permissions: ['nativeMessaging', 'storage', 'scripting', 'tabs', 'windows', 'activeTab'],
     host_permissions: ['https://meet.google.com/*', 'https://zoom.us/*', 'https://*.zoom.us/*'],
