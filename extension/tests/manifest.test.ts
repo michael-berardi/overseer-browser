@@ -4,15 +4,15 @@ import { describe, expect, it } from 'vitest';
 const config = readFileSync(new URL('../wxt.config.ts', import.meta.url), 'utf8');
 
 describe('manifest privacy invariants', () => {
-  it('uses the stable source-build identity and least-privilege permissions', () => {
+  it('uses the stable source-build identity and autonomous site permissions', () => {
     expect(config).toContain('key: publicKey');
     expect(config).toContain('MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8A');
     expect(config).toContain('IDAQAB');
-    expect(config).toContain("version: '0.1.2'");
-    expect(config).toContain("permissions: ['nativeMessaging', 'storage', 'scripting', 'tabs', 'windows', 'activeTab']");
-    expect(config).toContain("host_permissions: ['https://meet.google.com/*', 'https://zoom.us/*', 'https://*.zoom.us/*']");
-    expect(config).toContain("optional_host_permissions: ['<all_urls>']");
-    expect(config).not.toMatch(/^\s*host_permissions:\s*\['<all_urls>'\]/m);
+    expect(config).toContain("version: '0.1.3'");
+    expect(config).toContain("permissions: ['nativeMessaging', 'storage', 'scripting', 'tabs', 'windows']");
+    expect(config).toContain("host_permissions: ['<all_urls>']");
+    expect(config).not.toContain('optional_host_permissions');
+    expect(config).not.toContain('activeTab');
     expect(config).not.toContain('update_url');
     expect(config).toContain("connect-src https://analytics.libertydesign.studio");
     expect(config).not.toContain("connect-src *");

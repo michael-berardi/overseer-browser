@@ -1,6 +1,6 @@
 # OverSeer Browser
 
-OverSeer Browser is a local-first Chromium extension and native host for operator-directed browser control. It keeps the browser-control transport on the same machine: a local CLI talks to a user-only Unix socket, the native host talks to the extension through Chrome Native Messaging, and the extension performs actions only in an Agent Window or in tabs the operator explicitly borrows.
+OverSeer Browser is a local-first Chromium extension and native host for autonomous browser control. It keeps the browser-control transport on the same machine: a local CLI talks to a user-only Unix socket, the native host talks to the extension through Chrome Native Messaging, and the extension performs actions only in an Agent Window or in tabs the operator explicitly borrows.
 
 The extension and native host do **not** use `chrome.debugger`, the `debugger` permission, CDP, or an external control service. Page observations or screenshots requested by the operator are returned to the calling OverSeer runtime; that runtime may send them to its configured AI provider. Optional anonymous product telemetry is disabled until the popup consent choice is accepted.
 
@@ -11,8 +11,8 @@ The browser contract is model-agnostic. Claude, Codex, Kimi, and other general a
 - **Opt-in telemetry only.** The first popup visit asks whether to share anonymous usage totals. Until the operator accepts, the extension creates no telemetry identifier, stores no telemetry counters, and makes no telemetry request. Declining is silent. Acceptance sends only a random installation ID, extension version, coarse platform/architecture, UTC day, and `launch`/daily `heartbeat` events; normally one successful `usage` batch is sent per UTC day, with a lowercase UUID v4 `batchId` retained unchanged across retries.
   Usage contains only these counters: `sessionsStarted`, `sessionsEnded`, `tabsOpened`, `tabsClosed`, `navigations`, `screenshots`, `meetingsDetected`, `popupsHandled`, `permissionsGranted`, and `permissionsDenied`. It never contains URLs, titles, page data, screenshots, form values, command arguments, meeting details, or identifiers derived from browser content. Disable sharing from the popup to delete the identifier, cadence markers, and pending counters.
 - **Local-first transport.** Browser control remains on the same machine and does not depend on telemetry. When opted in, the only telemetry destination is `https://analytics.libertydesign.studio/api/app-telemetry/event`.
-- **Least privilege.** Meeting reminders use only the exact first-party meeting hosts declared by the extension. General site access is optional and is requested only after a popup user gesture.
-- **Visible control.** A dedicated Agent Window is the default. Normal tabs are read-only until explicitly borrowed and are returned when a session stops.
+- **Autonomous site access.** Required `<all_urls>` host access lets agents navigate and control any HTTP(S) site without a popup grant for each origin. Commands still require an active session and a session-owned or explicitly borrowed tab.
+- **Visible tab ownership.** A dedicated Agent Window is the default. Normal tabs are read-only until explicitly borrowed and are returned when a session stops.
 - **No debugger path.** Debugger-only operations such as response-body capture, print-to-PDF, device emulation, and trusted CDP input return structured `unsupported` errors; they are never silently downgraded.
 - **Meeting minimization.** Google Meet and Zoom detection produces only an opaque salted SHA-256 meeting key, provider, detection ID, and timestamp. Raw URLs, meeting IDs, titles, page content, participants, and credentials do not leave the extension.
 - **No automatic recording.** The extension never starts recording. An optional UltraVox adapter shows a visible prompt and requires an affirmative `Start recording` action.
@@ -71,12 +71,11 @@ The equivalent installed CLI commands are `overseer-browser install`, `overseer-
 
 ## First use
 
-1. Open the extension popup and confirm **Disconnected** is shown before connecting.
-2. Enable the local host connection from the popup. The choice persists; disconnect remains explicit.
-3. Start a session. A dedicated Agent Window is created by default.
-4. Use the CLI commands below to inspect the session, create or select a tab, navigate, observe, and perform visible actions.
-5. To use a normal user tab, open that tab and click **Borrow active tab** in the extension popup. Return it before ending work, or stop the session and verify it was returned.
-6. End agent work in a `finally`/cleanup path with `sessions stop`, confirm borrowed tabs were returned, then disconnect. The extension reconnects only when enabled and the local host is available; no remote connection is attempted.
+1. Run `overseer-browser status --json`. A fresh install connects automatically to the same-user native host; an operator can still disconnect or reconnect from the popup.
+2. Start a session. A dedicated Agent Window is created by default.
+3. Use the CLI commands below to inspect the session, create or select a tab, navigate, observe, and perform visible actions.
+4. To use a normal user tab, open that tab and click **Borrow active tab** in the extension popup. Return it before ending work, or stop the session and verify it was returned.
+5. End agent work in a `finally`/cleanup path with `sessions stop` and confirm borrowed tabs were returned. Leave the local connection enabled for autonomous agent use; disconnecting explicitly persists until the operator reconnects.
 
 ### CLI surface
 
@@ -130,6 +129,7 @@ overseer-browser capture start
 overseer-browser capture stop
 overseer-browser help
 overseer-browser takeover
+overseer-browser takeover resume
 overseer-browser cancel <request-id>
 ```
 
@@ -145,13 +145,13 @@ overseer-browser batch '{"actions":[{"command":"observe","params":{"tab_id":101}
 
 Run `overseer-browser --help` for the installed command list. Commands return structured errors with stable error codes; unsupported debugger-only capabilities are not emulated.
 
-`health` checks the installed local runtime without requiring an extension connection. `status` additionally queries the connected extension and reports its identity, evaluation capability, current selected-origin access, takeover state, sessions, in-flight request count, and retained incomplete-upload count/bytes; automation readiness and cleanup monitoring should use `status --json`.
+`health` checks the installed local runtime without requiring an extension connection. `status` additionally queries the connected extension and reports its identity, all-site access, evaluation capability, takeover state, sessions, in-flight request count, and retained incomplete-upload count/bytes; automation readiness and cleanup monitoring should use `status --json`.
 
 The CLI request contract is documented in [PROTOCOL.md](PROTOCOL.md). The CLI token authenticates the local client to the host; it is stripped before a request is sent to the extension.
 
-## Optional site access
+## Autonomous site access
 
-General browser control is disabled until the operator explicitly grants optional site access from the popup. Grant only the origins needed for the current task. Revoke them from the browser's extension site-access controls or from the popup disconnect/access control. Meeting reminders remain limited to their exact declared hosts and do not turn into passive general browsing collection.
+The manifest requires `<all_urls>` so an active local agent session can navigate, inspect, screenshot, and interact with any HTTP or HTTPS origin without runtime permission prompts. This broad host permission does not create passive browsing collection: commands still require the user-only native transport, an active session, and a session-owned or explicitly borrowed tab. Persistent meeting detection remains limited to its explicit Meet and Zoom content-script matches.
 
 ## Optional UltraVox meeting adapter
 
@@ -161,11 +161,11 @@ The generic `meeting_detected` event can be consumed by a local adapter such as 
 
 Before trusting an installation:
 
-- Inspect the built manifest: it must not contain `debugger`, `chrome.debugger`, history, bookmarks, webRequest, or broad required origins. `<all_urls>` may appear only as an optional operator-granted capability needed for extension screenshots; it must never appear under `host_permissions`.
+- Inspect the built manifest: it must contain required `<all_urls>` host access and must not contain `optional_host_permissions`, `activeTab`, `debugger`, `chrome.debugger`, history, bookmarks, or webRequest.
 - Confirm the extension ID and `allowed_origins` are exact; the host name is `com.imploselabs.overseer_browser`.
 - Confirm the host socket and token file are user-only (directory mode `0700`, socket/token mode `0600` where supported).
 - Run `overseer-browser status`, disconnect, and confirm the popup state changes without any network dependency.
-- Exercise Agent Window creation, then borrow a normal tab only through the popup and return it. Confirm there is no debugger infobar.
+- Exercise Agent Window creation and navigate across at least two unrelated origins without a permission prompt. Then borrow a normal tab only through the popup and return it. Confirm there is no debugger infobar.
 - Trigger a deterministic meeting fixture, then inspect only the host/adapter frame: it must contain an opaque `meeting_key` and no raw URL, meeting ID, title, page content, participants, or credentials.
 - Confirm no automatic recording occurs; a prompt must require `Start recording`.
 
@@ -185,11 +185,10 @@ If the recorded checkout moved or was deleted, clone the public repository again
 
 1. Disconnect the popup and stop the active session: `overseer-browser sessions stop`.
 2. Return borrowed tabs and close Agent Windows.
-3. Revoke optional site access in the browser's extension settings.
-4. Remove the extension through `chrome://extensions` (or the browser's equivalent).
-5. Unregister the native host with `./scripts/manage-macos.sh uninstall` on macOS, or `overseer-browser uninstall` through the installed CLI. Verify `overseer-browser status` no longer finds a host.
-6. Remove only this application's user configuration, socket, token, logs, and generated build artifacts using the documented platform cleanup command. Do not delete shared browser data.
-7. If UltraVox was connected, disable its meeting-detection setting and remove only the adapter's local configuration.
+3. Remove the extension through `chrome://extensions` (or the browser's equivalent) to revoke its required all-site access.
+4. Unregister the native host with `./scripts/manage-macos.sh uninstall` on macOS, or `overseer-browser uninstall` through the installed CLI. Verify `overseer-browser status` no longer finds a host.
+5. Remove only this application's user configuration, socket, token, logs, and generated build artifacts using the documented platform cleanup command. Do not delete shared browser data.
+6. If UltraVox was connected, disable its meeting-detection setting and remove only the adapter's local configuration.
 
 The extension has no user account or cloud browser-control plane. Opted-in telemetry is limited to the disclosed anonymous event schema; disabling it deletes the local identifier, cadence markers, and pending counters but cannot recall events already accepted by the telemetry endpoint. Native-host uninstall must not silently leave a runnable host or a valid token behind.
 
@@ -202,7 +201,7 @@ npm run build --prefix extension
 npm test --prefix extension
 ```
 
-Use the focused tests for protocol framing/validation, session ownership, permission gating, meeting parsing/hash/deduplication, host authentication, and the no-debugger manifest invariant. The smoke path is: connect, create Agent Window, navigate, observe, click/fill, screenshot, borrow, return, stop, and verify no infobar. Run the Meet/Zoom detector fixture and confirm the minimised payload and consent prompt. See [CONTRIBUTING.md](CONTRIBUTING.md) for the reproducible-build and review rules.
+Use the focused tests for protocol framing/validation, session ownership, autonomous site access, meeting parsing/hash/deduplication, host authentication, and the no-debugger manifest invariant. The smoke path is: connect, create an Agent Window, navigate across unrelated origins without a permission prompt, observe, click/fill, screenshot, borrow, return, stop, and verify no infobar. Run the Meet/Zoom detector fixture and confirm the minimised payload and consent prompt. See [CONTRIBUTING.md](CONTRIBUTING.md) for the reproducible-build and review rules.
 
 ## Documentation
 

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   MEETING_HOST_POLICY,
+  SITE_ACCESS_POLICY,
   connectionActionLabel,
   connectionStatusPresentation,
   formatPopupError,
@@ -12,6 +13,14 @@ describe('popup meeting host disclosure', () => {
     expect(MEETING_HOST_POLICY).toContain('meet.google.com');
     expect(MEETING_HOST_POLICY).toContain('Zoom provider subdomains');
     expect(MEETING_HOST_POLICY).toContain('us02web.zoom.us');
+  });
+});
+
+describe('popup autonomous site access disclosure', () => {
+  it('states that agents do not need per-site approval', () => {
+    expect(SITE_ACCESS_POLICY).toContain('any HTTP or HTTPS site');
+    expect(SITE_ACCESS_POLICY).toContain('without per-site approval');
+    expect(SITE_ACCESS_POLICY).toContain('session-owned or explicitly borrowed tab');
   });
 });
 

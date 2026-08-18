@@ -16,7 +16,7 @@ import {
   responseOk,
 } from '../src/protocol';
 import { AutomationError, runInIsolatedWorld, runPageEvaluation, type AutomationAction } from '../src/automation';
-import { getPermissionState, canControlUrl, isNavigableUrl } from '../src/permissions';
+import { clearLegacyAutomationOrigins, getPermissionState, isNavigableUrl } from '../src/permissions';
 import { MeetingDeduper, PendingMeetingQueue } from '../src/meeting';
 import { SessionError, SessionManager } from '../src/session';
 import { captureScreenshot, requireActiveScreenshotTarget, ScreenshotError } from '../src/screenshot';
@@ -335,6 +335,7 @@ const COMMAND_PARAM_KEYS: Record<Command, readonly string[]> = {
   'console.stop': ['tab_id', 'clear'],
   'network.read': ['tab_id', 'limit'],
   'takeover.prompt': [],
+  'takeover.resume': [],
   cancel: ['request_id'],
   'capture.start': [],
   'capture.stop': [],
@@ -347,10 +348,14 @@ export function assertKnownCommandParams(command: Command, params: Record<string
   }
 }
 
+export function connectionEnabledFromStored(stored: unknown): boolean {
+  return stored !== false;
+}
+
 async function restoreBackgroundState(): Promise<void> {
   try {
     const stored = (await browser.storage.local.get([CONNECTION_STORAGE_KEY]))[CONNECTION_STORAGE_KEY];
-    nativeEnabled = stored === true;
+    nativeEnabled = connectionEnabledFromStored(stored);
   } catch {
     nativeEnabled = false;
   }
@@ -359,6 +364,11 @@ async function restoreBackgroundState(): Promise<void> {
     takeoverRequested = stored === true;
   } catch {
     takeoverRequested = false;
+  }
+  try {
+    await clearLegacyAutomationOrigins();
+  } catch {
+    // Legacy permission metadata is non-authoritative; retry removal on the next startup.
   }
 }
 
@@ -418,11 +428,6 @@ function startBackground(): void {
         .then((consent) => sendResponse({ ok: true, telemetry_consent: consent }))
         .catch(() => sendResponse({ ok: false, error: 'telemetry_state_unavailable' }));
       return true;
-    }
-    if (value.kind === 'telemetry_permission_result' && typeof value.granted === 'boolean') {
-      void browserTelemetry().recordPermissionResult(value.granted);
-      sendResponse({ ok: true });
-      return false;
     }
     if (value.kind === 'telemetry_popup_opened') {
       void browserTelemetry().recordUsage('popupsHandled');
@@ -752,7 +757,7 @@ async function dispatchCommand(request: NativeRequest, state: InflightRequest): 
     return { cancelled: true, request_id: target };
   }
   assertNotCancelled(state);
-  if (takeoverRequested && isPausedCommand(command)) throw new DispatchError('human_takeover_active', 'Automation is paused for human takeover.', 'Return control to the agent from the extension popup.');
+  if (takeoverRequested && isPausedCommand(command)) throw new DispatchError('human_takeover_active', 'Automation is paused for human takeover.', 'Run overseer-browser takeover resume to return control to the agent.');
   if (command === 'health.status') {
     let currentUrl: string | undefined;
     try {
@@ -788,9 +793,7 @@ async function dispatchCommand(request: NativeRequest, state: InflightRequest): 
   if (command === 'tabs.create') {
     const url = optionalString(params, 'url');
     if (url === undefined) return sessions.createTab();
-    if (!isNavigableUrl(url) || !(await canControlUrl(url))) {
-      throw new DispatchError('permission_required', 'Optional site access is required for this URL.', 'Grant site access from the popup.');
-    }
+    if (!isNavigableUrl(url)) throw new DispatchError('invalid_url', 'Only http and https navigation is allowed.');
     const tab = await sessions.createTab();
     if (tab.id === undefined) throw new DispatchError('tab_required', 'Chrome did not return the new tab id.');
     const navigation = createTabNavigationWait(tab.id);
@@ -810,7 +813,6 @@ async function dispatchCommand(request: NativeRequest, state: InflightRequest): 
     const tabId = await ownedTab(params);
     const url = readString(params, 'url', 4_096);
     if (!isNavigableUrl(url)) throw new DispatchError('invalid_url', 'Only http and https navigation is allowed.');
-    if (!(await canControlUrl(url))) throw new DispatchError('permission_required', 'Optional site access is required for this origin.', 'Grant site access from the popup.');
     await sessions.cleanupTab(tabId);
     const navigation = createTabNavigationWait(tabId);
     try {
@@ -876,6 +878,11 @@ async function dispatchCommand(request: NativeRequest, state: InflightRequest): 
     await setTakeoverRequested(true);
     return { requested: true, state: 'human_takeover_required', message: 'Human takeover requested. Automation is paused until the operator returns control.' };
   }
+  if (command === 'takeover.resume') {
+    await setTakeoverRequested(false);
+    if (takeoverRequested) throw new DispatchError('takeover_resume_failed', 'Automation remains paused because takeover state could not be cleared.', 'Retry takeover resume after extension storage is available.');
+    return { resumed: true, takeover_requested: false, message: 'Automation resumed by the local operator CLI.' };
+  }
   if (command === 'capture.start') {
     await meetingStateReady;
     deduper.setCaptureActive(true);
@@ -921,8 +928,7 @@ async function targetTab(params: Record<string, unknown>): Promise<number> {
   const tabId = await ownedTab(params);
   const tab = await browser.tabs.get(tabId);
   if (params.frame_id !== undefined) throw new DispatchError('unsupported_frame', 'Only the top frame is supported by this extension.', 'Use a top-frame ref or a browser fallback for nested frames.');
-  if (!tab.url || !(await canControlUrl(tab.url))) throw new DispatchError('permission_required', 'Optional site access is required for this tab.', 'Grant access for this origin from the popup.');
-  if (!isNavigableUrl(tab.url)) throw new DispatchError('unsupported_page', 'This page cannot receive isolated automation.', 'Navigate to an http or https page.');
+  if (!tab.url || !isNavigableUrl(tab.url)) throw new DispatchError('unsupported_page', 'This page cannot receive isolated automation.', 'Navigate to an http or https page.');
   return tabId;
 }
 

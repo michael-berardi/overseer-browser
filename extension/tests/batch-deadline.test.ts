@@ -22,10 +22,9 @@ function storageArea(store: Record<string, unknown>) {
 async function loadBackground() {
   const browserStub = {
     storage: {
-      local: storageArea({ 'overseer.automation.origins.v1': ['https://example.test/*'] }),
+      local: storageArea({ 'overseer.connection.enabled.v1': false }),
       session: storageArea({}),
     },
-    permissions: { contains: vi.fn(async () => true) },
     tabs: {
       onUpdated: event(),
       onRemoved: event(),

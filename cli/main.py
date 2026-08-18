@@ -519,8 +519,10 @@ def _command_request(command: str, args: list[str]) -> tuple[str, dict[str, Any]
         _exact(args, 1, "cancel REQUEST_ID")
         return command, {"request_id": _checked_request_id(args[0])}
     if command == "takeover":
-        if args and args != ["prompt"]:
-            raise CLIError("usage", "takeover may only request human control; only the popup can resume automation")
+        if args and args not in (["prompt"], ["resume"]):
+            raise CLIError("usage", "usage: overseer-browser takeover [prompt|resume]")
+        if args == ["resume"]:
+            return "takeover.resume", {}
         return "takeover.prompt", {}
     if command in {"screenshot-element", "element-screenshot"}:
         _exact(args, 1, f"{command} REF")

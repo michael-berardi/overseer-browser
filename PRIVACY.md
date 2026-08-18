@@ -1,6 +1,6 @@
 # Privacy
 
-OverSeer Browser is designed for local-first, operator-directed automation. It has no account or cloud browser-control plane. A separate, explicit popup choice enables a minimal anonymous telemetry stream described below; the built manifest and protocol are authoritative for a particular release.
+OverSeer Browser is designed for local-first, autonomous agent automation. It has no account or cloud browser-control plane. A separate, explicit popup choice enables a minimal anonymous telemetry stream described below; the built manifest and protocol are authoritative for a particular release.
 
 ## What stays local
 
@@ -10,7 +10,6 @@ The extension, native host, CLI, and optional meeting adapter communicate on the
 - command arguments entered by the operator;
 - screenshots, uploads, and page observations requested by the operator;
 - a random local host token and connection metadata;
-- a bounded allowlist of exact origins for which the operator explicitly enabled automation.
 
 The extension and native host do not independently send these values to a vendor, external API, remote browser, or telemetry service. Page observations, screenshots, and action results explicitly requested by the operator are returned to the calling OverSeer runtime and may be sent to its configured AI provider under that runtime's privacy terms. If telemetry is enabled, it is the separate minimal event described below and never contains these values. A local shell history, browser profile, operating-system logs, browser sync, or user-selected upload destination can also retain data independently; the project does not control those facilities.
 
@@ -30,19 +29,18 @@ Telemetry never sends URLs, titles, page data, screenshots, form values, command
 
 ## Permissions
 
-Permissions are deliberately separated:
+Permissions separate autonomous site reach from command authority:
 
-- **Required meeting-host access:** persistent content scripts are limited to the exact Google Meet and Zoom hosts needed for reminders. This permission does not authorize snapshots, clicks, uploads, evaluation, or other automation on meeting tabs.
-- **Explicit automation access:** general browser control is off until the operator enables the active origin from a popup user gesture. For Meet and Zoom, that separate decision is retained as an exact-origin local allowlist because Chromium already treats the reminder host permission as granted. Granting access is not a request to collect or index the site; actions still require an active session and tab ownership.
-- **Optional screenshot access:** Chromium's extension screenshot API requires a broad optional host grant. `<all_urls>` is declared only under `optional_host_permissions` and requested from the popup's explicitly labeled advanced control. It is never a required host permission. Session ownership, explicit tab borrowing, HTTP(S)-only validation, and the separate page-evaluation opt-in continue to constrain commands after the grant.
+- **Required all-site access:** `<all_urls>` is a required host permission so agents can navigate, inspect, screenshot, and interact with any HTTP(S) origin without runtime permission prompts. It does not authorize commands by itself: every action still requires the user-only native transport, an active session, and a session-owned or explicitly borrowed tab.
+- **Limited persistent meeting detection:** content scripts remain matched only to the exact Google Meet and Zoom hosts needed for reminders. No persistent general-site content script is registered.
 - **Native Messaging:** connects the extension to the local host only. It is not a network permission.
 - **No debugger permission:** the extension does not use `chrome.debugger` and cannot access debugger-only capabilities.
 
-The manifest must not add broad required origins, history, bookmarks, or webRequest merely to make automation easier. The optional `<all_urls>` screenshot capability must remain user-gesture gated, separately labeled, and absent from required `host_permissions`. Browser permission prompts are controlled by Chromium and may vary by version; the user should grant only the access needed for a task.
+The manifest must not add history, bookmarks, webRequest, `activeTab`, or `optional_host_permissions`. Broad required host access is intentional for autonomous operation; uninstalling or disabling the extension is the revocation path.
 
 ## Agent Window and borrow model
 
-The default Agent Window is visibly separate from normal browsing. The extension owns and automates tabs created in that window. A normal tab is read-only until the operator explicitly borrows it through the CLI/popup. Borrowed tabs are returned when requested and as part of session stop. The extension never passively inventories arbitrary tabs or injects automation code into tabs that are not session-owned or borrowed.
+The default Agent Window is visibly separate from normal browsing. The extension owns and automates tabs created in that window. A normal tab is read-only until the operator explicitly borrows it through the popup. Borrowed tabs are returned when requested and as part of session stop. The extension never passively inventories arbitrary tabs or injects automation code into tabs that are not session-owned or borrowed.
 
 This is a privacy boundary, not a claim that a webpage is trustworthy. A page can still display or receive whatever the operator explicitly asks the automation to display or enter. Do not use browser control with credentials or sensitive data unless that is the intended task.
 
@@ -66,26 +64,28 @@ The local design reduces—but cannot eliminate—these risks:
 | --- | --- | --- |
 | CLI → host | random token, framed messages, user-only socket, peer-UID check where supported | another process running as the same user may access local IPC or read local state |
 | Host → extension | Chrome Native Messaging, exact extension ID in `allowed_origins`, versioned frames | a user who can modify the browser profile or host registration can alter the trust chain |
-| Extension → page | active session, Agent Window/borrow ownership, isolated-world content scripts, optional permissions | explicitly controlled pages can observe actions and values sent to them |
+| Extension → page | active session, Agent Window/borrow ownership, isolated-world content scripts, required all-site host access | explicitly controlled pages can observe actions and values sent to them |
 | Meeting page → reminder | exact hosts, parser, opaque salted key, bounded deduplication | a compromised page or browser can present false UI; detection is a reminder, not proof of attendance |
 | Local files → privacy | per-user paths, restrictive modes, no external upload by default | OS backups, shell history, browser sync, malware, or an administrator may expose local files |
 
-No browser extension can protect against a compromised browser, compromised operating system, malicious same-user process, or an operator who grants excessive site access. Use a separate browser profile or OS account for high-sensitivity work.
+No browser extension can protect against a compromised browser, compromised operating system, malicious same-user process, or misuse of its required all-site access. Use a separate browser profile or OS account for high-sensitivity work.
 
 ## No-debugger and no-infobar invariant
 
-The project does not request `debugger` and never invokes `chrome.debugger`. It does not rely on a Chrome launch switch to hide an infobar. A release or local build that contains the debugger permission, debugger API calls, or broad required origins fails the privacy review and must not be used. Optional `<all_urls>` access is acceptable only for the documented popup-granted screenshot capability and does not weaken tab ownership or command gating. Debugger-only operations return explicit unsupported errors and must be handled by an approved OverSeer cloud/desktop fallback instead.
+The project does not request `debugger` and never invokes `chrome.debugger`. It does not rely on a Chrome launch switch to hide an infobar. Required `<all_urls>` host access enables autonomous HTTP(S) automation but does not weaken session ownership or command gating. A release or local build that adds debugger access, history, bookmarks, webRequest, passive general-site content scripts, or external browser control fails the privacy review and must not be used. Debugger-only operations return explicit unsupported errors and must be handled by an approved OverSeer cloud/desktop fallback instead.
 
 ## Retention and deletion
 
-Runtime state is bounded and local; session ownership and pending meeting delivery clear on browser restart. Telemetry events already accepted by the disclosed endpoint are not recalled by uninstall or disable; disabling first removes the local telemetry identifier, cadence markers, and pending counters. Server-side rows containing the random installation ID are retained for at most 34 UTC days. ID-free daily totals contain only app/event/counter aggregates and are retained for at most 360 UTC days; a scheduled deletion worker enforces both limits even when no new events arrive. On uninstall, stop sessions, return borrowed tabs, revoke automation access in the popup or browser controls, remove the extension, unregister the native host, and remove this application's socket, token, configuration, logs, and generated artifacts using the platform cleanup command. Do not delete shared browser profile data. UltraVox users should also disable its meeting-detection setting and remove only the adapter's local state.
+Runtime state is bounded and local; session ownership and pending meeting delivery clear on browser restart. Telemetry events already accepted by the disclosed endpoint are not recalled by uninstall or disable; disabling first removes the local telemetry identifier, cadence markers, and pending counters. Server-side rows containing the random installation ID are retained for at most 34 UTC days. ID-free daily totals contain only app/event/counter aggregates and are retained for at most 360 UTC days; a scheduled deletion worker enforces both limits even when no new events arrive. On uninstall, stop sessions, return borrowed tabs, remove the extension to revoke its required all-site access, unregister the native host, and remove this application's socket, token, configuration, logs, and generated artifacts using the platform cleanup command. Do not delete shared browser profile data. UltraVox users should also disable its meeting-detection setting and remove only the adapter's local state.
+
+On startup, version 0.1.3 and later delete the obsolete `overseer.automation.origins.v1` allowlist left by per-origin releases.
 
 ## Privacy review checklist
 
 Before publishing a build, reviewers should inspect the manifest and source for:
 
 - no telemetry before explicit acceptance; when enabled, only the documented endpoint and v2 event schema with the exact allowlisted counters;
-- exact meeting host permissions separated from popup user-gesture-gated automation origins and optional broad screenshot access;
+- required `<all_urls>` host access, no runtime permission-request path, exact persistent Meet/Zoom content-script matches, and session/tab ownership gating;
 - no debugger API or `debugger` permission;
 - no raw meeting identifiers in host or adapter messages;
 - no passive tab/history/bookmark collection;

@@ -11,7 +11,7 @@ Include:
 - affected release, commit, browser, and operating system;
 - a concise description and impact;
 - reproducible steps or a minimal proof of concept;
-- whether the issue requires optional site access, a borrowed tab, native-host access, or same-user access;
+- whether the issue depends on all-site host access, a borrowed tab, native-host access, or same-user access;
 - any suggested mitigation.
 
 Do not include passwords, cookies, meeting URLs, raw meeting IDs, participant data, page content, tokens, private keys, device identifiers, or personal data. Redact logs and screenshots. Do not test against another person's browser or data.
@@ -21,7 +21,7 @@ Do not include passwords, cookies, meeting URLs, raw meeting IDs, participant da
 A release is not acceptable if it violates any of these:
 
 - no `chrome.debugger` call and no `debugger` permission;
-- no broad required origins, history, bookmarks, or webRequest permission; optional `<all_urls>` access is permitted only through the labeled popup grant needed for screenshots;
+- required `<all_urls>` host access for autonomous HTTP(S) control, with no runtime permission-request path and no history, bookmarks, webRequest, `activeTab`, or `optional_host_permissions`;
 - no telemetry before explicit opt-in; opted-in telemetry must use only the documented endpoint, schema, required identity/day fields, and exact allowlisted counters;
 - exact extension ID and native-host `allowed_origins` binding;
 - CLI socket directory mode `0700`, socket/token mode `0600` where supported, and peer-UID validation where supported;

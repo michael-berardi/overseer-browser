@@ -5,23 +5,16 @@ const tabStore = new Map<number, chrome.tabs.Tab>([
   [20, { id: 20, windowId: 99, url: 'https://meet.google.com/abc-defg-hij', active: false }],
   [21, { id: 21, windowId: 10, url: 'about:blank', active: false }],
 ]);
-const localStore: Record<string, unknown> = {};
 const sessionStore: Record<string, unknown> = {};
 
 vi.stubGlobal('browser', {
   storage: {
-    local: {
-      get: async (keys: string[]) => Object.fromEntries(keys.filter((key) => key in localStore).map((key) => [key, localStore[key]])),
-      set: async (values: Record<string, unknown>) => Object.assign(localStore, values),
-      remove: async (key: string) => delete localStore[key],
-    },
     session: {
       get: async (keys: string[]) => Object.fromEntries(keys.filter((key) => key in sessionStore).map((key) => [key, sessionStore[key]])),
       set: async (values: Record<string, unknown>) => Object.assign(sessionStore, values),
       remove: async (key: string) => delete sessionStore[key],
     },
   },
-  permissions: { contains: async () => false },
   windows: {
     create: vi.fn(async () => ({ id: 10, tabs: [{ id: 11, windowId: 10, url: 'about:blank', active: true }] })),
     get: async (id: number) => ({ id }),
@@ -61,12 +54,8 @@ describe('session ownership', () => {
     expect(await manager.ownsTab(21)).toBe(true);
     tabStore.set(21, { id: 21, windowId: 99, url: 'about:blank', active: false });
     expect(await manager.ownsTab(21)).toBe(false);
-    localStore['overseer.automation.origins.v1'] = ['https://meet.google.com/*'];
     await manager.borrowTab(20);
     expect(await manager.ownsTab(20)).toBe(true);
-    expect(localStore).toEqual({
-      'overseer.automation.origins.v1': ['https://meet.google.com/*'],
-    });
     expect(sessionStore['overseer.session.v1']).toBeDefined();
     const reloaded = new SessionManager();
     expect(await reloaded.ownsTab(11)).toBe(true);
@@ -135,7 +124,6 @@ describe('session ownership', () => {
   });
   it('restores a borrowed tab before return and releases ownership when restoration fails', async () => {
     delete sessionStore['overseer.session.v1'];
-    localStore['overseer.automation.origins.v1'] = ['https://meet.google.com/*'];
     const events: string[] = [];
     let manager!: SessionManager;
     manager = new SessionManager(async (tabId) => {
@@ -153,7 +141,6 @@ describe('session ownership', () => {
 
   it('restores borrowed tabs before session ownership is removed', async () => {
     delete sessionStore['overseer.session.v1'];
-    localStore['overseer.automation.origins.v1'] = ['https://meet.google.com/*'];
     const events: string[] = [];
     let manager!: SessionManager;
     manager = new SessionManager(async (tabId) => {
@@ -170,7 +157,6 @@ describe('session ownership', () => {
 
   it('refuses to close a borrowed user tab', async () => {
     delete sessionStore['overseer.session.v1'];
-    localStore['overseer.automation.origins.v1'] = ['https://meet.google.com/*'];
     const manager = new SessionManager();
     await manager.start();
     await manager.borrowTab(20);

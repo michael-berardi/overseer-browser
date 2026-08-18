@@ -1,13 +1,7 @@
 import { useEffect, useState } from 'react';
-import { requestOptionalSiteAccess, requestOriginAccess, revokeOptionalSiteAccess, revokeOriginAccess } from '../../src/permissions';
+import type { PermissionState } from '../../src/permissions';
 import type { TelemetryConsent } from '../../src/telemetry';
 
-type PermissionState = {
-  meetingHosts: true;
-  optionalSiteAccess: boolean;
-  currentOrigin?: string;
-  currentOriginAccess: boolean;
-};
 
 type ActiveTab = {
   id: number;
@@ -31,13 +25,13 @@ type PopupState = {
 };
 
 type RuntimeReply = Partial<PopupState> & {
-  granted?: boolean;
   enabled?: boolean;
   ok?: boolean;
   error?: { message?: unknown } | string;
 };
 
 export const MEETING_HOST_POLICY = 'Only the exact Meet host meet.google.com and Zoom provider subdomains such as us02web.zoom.us are watched.';
+export const SITE_ACCESS_POLICY = 'Agents can navigate, inspect, and act on any HTTP or HTTPS site without per-site approval. Commands still require an active session and a session-owned or explicitly borrowed tab. If access shows OFF, change Chrome site access once to On all sites.';
 
 export function connectionStatusPresentation(connected: boolean): {
   label: 'Connected' | 'Disconnected';
@@ -87,7 +81,7 @@ const initialState: PopupState = {
   takeover_requested: false,
   native_error: null,
   telemetry_consent: 'undecided',
-  permissions: { meetingHosts: true, optionalSiteAccess: false, currentOriginAccess: false },
+  permissions: { meetingHosts: true, optionalSiteAccess: false, currentOriginAccess: false, allSiteAccess: false },
   sessions: [],
   active_tab: null,
 };
@@ -171,56 +165,6 @@ export default function App() {
   };
 
 
-
-  const requestCurrentOrigin = async (): Promise<void> => {
-    const origin = state.permissions.currentOrigin;
-    if (!origin) {
-      setNotice('The active tab is not an http or https site.');
-      return;
-    }
-    setBusy(true);
-    setNotice('');
-    try {
-      if (state.permissions.currentOriginAccess) {
-        const revoked = await revokeOriginAccess(origin);
-        setNotice(revoked ? `Access disabled for ${origin}` : 'No explicit site access was found for this origin.');
-      } else {
-        const granted = await requestOriginAccess(origin);
-        void browser.runtime.sendMessage({ kind: 'telemetry_permission_result', granted });
-        setNotice(granted ? `Access enabled for ${origin}` : 'No additional site access was granted.');
-      }
-      await refresh();
-    } catch (error) {
-      setNotice(formatPopupError('Unable to change site access', error));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const changeOptionalSiteAccess = async (): Promise<void> => {
-    setBusy(true);
-    setNotice('');
-    try {
-      const shouldEnable = !state.permissions.optionalSiteAccess;
-      const changed = shouldEnable
-        ? await requestOptionalSiteAccess()
-        : await revokeOptionalSiteAccess();
-      if (shouldEnable) {
-        void browser.runtime.sendMessage({ kind: 'telemetry_permission_result', granted: changed });
-      }
-      setNotice(changed
-        ? shouldEnable
-          ? 'Broad screenshot access enabled. Grant each automation origin separately.'
-          : 'Broad screenshot access revoked.'
-        : `Broad screenshot access was not ${shouldEnable ? 'granted' : 'revoked'}.`);
-      await refresh();
-    } catch (error) {
-      setNotice(formatPopupError('Unable to change screenshot access', error));
-    } finally {
-      setBusy(false);
-    }
-  };
-
   const setEvaluate = async (enabled: boolean): Promise<void> => {
     setBusy(true);
     setNotice('');
@@ -268,7 +212,6 @@ export default function App() {
     }
   };
 
-  const currentOriginLabel = state.permissions.currentOrigin?.replace(/\/\*$/, '') ?? 'the active site';
   const activeTab = state.active_tab;
   const activeTabLabel = activeTab?.title || activeTab?.url || 'No active browser tab';
   const connectionStatus = connectionStatusPresentation(state.connected);
@@ -327,7 +270,7 @@ export default function App() {
           <span className={`tag ${activeTab?.borrowed || activeTab?.owned ? 'tag-on' : ''}`}>{activeTab?.borrowed ? 'BORROWED' : activeTab?.owned ? 'SESSION-OWNED' : 'UNCONTROLLED'}</span>
         </div>
         <p className="muted">{activeTab?.url ?? 'Select a browser tab to borrow it for automation.'}</p>
-        <button className="button secondary" type="button" onClick={() => void setActiveBorrowed(!activeTab?.borrowed)} disabled={busy || !activeTab || activeTab.owned || (!activeTab.borrowed && !state.permissions.currentOriginAccess)}>
+        <button className="button secondary" type="button" onClick={() => void setActiveBorrowed(!activeTab?.borrowed)} disabled={busy || !activeTab || activeTab.owned}>
           {activeTab?.borrowed ? 'Return active tab' : 'Borrow active tab'}
         </button>
       </section>
@@ -350,17 +293,9 @@ export default function App() {
             <p className="eyebrow">CAPABILITIES</p>
             <h2 id="access-heading">Site access</h2>
           </div>
-          <span className={`tag ${state.permissions.currentOriginAccess ? 'tag-on' : ''}`}>{state.permissions.currentOriginAccess ? 'GRANTED' : 'OFF'}</span>
+          <span className={`tag ${state.permissions.allSiteAccess ? 'tag-on' : ''}`}>{state.permissions.allSiteAccess ? 'ON' : 'OFF'}</span>
         </div>
-        <p className="body-copy">General control is off by default. Grant access only to {currentOriginLabel}; meeting reminders do not need site access.</p>
-        <button className="button secondary" type="button" onClick={() => void requestCurrentOrigin()} disabled={busy || !state.permissions.currentOrigin}>
-          {state.permissions.currentOriginAccess ? `Revoke access for ${currentOriginLabel}` : `Grant access for ${currentOriginLabel}`}
-        </button>
-        <details className="advanced-access">
-          <summary>Advanced: screenshot access</summary>
-          <p className="muted">Chrome requires this optional broad site permission for screenshots only. OverSeer automation still requires explicit access for the active origin and acts only on session-owned or explicitly borrowed tabs.</p>
-          <button className="button secondary" type="button" onClick={() => void changeOptionalSiteAccess()} disabled={busy}>{state.permissions.optionalSiteAccess ? 'Revoke broad screenshot access' : 'Grant broad screenshot access'}</button>
-        </details>
+        <p className="body-copy">{SITE_ACCESS_POLICY}</p>
         <label className="capability-row">
           <input type="checkbox" checked={state.evaluate_enabled} onChange={(event) => void setEvaluate(event.target.checked)} disabled={busy} />
           <span>

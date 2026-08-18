@@ -74,7 +74,7 @@ An error response is:
 
 `error.reason` and `error.fallback` are optional top-level strings, each bounded to 4,096 characters. `reason` gives a stable machine-readable explanation when available; `fallback` identifies an explicitly supported alternative.
 
-`result` is present only for a successful response. `error.code` is stable enough for a CLI to branch on; `message` is human-readable and must not contain URLs, page text, credentials, or other captured browser content. Typical codes include `invalid_request`, `unauthorized`, `not_connected`, `not_found`, `permission_required`, `not_borrowed`, `timeout`, `cancelled`, `conflict`, `rate_limited`, and `unsupported_capability`.
+`result` is present only for a successful response. `error.code` is stable enough for a CLI to branch on; `message` is human-readable and must not contain URLs, page text, credentials, or other captured browser content. Typical codes include `invalid_request`, `unauthorized`, `not_connected`, `not_found`, `not_borrowed`, `timeout`, `cancelled`, `conflict`, `rate_limited`, and `unsupported_capability`.
 
 ## Commands
 
@@ -92,11 +92,13 @@ The required command families are:
 - bounded chunked upload of 1–16 files
 - opt-in bounded console capture and redacted Resource Timing metadata
 - sequential batches of up to 20 explicit actions, or bounded parallel read batches across distinct explicit tab IDs
-- `help` / visible `takeover` prompt
+- `help` / visible `takeover` prompt and operator-CLI `takeover resume`
 - `cancel`
 - `capture.start`, `capture.stop`
 
 Commands operate on the active session/tab selected by the caller or on IDs supplied in `params`. Automation code is injected only into session-owned or explicitly borrowed tabs. The isolated-world traversal covers the top document, open shadow roots, and visible same-origin nested frames; cross-origin frame DOM remains opaque. Direct synchronous calls through the current page dialog globals caused by click, Enter, or Space are bounded: alerts are acknowledged, confirmations and prompts are dismissed, and captured dialog metadata is returned with the action. Page-retained references to native dialog functions that predate the guard require debugger-level interception and remain unsupported. There is no passive general-browsing collection.
+
+`health.status` retains the version-1 permission fields (`meetingHosts`, `optionalSiteAccess`, `currentOrigin`, and `currentOriginAccess`) and adds `allSiteAccess`. The all-site booleans report Chromium's effective required `<all_urls>` grant; the extension never requests permission at runtime.
 
 A session owns a dedicated Agent Window by default. A normal user tab is read-only until `tabs.borrow` succeeds. `tabs.return` restores ownership to the user, and stopping a session returns all borrowed tabs before releasing session state.
 Uploads are explicit and bounded. The CLI accepts `upload REF PATH [PATH...]`, limits each set to 1–16 files, 8 MiB aggregate, and at most 32 chunks of 256 KiB. The extension retains at most eight incomplete transactions and 32 MiB of incomplete bytes, expires abandoned transactions after 60 seconds, and clears retained data on native disconnect or session stop. It transmits only a bounded element reference plus ordered file/chunk metadata, basenames, MIME types, and contents; local filesystem paths and the token never enter the extension payload. A receiver must reject missing, duplicated, oversized, inconsistent, or out-of-order files and chunks before assigning the complete set atomically to a file input.
@@ -115,7 +117,7 @@ The following operations require debugger/CDP privileges and are intentionally u
 - interception of dialogs invoked through page-retained native function references;
 - any other operation whose only safe implementation requires `chrome.debugger`.
 
-Return `unsupported_capability` with a fallback hint for OverSeer cloud/desktop tooling. Never request `debugger` or silently substitute a less trustworthy action. `<all_urls>` is permitted only as optional operator-granted host access needed by Chrome's screenshot API; it must never be a required host permission, and automation remains limited to session-owned or explicitly borrowed HTTP(S) tabs.
+Return `unsupported_capability` with a fallback hint for OverSeer cloud/desktop tooling. Never request `debugger` or silently substitute a less trustworthy action. Required `<all_urls>` host access enables autonomous HTTP(S) operation; automation remains limited to session-owned or explicitly borrowed tabs.
 
 ## Meeting detection event
 

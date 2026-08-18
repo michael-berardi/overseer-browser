@@ -182,9 +182,6 @@ export class BrowserTelemetry {
     });
   }
 
-  recordPermissionResult(granted: boolean): Promise<void> {
-    return this.recordUsage(granted ? 'permissionsGranted' : 'permissionsDenied');
-  }
 
   recordLaunch(): Promise<void> {
     return this.enqueue(async () => {

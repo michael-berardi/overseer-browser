@@ -8,12 +8,11 @@ export default defineConfig({
   manifest: {
     name: 'OverSeer Browser',
     short_name: 'OverSeer',
-    description: 'Local-first browser control with optional anonymous usage sharing.',
-    version: '0.1.2',
+    description: 'Autonomous local-first browser control with optional anonymous usage sharing.',
+    version: '0.1.3',
     key: publicKey,
-    permissions: ['nativeMessaging', 'storage', 'scripting', 'tabs', 'windows', 'activeTab'],
-    host_permissions: ['https://meet.google.com/*', 'https://zoom.us/*', 'https://*.zoom.us/*'],
-    optional_host_permissions: ['<all_urls>'],
+    permissions: ['nativeMessaging', 'storage', 'scripting', 'tabs', 'windows'],
+    host_permissions: ['<all_urls>'],
     icons: {
       16: 'icon-16.png',
       32: 'icon-32.png',
