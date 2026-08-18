@@ -12,7 +12,7 @@ export const COMMANDS = [
   'navigate', 'back', 'forward', 'reload', 'snapshot', 'observe', 'click', 'hover', 'fill',
   'type', 'select', 'press', 'scroll', 'evaluate', 'screenshot.visible', 'screenshot.element',
   'upload', 'batch', 'console.start', 'console.read', 'console.stop', 'network.read',
-  'takeover.prompt', 'cancel', 'capture.start', 'capture.stop',
+  'takeover.prompt', 'takeover.resume', 'cancel', 'capture.start', 'capture.stop',
 ] as const;
 
 export type Command = (typeof COMMANDS)[number];

@@ -418,6 +418,10 @@ class CLIMappingTests(unittest.TestCase):
         self.assertEqual(_command_request("type", ["@e1", "hello"]), ("type", {"ref": "@e1", "text": "hello"}))
         self.assertEqual(_command_request("press", ["Enter"]), ("press", {"key": "Enter"}))
         self.assertEqual(_command_request("cancel", ["known-request"]), ("cancel", {"request_id": "known-request"}))
+        self.assertEqual(_command_request("takeover", []), ("takeover.prompt", {}))
+        self.assertEqual(_command_request("takeover", ["resume"]), ("takeover.resume", {}))
+        with self.assertRaises(CLIError):
+            _command_request("takeover", ["invalid"])
         self.assertEqual(_command_request("press", ["Enter", "osr-submit"]), ("press", {"key": "Enter", "ref": "osr-submit"}))
         self.assertEqual(_command_request("scroll", ["osr-target"]), ("scroll", {"ref": "osr-target"}))
         self.assertEqual(_command_request("scroll", ["500"]), ("scroll", {"y": 500}))
@@ -456,7 +460,13 @@ class CLIMappingTests(unittest.TestCase):
                 "connected": True,
                 "extension_id": "iabfdeokmilpklblkgccpjlekchfjcno",
                 "evaluate_enabled": False,
-                "permissions": {"origins": ["http://127.0.0.1:8765/*"]},
+                "permissions": {
+                    "meetingHosts": True,
+                    "optionalSiteAccess": True,
+                    "currentOrigin": "https://example.test/*",
+                    "currentOriginAccess": True,
+                    "allSiteAccess": True,
+                },
                 "sessions": [],
             },
         }

@@ -1,4 +1,4 @@
-import { canControlUrl, isNavigableUrl } from './permissions';
+import { isNavigableUrl } from './permissions';
 
 const SESSION_STORAGE_KEY = 'overseer.session.v1';
 
@@ -203,8 +203,8 @@ export class SessionManager {
   async createTab(url?: string): Promise<Browser.tabs.Tab> {
     return this.serializeLifecycle(async () => {
       const state = await this.requireState();
-      if (url !== undefined && (!isNavigableUrl(url) || !(await canControlUrl(url)))) {
-        throw new SessionError('permission_required', 'Optional site access is required for this URL.', 'Grant site access from the popup.');
+      if (url !== undefined && !isNavigableUrl(url)) {
+        throw new SessionError('invalid_url', 'Only http and https navigation is allowed.');
       }
       const tab = await browser.tabs.create({ windowId: state.agentWindowId, url: url ?? 'about:blank', active: true });
       if (tab.id === undefined) throw new Error('Chrome did not return a tab id.');
@@ -266,8 +266,8 @@ export class SessionManager {
         await this.persist();
         return tab;
       }
-      if (!tab.url || !(await canControlUrl(tab.url))) {
-        throw new SessionError('permission_required', 'Optional site access is required before borrowing this tab.', 'Grant site access from the popup.');
+      if (!tab.url || !isNavigableUrl(tab.url)) {
+        throw new SessionError('unsupported_page', 'Only http and https tabs can be borrowed.');
       }
       state.borrowedTabIds.push(tabId);
       state.selectedTabId = tabId;

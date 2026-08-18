@@ -1,11 +1,11 @@
 # Contributing
 
-Contributions are welcome when they preserve the local-first, least-privilege contract. Read [README.md](README.md), [PROTOCOL.md](PROTOCOL.md), [PRIVACY.md](PRIVACY.md), and [SECURITY.md](SECURITY.md) first.
+Contributions are welcome when they preserve the local-first, controlled-autonomy contract. Read [README.md](README.md), [PROTOCOL.md](PROTOCOL.md), [PRIVACY.md](PRIVACY.md), and [SECURITY.md](SECURITY.md) first.
 
 ## Design rules
 
-- Never use `chrome.debugger`, CDP, the `debugger` permission, history, bookmarks, or webRequest to make a feature easier. `<all_urls>` may be offered only as an optional user-gesture grant for Chrome's screenshot API; it must never be a required host permission.
-- Preserve exact meeting-host permissions, popup user-gesture gating for automation origins, and the separate warning for optional broad screenshot access.
+- Never use `chrome.debugger`, CDP, the `debugger` permission, history, bookmarks, webRequest, `activeTab`, or `optional_host_permissions` to make a feature easier. Required `<all_urls>` host access is intentional for autonomous HTTP(S) control.
+- Preserve exact persistent Meet/Zoom content-script matches, no runtime site-permission prompts, and active-session plus tab-ownership command gating.
 - Keep the Agent Window as the default. Require an explicit borrow for normal tabs and return borrowed tabs on stop.
 - Never put raw meeting URLs, IDs, titles, page content, participants, credentials, cookies, or recording data into host or adapter messages.
 - Unsupported debugger-only work must return an explicit structured error and point callers to an approved fallback.
@@ -38,10 +38,11 @@ The test suite should cover observable behavior, not implementation snapshots. A
 
 - protocol schema, framing, request IDs, bounded messages, timeouts, cancellation, and host authentication;
 - session ownership, Agent Window defaults, borrow/return transitions, and disconnect cleanup;
+- required all-site host access, autonomous navigation across unrelated origins, and rejection of non-HTTP(S) schemes;
 - required meeting-host parsing, opaque hash format, deduplication, capture suppression, and payload minimization;
 - explicit unsupported errors and UltraVox accept/decline state.
 
-Exercise the smoke path in a real Chromium profile when browser behavior changes: connect, create an Agent Window, navigate, observe, click/fill, screenshot, borrow/return, stop, and confirm no debugger infobar. Use deterministic Meet/Zoom fixtures or local pages and verify that only the opaque meeting event reaches the host.
+Exercise the smoke path in a real Chromium profile when browser behavior changes: connect, create an Agent Window, navigate across at least two unrelated origins without a permission prompt, observe, click/fill, screenshot, borrow/return, stop, and confirm no debugger infobar. Use deterministic Meet/Zoom fixtures or local pages and verify that only the opaque meeting event reaches the host.
 
 Do not add GitHub Actions. GitHub source is the only distribution path: contributors build the unpacked extension locally with the documented installer and update commands.
 

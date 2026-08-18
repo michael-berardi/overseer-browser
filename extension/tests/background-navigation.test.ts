@@ -19,12 +19,25 @@ function storageArea(store: Record<string, unknown>) {
   };
 }
 
-async function loadBackground() {
+async function loadBackground(connectionReadFails = false) {
   const onUpdated = event();
   const onRemoved = event();
+  const localStorage = storageArea({ 'overseer.connection.enabled.v1': false });
+  const backgroundReady = Promise.withResolvers<void>();
+  const getLocalValues = localStorage.get;
+  const removeLocalValue = localStorage.remove;
+  localStorage.remove = async (key: string) => {
+    await removeLocalValue(key);
+    backgroundReady.resolve();
+  };
+  if (connectionReadFails) {
+    localStorage.get = async (keys: string[]) => {
+      if (keys.includes('overseer.connection.enabled.v1')) throw new Error('storage unavailable');
+      return getLocalValues(keys);
+    };
+  }
   const browserStub = {
-    storage: { local: storageArea({ 'overseer.automation.origins.v1': ['https://example.test/*'] }), session: storageArea({}) },
-    permissions: { contains: async () => true },
+    storage: { local: localStorage, session: storageArea({}) },
     tabs: {
       onUpdated,
       onRemoved,
@@ -49,7 +62,7 @@ async function loadBackground() {
   vi.stubGlobal('defineBackground', (callback: () => void) => callback());
   vi.resetModules();
   const background = await import('../entrypoints/background');
-  return { background, onUpdated, onRemoved, browserStub };
+  return { background, onUpdated, onRemoved, browserStub, backgroundReady: backgroundReady.promise };
 }
 
 describe('background navigation waits', () => {
@@ -154,6 +167,49 @@ describe('background navigation waits', () => {
       code: 'invalid_params',
       message: 'The request contains unsupported parameters for this command.',
     });
+  });
+
+
+  it('connects a fresh install automatically while preserving explicit disconnect', async () => {
+    const { background } = await loadBackground();
+
+    expect(background.connectionEnabledFromStored(undefined)).toBe(true);
+    expect(background.connectionEnabledFromStored(true)).toBe(true);
+    expect(background.connectionEnabledFromStored(false)).toBe(false);
+  });
+
+  it('does not connect when the persisted disconnect preference cannot be read', async () => {
+    const { browserStub, backgroundReady } = await loadBackground(true);
+    await backgroundReady;
+
+    expect(browserStub.runtime.connectNative).not.toHaveBeenCalled();
+  });
+
+  it('resumes through the local CLI only after persisted takeover state clears', async () => {
+    const { background } = await loadBackground();
+
+    await expect(background.dispatch({
+      version: 1,
+      kind: 'request',
+      request_id: 'pause',
+      command: 'takeover.prompt',
+    }, { cancelled: false })).resolves.toMatchObject({ requested: true });
+
+    const remove = vi.spyOn(browser.storage.session, 'remove').mockRejectedValueOnce(new Error('storage unavailable'));
+    await expect(background.dispatch({
+      version: 1,
+      kind: 'request',
+      request_id: 'failed-resume',
+      command: 'takeover.resume',
+    }, { cancelled: false })).rejects.toMatchObject({ code: 'takeover_resume_failed' });
+    remove.mockRestore();
+
+    await expect(background.dispatch({
+      version: 1,
+      kind: 'request',
+      request_id: 'resume',
+      command: 'takeover.resume',
+    }, { cancelled: false })).resolves.toMatchObject({ resumed: true, takeover_requested: false });
   });
 });
 

@@ -26,11 +26,7 @@ describe('native tab borrowing approval', () => {
     const executeScript = vi.fn(async () => [{ result: { installed: true, entries: 0 } }]);
     const browserStub = {
       storage: { local: storageArea(localStore), session: storageArea(sessionStore) },
-      permissions: {
-        contains: async ({ origins }: { origins: string[] }) => origins.length === 1 && origins[0] === 'https://example.test/*',
-        request: async () => true,
-        remove: async () => true,
-      },
+      permissions: { contains: async () => true },
       windows: {
         create: async () => ({ id: 10, tabs: [{ id: 11, windowId: 10, url: 'about:blank', active: true }] }),
         get: async (id: number) => ({ id }),
@@ -176,7 +172,6 @@ describe('native tab borrowing approval', () => {
 
     await expect(background.dispatch({ version: 1, kind: 'request', request_id: 'borrow', command: 'tabs.borrow', params: { tab_id: 99 } }, { cancelled: false }))
       .rejects.toMatchObject({ code: 'operator_approval_required' });
-    localStore['overseer.automation.origins.v1'] = ['https://example.test/*'];
     await expect(background.popupBorrowActive()).resolves.toMatchObject({ ok: true });
     await expect(background.dispatch({ version: 1, kind: 'request', request_id: 'borrow-again', command: 'tabs.borrow', params: { tab_id: 99 } }, { cancelled: false }))
       .resolves.toMatchObject({ id: 99 });
@@ -187,8 +182,11 @@ describe('native tab borrowing approval', () => {
       command: 'health.status',
     }, { cancelled: false })).resolves.toMatchObject({
       permissions: {
+        meetingHosts: true,
+        optionalSiteAccess: true,
         currentOrigin: 'https://example.test/*',
         currentOriginAccess: true,
+        allSiteAccess: true,
       },
       runtime: {
         inflight_requests: 0,
