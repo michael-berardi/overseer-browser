@@ -34,6 +34,8 @@ describe('native tab borrowing approval', () => {
         update: async (id: number, updates: chrome.windows.UpdateInfo) => ({ id, ...updates }),
       },
       tabs: {
+        onUpdated: { addListener: vi.fn(), removeListener: vi.fn() },
+        onRemoved: { addListener: vi.fn(), removeListener: vi.fn() },
         query: async (query: chrome.tabs.QueryInfo) => query.active ? [tabs.get(99)!] : query.windowId === 10 ? [tabs.get(11)!] : [...tabs.values()],
         get: async (id: number) => tabs.get(id) ?? ({ id, windowId: 10, url: 'about:blank', active: false } as chrome.tabs.Tab),
         create: async () => ({ id: 12, windowId: 10, url: 'about:blank', active: true } as chrome.tabs.Tab),

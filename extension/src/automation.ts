@@ -1,4 +1,5 @@
 import { MAX_UPLOAD_BYTES } from './protocol';
+import type { WaitCondition } from './wait';
 
 export type AutomationUploadFile = {
   filename: string;
@@ -133,8 +134,7 @@ export async function runInIsolatedWorld(tabId: number, action: AutomationAction
   return envelope.value;
 }
 
-export async function runPageEvaluation(tabId: number, source: string): Promise<unknown> {
-  if (source.length === 0 || source.length > 32_000) {
+export async function runPageEvaluation(tabId: number, source: string): Promise<unknown> {  if (source.length === 0 || source.length > 32_000) {
     throw new AutomationError('invalid_evaluate', 'Evaluate source must be between 1 and 32000 characters.');
   }
   const [injection] = await chrome.scripting.executeScript({
@@ -149,6 +149,117 @@ export async function runPageEvaluation(tabId: number, source: string): Promise<
   }
   if (!envelope.ok) throw new AutomationError(envelope.error.code, envelope.error.message, envelope.error.fallback);
   return envelope.value;
+}
+
+/**
+ * Run one bounded, event-driven wait in the target tab. The in-page observer
+ * always self-cleans at `timeoutMs`, which the caller caps at the remaining
+ * request deadline so cancellation never leaves a detached observer.
+ */
+export async function runWaitFor(tabId: number, condition: WaitCondition, timeoutMs: number): Promise<unknown> {
+  let injection: chrome.scripting.InjectionResult<unknown> | undefined;
+  try {
+    [injection] = await chrome.scripting.executeScript({
+      target: { tabId },
+      world: 'ISOLATED',
+      func: isolatedWaitFor,
+      args: [condition, timeoutMs],
+    });
+  } catch {
+    throw new AutomationError('wait_interrupted', 'The wait was interrupted because the target document navigated or closed.', 'Observe the current page and retry the wait.');
+  }
+  const envelope = injection?.result;
+  if (!isExecutionEnvelope(envelope)) {
+    throw new AutomationError('wait_failed', 'The wait could not run in the target tab.');
+  }
+  if (!envelope.ok) throw new AutomationError(envelope.error.code, envelope.error.message, envelope.error.fallback);
+  return envelope.value;
+}
+
+async function isolatedWaitFor(condition: WaitCondition, timeoutMs: number): Promise<ExecutionEnvelope> {
+  const waitVisible = (element: Element): boolean => {
+    if (!(element instanceof HTMLElement)) return false;
+    const style = window.getComputedStyle(element);
+    const rect = element.getBoundingClientRect();
+    if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0 || rect.width <= 0 || rect.height <= 0) return false;
+    let ancestor = element.parentElement;
+    while (ancestor) {
+      const ancestorStyle = window.getComputedStyle(ancestor);
+      if (ancestorStyle.display === 'none' || ancestorStyle.visibility === 'hidden' || Number(ancestorStyle.opacity) === 0) return false;
+      ancestor = ancestor.parentElement;
+    }
+    return true;
+  };
+  const fail = (code: string, message: string, fallback?: string): ExecutionEnvelope => ({ ok: false, error: { code, message, ...(fallback ? { fallback } : {}) } });
+  const matches = (): boolean => {
+    if (condition.type === 'text') {
+      const present = (document.body?.textContent ?? '').includes(condition.text);
+      return condition.absent ? !present : present;
+    }
+    if (condition.type === 'selector') {
+      let element: Element | null;
+      try {
+        element = document.querySelector(condition.selector);
+      } catch {
+        throw { overseerWaitInvalidSelector: true };
+      }
+      if (condition.state === 'hidden') return element === null || !waitVisible(element);
+      if (element === null) return false;
+      if (condition.state === 'enabled') {
+        const disabled = element.getAttribute('aria-disabled') === 'true' ||
+          ('disabled' in element && Boolean((element as HTMLButtonElement).disabled));
+        return waitVisible(element) && !disabled;
+      }
+      return waitVisible(element);
+    }
+    return false;
+  };
+  // Executor form: the shipped tsconfig pins ES2022, before Promise.withResolvers.
+  let resolveWait!: (envelope: ExecutionEnvelope) => void;
+  const promise = new Promise<ExecutionEnvelope>((resolvePromise) => {
+    resolveWait = resolvePromise;
+  });
+  let settled = false;
+  let observer: MutationObserver | undefined;
+  let quietTimer: number | undefined;
+  const finish = (envelope: ExecutionEnvelope): void => {
+    if (settled) return;
+    settled = true;
+    observer?.disconnect();
+    clearTimeout(quietTimer);
+    clearTimeout(deadline);
+    resolveWait(envelope);
+  };
+  const deadline = setTimeout(() => {
+    finish(fail('wait_timeout', 'The wait condition was not met before its timeout.', 'Observe the page to inspect its current state, then retry with a longer timeout_ms.'));
+  }, timeoutMs);
+  try {
+    if (condition.type === 'dom_stable') {
+      const arm = (): void => {
+        clearTimeout(quietTimer);
+        quietTimer = setTimeout(() => finish({ ok: true, value: { matched: true, stable_ms: condition.quietMs } }), condition.quietMs) as unknown as number;
+      };
+      observer = new MutationObserver(arm);
+      observer.observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
+      arm();
+    } else {
+      // MutationObserver callbacks already batch per microtask; each batch
+      // re-checks the condition once. ponytail: full-body textContent scan per
+      // batch; add throttling if chatty pages measurably stall waits.
+      observer = new MutationObserver(() => {
+        try {
+          if (matches()) finish({ ok: true, value: { matched: true } });
+        } catch {
+          finish(fail('invalid_selector', 'The wait selector is not a valid CSS selector.'));
+        }
+      });
+      observer.observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
+      if (matches()) finish({ ok: true, value: { matched: true } });
+    }
+  } catch {
+    finish(fail('invalid_selector', 'The wait selector is not a valid CSS selector.'));
+  }
+  return promise;
 }
 
 export function stableRefForPath(path: string): string {
@@ -210,7 +321,19 @@ export class AutomationError extends Error {
   }
 }
 
-function isolatedAutomation(action: AutomationAction, dialogToken: string | null): ExecutionEnvelope {
+/**
+ * Serialized into the target tab by chrome.scripting.executeScript; it must stay
+ * fully self-contained (no module-scope references). Mutation actions additionally
+ * report a bounded count of DOM mutations observed during the action plus one
+ * macrotask flush, so callers can tell whether the page reacted without a full
+ * re-observation. The count covers only synchronous/microtask page reactions;
+ * later async work is observed through observe or wait.for.
+ */
+async function isolatedAutomation(action: AutomationAction, dialogToken: string | null): Promise<ExecutionEnvelope> {
+  const MUTATION_EVIDENCE_KINDS: Record<string, true> = {
+    click: true, hover: true, fill: true, type: true, select: true, press: true, scroll: true, upload: true,
+  };
+  const MUTATION_EVIDENCE_CAP = 10_000;
   type LocalFailure = { overseerAutomationFailure: true; code: string; message: string; fallback?: string };
   const succeed = (value: unknown): ExecutionEnvelope => ({ ok: true, value });
   const fail = (code: string, message: string, fallback?: string): never => {
@@ -242,23 +365,54 @@ function isolatedAutomation(action: AutomationAction, dialogToken: string | null
       return null;
     }
   }
+  // Visibility verdicts are memoized per synchronous automation pass: page
+  // style cannot change mid-pass, and sibling subtrees share ancestor chains.
+  // A cached `false` is final; a cached `true` from a descendant's ancestor
+  // walk is confirmed by this element's own style/rect checks below.
+  const visibilityCache = new WeakMap<Element, boolean>();
   const visible = (element: Element): element is HTMLElement => {
+    if (visibilityCache.get(element) === false) return false;
     if (!isHtmlElement(element)) return false;
     const style = elementWindow(element).getComputedStyle(element);
     const rect = element.getBoundingClientRect();
-    if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0 || rect.width <= 0 || rect.height <= 0) return false;
+    if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0 || rect.width <= 0 || rect.height <= 0) {
+      visibilityCache.set(element, false);
+      return false;
+    }
+    if (visibilityCache.get(element) === true) return true;
+    let verdict = true;
+    const path: Element[] = [];
     let ancestor = composedAncestor(element);
     while (ancestor) {
-      if (!isHtmlElement(ancestor)) return false;
+      const cachedAncestor = visibilityCache.get(ancestor);
+      if (cachedAncestor !== undefined) {
+        verdict = cachedAncestor;
+        break;
+      }
+      path.push(ancestor);
+      if (!isHtmlElement(ancestor)) {
+        verdict = false;
+        break;
+      }
       const ancestorStyle = elementWindow(ancestor).getComputedStyle(ancestor);
-      if (ancestorStyle.display === 'none' || ancestorStyle.visibility === 'hidden' || Number(ancestorStyle.opacity) === 0) return false;
+      if (ancestorStyle.display === 'none' || ancestorStyle.visibility === 'hidden' || Number(ancestorStyle.opacity) === 0) {
+        verdict = false;
+        break;
+      }
       if (tagOf(ancestor) === 'iframe') {
         const ancestorRect = ancestor.getBoundingClientRect();
-        if (ancestorRect.width <= 0 || ancestorRect.height <= 0) return false;
+        if (ancestorRect.width <= 0 || ancestorRect.height <= 0) {
+          verdict = false;
+          break;
+        }
       }
       ancestor = composedAncestor(ancestor);
     }
-    return true;
+    // Every walked ancestor shares this chain's outcome up to the verdict
+    // point; a later direct call on one still re-checks its own style/rect.
+    for (const item of path) visibilityCache.set(item, verdict);
+    visibilityCache.set(element, verdict);
+    return verdict;
   };
   const allElements = (): HTMLElement[] => {
     const nodes: HTMLElement[] = [];
@@ -459,191 +613,211 @@ function isolatedAutomation(action: AutomationAction, dialogToken: string | null
     };
     visit(document);
   };
-  try {
-    if (action.kind === 'snapshot' || action.kind === 'observe') {
-      const maxNodes = Math.min(Math.max(action.maxNodes ?? 200, 1), 500);
-      const actionableTags = ['button', 'input', 'select', 'textarea', 'summary'];
-      const actionableRoles = ['button', 'checkbox', 'combobox', 'link', 'menuitem', 'option', 'radio', 'searchbox', 'slider', 'spinbutton', 'switch', 'tab', 'textbox'];
-      const semanticTags = ['address', 'article', 'aside', 'details', 'figcaption', 'figure', 'footer', 'form', 'header', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'main', 'nav', 'section', 'table'];
-      type SnapshotCandidate = HTMLElement;
-      // Priority has only three values; buckets preserve DOM order without sorting every visible node.
-      const buckets: [SnapshotCandidate[], SnapshotCandidate[], SnapshotCandidate[]] = [[], [], []];
-      for (const element of allElements()) {
-        if (!visible(element)) continue;
-        const tag = tagOf(element);
-        const role = element.getAttribute('role') ?? undefined;
-        const name = element.getAttribute('aria-label') ?? element.getAttribute('name') ?? undefined;
-        const href = tag === 'a' ? (element as HTMLAnchorElement).href : undefined;
-        const priority: 0 | 1 | 2 = actionableTags.includes(tag) || (tag === 'a' && Boolean(href)) ||
-          (role !== undefined && actionableRoles.includes(role.toLowerCase()))
-          ? 0
-          : (role || name || semanticTags.includes(tag)) ? 1 : 2;
-        buckets[priority].push(element);
-      }
-      const ordered: SnapshotCandidate[] = [];
-      for (const bucket of buckets) {
-        for (const candidate of bucket) {
+  const execute = (): ExecutionEnvelope => {
+    try {
+      if (action.kind === 'snapshot' || action.kind === 'observe') {
+        const maxNodes = Math.min(Math.max(action.maxNodes ?? 200, 1), 500);
+        const actionableTags = ['button', 'input', 'select', 'textarea', 'summary'];
+        const actionableRoles = ['button', 'checkbox', 'combobox', 'link', 'menuitem', 'option', 'radio', 'searchbox', 'slider', 'spinbutton', 'switch', 'tab', 'textbox'];
+        const semanticTags = ['address', 'article', 'aside', 'details', 'figcaption', 'figure', 'footer', 'form', 'header', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'main', 'nav', 'section', 'table'];
+        type SnapshotCandidate = HTMLElement;
+        // Priority has only three values; buckets preserve DOM order without sorting every visible node.
+        const buckets: [SnapshotCandidate[], SnapshotCandidate[], SnapshotCandidate[]] = [[], [], []];
+        for (const element of allElements()) {
+          if (!visible(element)) continue;
+          const tag = tagOf(element);
+          const role = element.getAttribute('role') ?? undefined;
+          const name = element.getAttribute('aria-label') ?? element.getAttribute('name') ?? undefined;
+          const href = tag === 'a' ? (element as HTMLAnchorElement).href : undefined;
+          const priority: 0 | 1 | 2 = actionableTags.includes(tag) || (tag === 'a' && Boolean(href)) ||
+            (role !== undefined && actionableRoles.includes(role.toLowerCase()))
+            ? 0
+            : (role || name || semanticTags.includes(tag)) ? 1 : 2;
+          buckets[priority].push(element);
+        }
+        const ordered: SnapshotCandidate[] = [];
+        for (const bucket of buckets) {
+          for (const candidate of bucket) {
+            if (ordered.length >= maxNodes) break;
+            ordered.push(candidate);
+          }
           if (ordered.length >= maxNodes) break;
-          ordered.push(candidate);
         }
-        if (ordered.length >= maxNodes) break;
+        return succeed(ordered.map((element) => {
+          const tag = tagOf(element);
+          const role = element.getAttribute('role') ?? undefined;
+          const name = element.getAttribute('aria-label') ?? element.getAttribute('name') ?? undefined;
+          const href = tag === 'a' ? (element as HTMLAnchorElement).href : undefined;
+          const rawText = element.innerText?.replace(/\s+/g, ' ').trim();
+          return {
+            ref: refFor(element),
+            tag,
+            ...(role ? { role } : {}),
+            ...(name ? { name: name.slice(0, 300) } : {}),
+            ...(rawText ? { text: rawText.slice(0, 500) } : {}),
+            ...((tag === 'button' || tag === 'input') ? { disabled: Boolean((element as HTMLButtonElement).disabled) } : {}),
+            ...(href ? { href: href.slice(0, 1_000) } : {}),
+          } satisfies SnapshotNode;
+        }));
       }
-      return succeed(ordered.map((element) => {
+      if (action.kind === 'element_rect') {
+        const element = findByRef(action.ref);
+        requireInteractable(element);
+        scrollIntoTopViewport(element);
+        const rect = topViewportRect(element);
+        const intersectsViewport = rect.left + rect.width > 0 && rect.top + rect.height > 0 && rect.left < window.innerWidth && rect.top < window.innerHeight;
+        if (!intersectsViewport || rect.width <= 0 || rect.height <= 0) {
+          return fail('element_outside_viewport', 'The target element remains outside the top-level viewport.');
+        }
+        return succeed(rect);
+      }
+      if (action.kind === 'viewport') {
+        return succeed({ width: window.innerWidth, height: window.innerHeight, devicePixelRatio: window.devicePixelRatio || 1 });
+      }
+      if (action.kind === 'click') {
+        const element = findByRef(action.ref);
+        requireInteractable(element);
+        element.focus();
+        element.click();
+        return succeed({ changed: true });
+      }
+      if (action.kind === 'hover') {
+        const element = findByRef(action.ref);
+        requireInteractable(element);
+        const rect = element.getBoundingClientRect();
+        const view = elementWindow(element);
+        const eventInit = { bubbles: true, cancelable: true, clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 };
+        element.dispatchEvent(new view.MouseEvent('mouseover', eventInit));
+        element.dispatchEvent(new view.MouseEvent('mousemove', eventInit));
+        return succeed({ changed: true });
+      }
+      if (action.kind === 'fill' || action.kind === 'type') {
+        const element = findByRef(action.ref);
+        requireInteractable(element);
         const tag = tagOf(element);
-        const role = element.getAttribute('role') ?? undefined;
-        const name = element.getAttribute('aria-label') ?? element.getAttribute('name') ?? undefined;
-        const href = tag === 'a' ? (element as HTMLAnchorElement).href : undefined;
-        const rawText = element.innerText?.replace(/\s+/g, ' ').trim();
-        return {
-          ref: refFor(element),
-          tag,
-          ...(role ? { role } : {}),
-          ...(name ? { name: name.slice(0, 300) } : {}),
-          ...(rawText ? { text: rawText.slice(0, 500) } : {}),
-          ...((tag === 'button' || tag === 'input') ? { disabled: Boolean((element as HTMLButtonElement).disabled) } : {}),
-          ...(href ? { href: href.slice(0, 1_000) } : {}),
-        } satisfies SnapshotNode;
-      }));
-    }
-    if (action.kind === 'element_rect') {
-      const element = findByRef(action.ref);
-      requireInteractable(element);
-      scrollIntoTopViewport(element);
-      const rect = topViewportRect(element);
-      const intersectsViewport = rect.left + rect.width > 0 && rect.top + rect.height > 0 && rect.left < window.innerWidth && rect.top < window.innerHeight;
-      if (!intersectsViewport || rect.width <= 0 || rect.height <= 0) {
-        return fail('element_outside_viewport', 'The target element remains outside the top-level viewport.');
-      }
-      return succeed(rect);
-    }
-    if (action.kind === 'viewport') {
-      return succeed({ width: window.innerWidth, height: window.innerHeight, devicePixelRatio: window.devicePixelRatio || 1 });
-    }
-    if (action.kind === 'click') {
-      const element = findByRef(action.ref);
-      requireInteractable(element);
-      element.focus();
-      element.click();
-      return succeed({ changed: true });
-    }
-    if (action.kind === 'hover') {
-      const element = findByRef(action.ref);
-      requireInteractable(element);
-      const rect = element.getBoundingClientRect();
-      const view = elementWindow(element);
-      const eventInit = { bubbles: true, cancelable: true, clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 };
-      element.dispatchEvent(new view.MouseEvent('mouseover', eventInit));
-      element.dispatchEvent(new view.MouseEvent('mousemove', eventInit));
-      return succeed({ changed: true });
-    }
-    if (action.kind === 'fill' || action.kind === 'type') {
-      const element = findByRef(action.ref);
-      requireInteractable(element);
-      const tag = tagOf(element);
-      const input = tag === 'input' ? element as HTMLInputElement : undefined;
-      const textarea = tag === 'textarea' ? element as HTMLTextAreaElement : undefined;
-      if (!input && !textarea && !element.isContentEditable) {
-        return fail('element_not_editable', 'The target element does not accept text.');
-      }
-      if ((input || textarea)?.readOnly) return fail('element_readonly', 'The target text control is read-only.');
-      if (input && ['button', 'checkbox', 'color', 'file', 'hidden', 'image', 'radio', 'range', 'reset', 'submit'].includes(input.type)) {
-        return fail('element_not_editable', 'The target input type does not accept text.');
-      }
-      element.focus();
-      const data = action.kind === 'fill' ? action.value : action.text;
-      let usedNativeInsertion = false;
-      if (input || textarea) {
-        const textControl = (input ?? textarea) as HTMLInputElement | HTMLTextAreaElement;
-        const nextValue = action.kind === 'fill' ? action.value : `${textControl.value}${action.text}`;
-        setTextValue(textControl, nextValue);
-      } else {
-        usedNativeInsertion = insertContentEditableText(element, data, action.kind === 'fill');
-        if (!usedNativeInsertion) element.textContent = action.kind === 'fill' ? action.value : `${element.textContent ?? ''}${action.text}`;
-      }
-      const view = elementWindow(element);
-      if (!usedNativeInsertion) element.dispatchEvent(new view.InputEvent('input', { bubbles: true, inputType: 'insertText', data }));
-      element.dispatchEvent(new view.Event('change', { bubbles: true }));
-      return succeed({ changed: true });
-    }
-    if (action.kind === 'select') {
-      const element = findByRef(action.ref);
-      requireInteractable(element);
-      if (tagOf(element) !== 'select') return fail('invalid_target', 'The target element is not a select control.');
-      const select = element as HTMLSelectElement;
-      const option = Array.from(select.options).find((candidate) => candidate.value === action.value && !candidate.disabled);
-      if (!option) return fail('invalid_select_option', 'The requested select option is unavailable or disabled.');
-      select.value = option.value;
-      const view = elementWindow(element);
-      select.dispatchEvent(new view.Event('input', { bubbles: true }));
-      select.dispatchEvent(new view.Event('change', { bubbles: true }));
-      return succeed({ changed: true });
-    }
-    if (action.kind === 'press') {
-      const element = action.ref ? findByRef(action.ref) : deepActiveElement();
-      if (action.ref || (element !== element.ownerDocument.body && element !== element.ownerDocument.documentElement)) requireInteractable(element);
-      element.focus();
-      const view = elementWindow(element);
-      const init = { key: action.key, code: action.code ?? action.key, bubbles: true, cancelable: true };
-      const allowed = element.dispatchEvent(new view.KeyboardEvent('keydown', init));
-      if (allowed) {
-        if (action.key === 'Enter') {
-          const form = element.closest('form') as HTMLFormElement | null;
-          if (form) form.requestSubmit();
-          else if (tagOf(element) === 'button' || element.getAttribute('role') === 'button') element.click();
-        } else if (action.key === ' ' || action.key === 'Spacebar') {
-          if (tagOf(element) === 'button' || element.getAttribute('role') === 'button') element.click();
-        } else if (action.key === 'Tab') {
-          focusNext(element);
-        } else if ((action.key === 'Backspace' || action.key === 'Delete') && ['input', 'textarea'].includes(tagOf(element))) {
-          const textControl = element as HTMLInputElement | HTMLTextAreaElement;
-          const start = textControl.selectionStart ?? textControl.value.length;
-          const end = textControl.selectionEnd ?? start;
-          const from = action.key === 'Backspace' && start === end ? Math.max(0, start - 1) : start;
-          const to = action.key === 'Delete' && start === end ? Math.min(textControl.value.length, end + 1) : end;
-          setTextValue(textControl, `${textControl.value.slice(0, from)}${textControl.value.slice(to)}`);
-          textControl.setSelectionRange(from, from);
-          textControl.dispatchEvent(new view.InputEvent('input', { bubbles: true, inputType: 'deleteContentBackward' }));
+        const input = tag === 'input' ? element as HTMLInputElement : undefined;
+        const textarea = tag === 'textarea' ? element as HTMLTextAreaElement : undefined;
+        if (!input && !textarea && !element.isContentEditable) {
+          return fail('element_not_editable', 'The target element does not accept text.');
         }
+        if ((input || textarea)?.readOnly) return fail('element_readonly', 'The target text control is read-only.');
+        if (input && ['button', 'checkbox', 'color', 'file', 'hidden', 'image', 'radio', 'range', 'reset', 'submit'].includes(input.type)) {
+          return fail('element_not_editable', 'The target input type does not accept text.');
+        }
+        element.focus();
+        const data = action.kind === 'fill' ? action.value : action.text;
+        let usedNativeInsertion = false;
+        if (input || textarea) {
+          const textControl = (input ?? textarea) as HTMLInputElement | HTMLTextAreaElement;
+          const nextValue = action.kind === 'fill' ? action.value : `${textControl.value}${action.text}`;
+          setTextValue(textControl, nextValue);
+        } else {
+          usedNativeInsertion = insertContentEditableText(element, data, action.kind === 'fill');
+          if (!usedNativeInsertion) element.textContent = action.kind === 'fill' ? action.value : `${element.textContent ?? ''}${action.text}`;
+        }
+        const view = elementWindow(element);
+        if (!usedNativeInsertion) element.dispatchEvent(new view.InputEvent('input', { bubbles: true, inputType: 'insertText', data }));
+        element.dispatchEvent(new view.Event('change', { bubbles: true }));
+        return succeed({ changed: true });
       }
-      element.dispatchEvent(new view.KeyboardEvent('keyup', init));
-      return succeed({ changed: true });
-    }
-    if (action.kind === 'scroll') {
-      const target = action.ref ? findByRef(action.ref) : document.scrollingElement ?? document.documentElement;
-      if (action.ref) requireInteractable(target as HTMLElement);
-      if (action.ref && action.x === undefined && action.y === undefined) target.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'auto' });
-      else if (action.ref) target.scrollBy({ left: action.x ?? 0, top: action.y ?? 0, behavior: 'auto' });
-      else window.scrollBy({ left: action.x ?? 0, top: action.y ?? 0, behavior: 'auto' });
-      return succeed({ changed: true });
-    }
-    if (action.kind === 'upload') {
-      const input = findByRef(action.ref);
-      requireInteractable(input);
-      if (tagOf(input) !== 'input' || (input as HTMLInputElement).type !== 'file') {
-        return fail('invalid_upload_target', 'The target element is not a file input.');
+      if (action.kind === 'select') {
+        const element = findByRef(action.ref);
+        requireInteractable(element);
+        if (tagOf(element) !== 'select') return fail('invalid_target', 'The target element is not a select control.');
+        const select = element as HTMLSelectElement;
+        const option = Array.from(select.options).find((candidate) => candidate.value === action.value && !candidate.disabled);
+        if (!option) return fail('invalid_select_option', 'The requested select option is unavailable or disabled.');
+        select.value = option.value;
+        const view = elementWindow(element);
+        select.dispatchEvent(new view.Event('input', { bubbles: true }));
+        select.dispatchEvent(new view.Event('change', { bubbles: true }));
+        return succeed({ changed: true });
       }
-      const view = elementWindow(input);
-      const files = action.files.map((file) => {
-        const binary = view.atob(file.contentBase64);
-        const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
-        return new view.File([bytes], file.filename, { type: file.mimeType });
-      });
-      const transfer = new view.DataTransfer();
-      for (const file of files) transfer.items.add(file);
-      (input as HTMLInputElement).files = transfer.files;
-      input.dispatchEvent(new view.Event('input', { bubbles: true }));
-      input.dispatchEvent(new view.Event('change', { bubbles: true }));
-      return succeed({ uploaded: true, count: files.length });
+      if (action.kind === 'press') {
+        const element = action.ref ? findByRef(action.ref) : deepActiveElement();
+        if (action.ref || (element !== element.ownerDocument.body && element !== element.ownerDocument.documentElement)) requireInteractable(element);
+        element.focus();
+        const view = elementWindow(element);
+        const init = { key: action.key, code: action.code ?? action.key, bubbles: true, cancelable: true };
+        const allowed = element.dispatchEvent(new view.KeyboardEvent('keydown', init));
+        if (allowed) {
+          if (action.key === 'Enter') {
+            const form = element.closest('form') as HTMLFormElement | null;
+            if (form) form.requestSubmit();
+            else if (tagOf(element) === 'button' || element.getAttribute('role') === 'button') element.click();
+          } else if (action.key === ' ' || action.key === 'Spacebar') {
+            if (tagOf(element) === 'button' || element.getAttribute('role') === 'button') element.click();
+          } else if (action.key === 'Tab') {
+            focusNext(element);
+          } else if ((action.key === 'Backspace' || action.key === 'Delete') && ['input', 'textarea'].includes(tagOf(element))) {
+            const textControl = element as HTMLInputElement | HTMLTextAreaElement;
+            const start = textControl.selectionStart ?? textControl.value.length;
+            const end = textControl.selectionEnd ?? start;
+            const from = action.key === 'Backspace' && start === end ? Math.max(0, start - 1) : start;
+            const to = action.key === 'Delete' && start === end ? Math.min(textControl.value.length, end + 1) : end;
+            setTextValue(textControl, `${textControl.value.slice(0, from)}${textControl.value.slice(to)}`);
+            textControl.setSelectionRange(from, from);
+            textControl.dispatchEvent(new view.InputEvent('input', { bubbles: true, inputType: 'deleteContentBackward' }));
+          }
+        }
+        element.dispatchEvent(new view.KeyboardEvent('keyup', init));
+        return succeed({ changed: true });
+      }
+      if (action.kind === 'scroll') {
+        const target = action.ref ? findByRef(action.ref) : document.scrollingElement ?? document.documentElement;
+        if (action.ref) requireInteractable(target as HTMLElement);
+        if (action.ref && action.x === undefined && action.y === undefined) target.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'auto' });
+        else if (action.ref) target.scrollBy({ left: action.x ?? 0, top: action.y ?? 0, behavior: 'auto' });
+        else window.scrollBy({ left: action.x ?? 0, top: action.y ?? 0, behavior: 'auto' });
+        return succeed({ changed: true });
+      }
+      if (action.kind === 'upload') {
+        const input = findByRef(action.ref);
+        requireInteractable(input);
+        if (tagOf(input) !== 'input' || (input as HTMLInputElement).type !== 'file') {
+          return fail('invalid_upload_target', 'The target element is not a file input.');
+        }
+        const view = elementWindow(input);
+        const files = action.files.map((file) => {
+          const binary = view.atob(file.contentBase64);
+          const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+          return new view.File([bytes], file.filename, { type: file.mimeType });
+        });
+        const transfer = new view.DataTransfer();
+        for (const file of files) transfer.items.add(file);
+        (input as HTMLInputElement).files = transfer.files;
+        input.dispatchEvent(new view.Event('input', { bubbles: true }));
+        input.dispatchEvent(new view.Event('change', { bubbles: true }));
+        return succeed({ uploaded: true, count: files.length });
+      }
+      return fail('unsupported_action', 'The requested browser automation action is unsupported.');
+    } catch (error) {
+      if (error && typeof error === 'object' && 'overseerAutomationFailure' in error && error.overseerAutomationFailure === true) {
+        const failure = error as LocalFailure;
+        return { ok: false, error: { code: failure.code, message: failure.message, ...(failure.fallback ? { fallback: failure.fallback } : {}) } };
+      }
+      return { ok: false, error: { code: 'automation_failed', message: 'Browser automation failed in the target tab.' } };
+    } finally {
+      signalDialogCleanup();
     }
-    return fail('unsupported_action', 'The requested browser automation action is unsupported.');
-  } catch (error) {
-    if (error && typeof error === 'object' && 'overseerAutomationFailure' in error && error.overseerAutomationFailure === true) {
-      const failure = error as LocalFailure;
-      return { ok: false, error: { code: failure.code, message: failure.message, ...(failure.fallback ? { fallback: failure.fallback } : {}) } };
+  };
+  if (!MUTATION_EVIDENCE_KINDS[action.kind]) return execute();
+  let mutations = 0;
+  const observer = new MutationObserver((records) => {
+    mutations += records.length;
+    if (mutations > MUTATION_EVIDENCE_CAP) observer.disconnect();
+  });
+  observer.observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
+  try {
+    const result = execute();
+    // Flush one macrotask so microtask-batched framework reactions are counted.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    if (result.ok && result.value && typeof result.value === 'object' && !Array.isArray(result.value)) {
+      return { ok: true, value: { ...(result.value as Record<string, unknown>), dom_mutations: Math.min(mutations, MUTATION_EVIDENCE_CAP) } };
     }
-    return { ok: false, error: { code: 'automation_failed', message: 'Browser automation failed in the target tab.' } };
+    return result;
   } finally {
-    signalDialogCleanup();
+    observer.disconnect();
   }
 }
 

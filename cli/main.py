@@ -62,8 +62,27 @@ CLI_COMMANDS = (
     "health", "status", "install", "update", "uninstall", "help", "sessions", "windows", "tabs",
     "open", "close", "navigate", "back", "forward", "reload", "snapshot", "observe", "click", "hover", "fill", "type", "select", "press",
     "scroll", "evaluate", "eval", "console", "network", "batch", "capture", "screenshot",
-    "screenshot-element", "element-screenshot", "upload", "takeover", "cancel",
+    "screenshot-element", "element-screenshot", "upload", "takeover", "cancel", "wait",
 )
+
+_TAB_TARGETED_COMMANDS = {
+    "navigate", "back", "forward", "reload", "snapshot", "observe", "wait.for",
+    "click", "hover", "fill", "type", "select", "press", "scroll", "evaluate",
+    "screenshot.visible", "screenshot.element", "upload",
+    "console.start", "console.read", "console.stop", "network.read",
+}
+
+
+def _apply_targeting(command: str, params: dict[str, Any], tab_id: int | None, max_nodes: int | None) -> dict[str, Any]:
+    if tab_id is not None:
+        if command not in _TAB_TARGETED_COMMANDS:
+            raise CLIError("usage", f"--tab-id does not apply to {command}")
+        params.setdefault("tab_id", tab_id)
+    if max_nodes is not None:
+        if command not in {"snapshot", "observe"}:
+            raise CLIError("usage", "--max-nodes applies only to snapshot and observe")
+        params["max_nodes"] = max_nodes
+    return params
 
 _BATCH_COMMANDS = {
     "windows.resize",
@@ -432,6 +451,8 @@ def _command_request(command: str, args: list[str]) -> tuple[str, dict[str, Any]
         _exact(args, 1, "open URL")
         return "navigate", {"url": args[0]}
     if command in {"snapshot", "observe"}:
+        if command == "observe" and args == ["--changes"]:
+            return command, {"changes": True}
         _exact(args, 0, command)
         return command, {}
     if command in {"eval", "evaluate"}:
@@ -515,6 +536,48 @@ def _command_request(command: str, args: list[str]) -> tuple[str, dict[str, Any]
         if len(args) == 2:
             return command, {"x": _integer(args[0], minimum=-100_000, maximum=100_000), "y": _integer(args[1], minimum=-100_000, maximum=100_000)}
         return command, {"ref": args[0], "x": _integer(args[1], minimum=-100_000, maximum=100_000), "y": _integer(args[2], minimum=-100_000, maximum=100_000)}
+    if command == "wait":
+        params: dict[str, Any] = {}
+        conditions = 0
+        rest = list(args)
+        while rest:
+            flag = rest.pop(0)
+            if flag == "--ready":
+                params["ready"] = True
+                conditions += 1
+            elif flag == "--absent":
+                params["absent"] = True
+            elif flag in {"--url", "--text", "--selector", "--state", "--stable", "--timeout-ms"}:
+                if not rest:
+                    raise CLIError("usage", f"{flag} requires a value")
+                value = rest.pop(0)
+                if flag == "--url":
+                    params["url_contains"] = value
+                    conditions += 1
+                elif flag == "--text":
+                    params["text"] = value
+                    conditions += 1
+                elif flag == "--selector":
+                    params["selector"] = value
+                    conditions += 1
+                elif flag == "--state":
+                    if value not in {"visible", "hidden", "enabled"}:
+                        raise CLIError("usage", "--state must be visible, hidden, or enabled")
+                    params["state"] = value
+                elif flag == "--stable":
+                    params["dom_stable_ms"] = _integer(value, minimum=100, maximum=30_000)
+                    conditions += 1
+                else:
+                    params["timeout_ms"] = _integer(value, minimum=1, maximum=45_000)
+            else:
+                raise CLIError(
+                    "usage",
+                    "usage: overseer-browser wait (--ready | --url TEXT | --text TEXT [--absent] | "
+                    "--selector CSS [--state visible|hidden|enabled] | --stable MS) [--timeout-ms N]",
+                )
+        if conditions != 1:
+            raise CLIError("usage", "wait requires exactly one condition: --ready, --url, --text, --selector, or --stable")
+        return "wait.for", params
     if command == "cancel":
         _exact(args, 1, "cancel REQUEST_ID")
         return command, {"request_id": _checked_request_id(args[0])}
@@ -670,6 +733,30 @@ def main(argv: list[str] | None = None) -> int:
             _render({"ok": False, "error": {"code": exc.code, "message": exc.message}}, json_output)
             return 2
         del raw[index : index + 2]
+    tab_id: int | None = None
+    if "--tab-id" in raw:
+        index = raw.index("--tab-id")
+        try:
+            tab_id = _integer(raw[index + 1])
+        except IndexError:
+            _render({"ok": False, "error": {"code": "usage", "message": "--tab-id requires a tab ID"}}, json_output)
+            return 2
+        except CLIError as exc:
+            _render({"ok": False, "error": {"code": exc.code, "message": exc.message}}, json_output)
+            return 2
+        del raw[index : index + 2]
+    max_nodes: int | None = None
+    if "--max-nodes" in raw:
+        index = raw.index("--max-nodes")
+        try:
+            max_nodes = _integer(raw[index + 1], maximum=500)
+        except IndexError:
+            _render({"ok": False, "error": {"code": "usage", "message": "--max-nodes requires a node count"}}, json_output)
+            return 2
+        except CLIError as exc:
+            _render({"ok": False, "error": {"code": exc.code, "message": exc.message}}, json_output)
+            return 2
+        del raw[index : index + 2]
     if not raw or raw[0] in {"-h", "--help"}:
         _render(
             {
@@ -708,6 +795,8 @@ def main(argv: list[str] | None = None) -> int:
                         payload["extension"] = {"ok": False, "error": extension_response.get("error", {"code": "invalid_response", "message": "Extension status was unavailable."})}
         elif command == "upload":
             _require(args, 2, "upload REF PATH [PATH...]")
+            if max_nodes is not None:
+                raise CLIError("usage", "--max-nodes applies only to snapshot and observe")
             ref = args[0]
             path_args = args[1:]
             if len(path_args) > MAX_UPLOAD_FILES:
@@ -715,6 +804,8 @@ def main(argv: list[str] | None = None) -> int:
             payload = None
             paths = [Path(path_arg).expanduser() for path_arg in path_args]
             for chunk in iter_upload_file_chunks(paths, ref):
+                if tab_id is not None:
+                    chunk["tab_id"] = tab_id
                 payload = request_once("upload", chunk, timeout=timeout, request_id=request_id)
                 if not payload.get("ok"):
                     break
@@ -731,6 +822,7 @@ def main(argv: list[str] | None = None) -> int:
             output_path = Path(output_arg).expanduser() if output_arg else None
             if output_path is not None:
                 params["format"] = _screenshot_output_format(output_path)
+            params = _apply_targeting(extension_command, params, tab_id, max_nodes)
             payload = request_once(extension_command, params, timeout=timeout, request_id=request_id)
             payload = _materialize_screenshot(payload, output_path)
         elif command == "help":
@@ -743,6 +835,7 @@ def main(argv: list[str] | None = None) -> int:
             }
         else:
             extension_command, params = _command_request(command, args)
+            params = _apply_targeting(extension_command, params, tab_id, max_nodes)
             payload = request_once(extension_command, params, timeout=timeout, request_id=request_id)
     except CLIError as exc:
         payload = {"ok": False, "error": {"code": exc.code, "message": exc.message}}

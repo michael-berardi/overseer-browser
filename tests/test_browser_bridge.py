@@ -14,6 +14,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import cli.main as cli_main_module
 from cli.main import (
     CLIError,
     MAX_BATCH_SOURCE_BYTES,
@@ -493,6 +494,53 @@ class CLIMappingTests(unittest.TestCase):
         self.assertEqual(payload["socket"], {"ok": True})
         self.assertEqual(payload["mode"], "local-native")
         self.assertEqual(payload["extension"]["error"], {"code": "native_disconnected", "message": "native host disconnected before returning a response"})
+
+    def test_wait_and_targeting_flags_match_extension_schema(self) -> None:
+        self.assertEqual(_command_request("wait", ["--ready"]), ("wait.for", {"ready": True}))
+        self.assertEqual(_command_request("wait", ["--url", "/done"]), ("wait.for", {"url_contains": "/done"}))
+        self.assertEqual(
+            _command_request("wait", ["--text", "Saved", "--absent", "--timeout-ms", "5000"]),
+            ("wait.for", {"text": "Saved", "absent": True, "timeout_ms": 5000}),
+        )
+        self.assertEqual(
+            _command_request("wait", ["--selector", ".result", "--state", "enabled"]),
+            ("wait.for", {"selector": ".result", "state": "enabled"}),
+        )
+        self.assertEqual(_command_request("wait", ["--stable", "500"]), ("wait.for", {"dom_stable_ms": 500}))
+        self.assertEqual(_command_request("observe", ["--changes"]), ("observe", {"changes": True}))
+        with self.assertRaises(CLIError):
+            _command_request("snapshot", ["--changes"])
+        with self.assertRaises(CLIError):
+            _command_request("observe", ["--changes", "extra"])
+        with self.assertRaises(CLIError):
+            _command_request("wait", [])
+        with self.assertRaises(CLIError):
+            _command_request("wait", ["--ready", "--url", "x"])
+        with self.assertRaises(CLIError):
+            _command_request("wait", ["--selector", ".x", "--state", "focused"])
+        with self.assertRaises(CLIError):
+            _command_request("wait", ["--stable", "10"])
+        self.assertEqual(cli_main_module._apply_targeting("observe", {}, 7, 50), {"tab_id": 7, "max_nodes": 50})
+        self.assertEqual(cli_main_module._apply_targeting("click", {"ref": "osr-a"}, 3, None), {"ref": "osr-a", "tab_id": 3})
+        with self.assertRaises(CLIError):
+            cli_main_module._apply_targeting("sessions.list", {}, 7, None)
+        with self.assertRaises(CLIError):
+            cli_main_module._apply_targeting("click", {"ref": "osr-a"}, None, 100)
+
+    def test_main_routes_global_targeting_flags(self) -> None:
+        captured: list[tuple[str, dict]] = []
+
+        def fake_request(command: str, params: dict, **kwargs: object) -> dict:
+            captured.append((command, params))
+            return {"ok": True, "result": {}}
+
+        with patch("cli.main.request_once", side_effect=fake_request), patch("cli.main._render"):
+            self.assertEqual(cli_main(["observe", "--tab-id", "42", "--max-nodes", "25"]), 0)
+            self.assertEqual(cli_main(["wait", "--ready", "--tab-id", "42"]), 0)
+        self.assertEqual(captured[0], ("observe", {"tab_id": 42, "max_nodes": 25}))
+        self.assertEqual(captured[1], ("wait.for", {"ready": True, "tab_id": 42}))
+        with patch("cli.main._render"):
+            self.assertEqual(cli_main(["sessions", "list", "--tab-id", "42"]), 1)
 
     def test_console_network_batch_and_capture_commands_match_extension_schema(self) -> None:
         self.assertEqual(_command_request("console", ["start"]), ("console.start", {}))
