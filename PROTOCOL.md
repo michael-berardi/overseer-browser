@@ -85,8 +85,10 @@ The required command families are:
 - `windows.resize`
 - `tabs.list`, `tabs.create`, `tabs.select`, `tabs.close`, `tabs.borrow`, `tabs.return`
 - `navigate`, `back`, `forward`, `reload`
-- `snapshot` / `observe` with stable element references
+- `snapshot` / `observe` with stable element references; `observe` optionally returns a bounded per-document delta (`changes: true`)
+- event-driven bounded `wait.for` with exactly one condition (ready, URL substring, text present/absent, selector state, or DOM stability)
 - `click`, `hover`, `fill`, `type`, `select`, `press`, `scroll`
+- mutation actions report a bounded `dom_mutations` count for the action's synchronous page reaction
 - `evaluate` only when the explicit capability is enabled
 - visible-tab or element screenshots
 - bounded chunked upload of 1–16 files
@@ -101,9 +103,15 @@ Commands operate on the active session/tab selected by the caller or on IDs supp
 `health.status` retains the version-1 permission fields (`meetingHosts`, `optionalSiteAccess`, `currentOrigin`, and `currentOriginAccess`) and adds `allSiteAccess`. The all-site booleans report Chromium's effective required `<all_urls>` grant; the extension never requests permission at runtime.
 
 A session owns a dedicated Agent Window by default. A normal user tab is read-only until `tabs.borrow` succeeds. `tabs.return` restores ownership to the user, and stopping a session returns all borrowed tabs before releasing session state.
+
+`wait.for` accepts `tab_id`, `timeout_ms` (default 15000, bounded 1–45000 by the command deadline), and exactly one condition: `ready: true` (tab load complete), `url_contains` (substring of the current tab URL, including same-document URL updates), `text` with optional `absent: true`, `selector` with optional `state` (`visible` default, `hidden`, `enabled`), or `dom_stable_ms` (no DOM mutations for the given quiet window, bounded 100–30000). URL and readiness conditions are driven by tab update events; text, selector, and stability conditions run a bounded MutationObserver in the target tab that always self-cleans at its timeout, which is capped at the remaining request deadline. Conditions resolve at most once; tab closure fails the wait with `tab_closed`, document replacement mid-wait fails with `wait_interrupted`, timeout with `wait_timeout`, and request cancellation or human takeover applies as with other automation commands. Waits are never detached: no watcher outlives its request.
+
+`observe` with `changes: true` returns `{ changes: true, baseline, added, changed, removed, unchanged, total_nodes }` relative to the previous observation of the same tab and document. Node identity is the stable `osr-*` ref; a node whose tag, role, name, text, disabled state, or href differs is `changed`. Stored state is bounded per tab and across tabs, retains only content signatures, and is dropped on navigation, tab removal or return, session stop, and native disconnect. The first observation of a document returns `baseline: true` with all nodes in `added`.
 Uploads are explicit and bounded. The CLI accepts `upload REF PATH [PATH...]`, limits each set to 1–16 files, 8 MiB aggregate, and at most 32 chunks of 256 KiB. The extension retains at most eight incomplete transactions and 32 MiB of incomplete bytes, expires abandoned transactions after 60 seconds, and clears retained data on native disconnect or session stop. It transmits only a bounded element reference plus ordered file/chunk metadata, basenames, MIME types, and contents; local filesystem paths and the token never enter the extension payload. A receiver must reject missing, duplicated, oversized, inconsistent, or out-of-order files and chunks before assigning the complete set atomically to a file input.
 
 Batch execution is sequential unless the request sets `stop_on_error: false` and `max_parallel` between 2 and 8. Parallel mode accepts only one `tabs.list` action plus read-only `snapshot`, `observe`, or `network.read` actions with distinct explicit `tab_id` values. The extension validates the complete batch before starting work, preserves result order, shares the outer deadline/cancellation state, and rejects mutation or same-tab parallelism because those actions cannot be rolled back deterministically.
+
+Across concurrent CLI clients, the extension serializes page mutations (navigation, click/hover/fill/type/select/press/scroll, element scroll-into-view, evaluate, upload) per tab so multiple agents sharing one browser cannot interleave actions on the same tab. A queued mutation that outlives its request deadline or cancellation never executes. Reads, waits, and mutations on distinct tabs run concurrently.
 
 ## Unsupported capabilities
 

@@ -15,7 +15,9 @@ import {
   responseError,
   responseOk,
 } from '../src/protocol';
-import { AutomationError, runInIsolatedWorld, runPageEvaluation, type AutomationAction } from '../src/automation';
+import { AutomationError, runInIsolatedWorld, runPageEvaluation, runWaitFor, type AutomationAction, type SnapshotNode } from '../src/automation';
+import { ObserveDeltaStore, computeObserveDelta } from '../src/observe_delta';
+import { WaitError, parseWaitTarget } from '../src/wait';
 import { clearLegacyAutomationOrigins, getPermissionState, isNavigableUrl } from '../src/permissions';
 import { MeetingDeduper, PendingMeetingQueue } from '../src/meeting';
 import { SessionError, SessionManager } from '../src/session';
@@ -284,6 +286,29 @@ const sessions = new SessionManager(restorePageConsole);
 const deduper = new MeetingDeduper();
 const pendingMeetings = new PendingMeetingQueue();
 const uploads = new UploadAssembler();
+const observeDeltas = new ObserveDeltaStore();
+const tabMutationQueues = new Map<number, Promise<unknown>>();
+const MUTATING_ACTION_KINDS: ReadonlySet<string> = new Set([
+  'click', 'hover', 'fill', 'type', 'select', 'press', 'scroll', 'element_rect', 'upload',
+]);
+
+/**
+ * Serialize mutations per tab so concurrent agents driving one browser cannot
+ * interleave clicks, fills, and navigations on the same tab. Reads
+ * (snapshot/observe/console/network) and waits stay concurrent, and mutations
+ * on distinct tabs still run in parallel. Queue entries run even when the
+ * predecessor failed, and the entry is dropped once it is the settled tail.
+ */
+export function enqueueTabMutation<T>(tabId: number, work: () => Promise<T>): Promise<T> {
+  const tail = tabMutationQueues.get(tabId) ?? Promise.resolve();
+  const result = tail.then(work, work);
+  tabMutationQueues.set(tabId, result);
+  const release = (): void => {
+    if (tabMutationQueues.get(tabId) === result) tabMutationQueues.delete(tabId);
+  };
+  void result.then(release, release);
+  return result;
+}
 const inflight = new Map<string, InflightRequest>();
 let nativeEnabled = false;
 let nativePort: chrome.runtime.Port | null = null;
@@ -317,7 +342,8 @@ const COMMAND_PARAM_KEYS: Record<Command, readonly string[]> = {
   forward: ['tab_id'],
   reload: ['tab_id'],
   snapshot: ['tab_id', 'max_nodes'],
-  observe: ['tab_id', 'max_nodes'],
+  observe: ['tab_id', 'max_nodes', 'changes'],
+  'wait.for': ['tab_id', 'timeout_ms', 'ready', 'url_contains', 'text', 'absent', 'selector', 'state', 'dom_stable_ms'],
   click: ['tab_id', 'ref'],
   hover: ['tab_id', 'ref'],
   fill: ['tab_id', 'ref', 'value'],
@@ -386,6 +412,12 @@ function startBackground(): void {
     if (nativeEnabled) connectNative();
   });
   void loadCapability();
+  // Observation deltas are per document: a navigation or tab removal
+  // invalidates the stored baseline without retaining any page data.
+  chrome.tabs.onUpdated.addListener((updatedTabId, changeInfo) => {
+    if (changeInfo.url !== undefined || changeInfo.status === 'loading') observeDeltas.drop(updatedTabId);
+  });
+  chrome.tabs.onRemoved.addListener((removedTabId) => observeDeltas.drop(removedTabId));
   chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) => {
     if (!message || typeof message !== 'object') return false;
     const value = message as Record<string, unknown>;
@@ -565,6 +597,7 @@ function connectNative(): void {
       nativePort = null;
       connected = false;
       uploads.clear();
+      observeDeltas.clear();
       if (runtimeError?.message) {
         lastNativeError = {
           code: 'native_disconnected',
@@ -611,6 +644,7 @@ function failNativeConnection(
   lastNativeError = error;
   connected = false;
   uploads.clear();
+  observeDeltas.clear();
   if (nativePort === port) nativePort = null;
   try {
     port.disconnect();
@@ -785,6 +819,7 @@ async function dispatchCommand(request: NativeRequest, state: InflightRequest): 
   if (command === 'sessions.stop') {
     const result = await sessions.stop();
     uploads.clear();
+    observeDeltas.clear();
     return result;
   }
   if (command === 'sessions.list') return sessions.list();
@@ -808,39 +843,74 @@ async function dispatchCommand(request: NativeRequest, state: InflightRequest): 
   if (command === 'tabs.select') return sessions.selectTab(readInteger(params, 'tab_id', 1));
   if (command === 'tabs.close') return sessions.closeTab(readInteger(params, 'tab_id', 1));
   if (command === 'tabs.borrow') return borrowExistingTab(readInteger(params, 'tab_id', 1));
-  if (command === 'tabs.return') return sessions.returnTab(readInteger(params, 'tab_id', 1));
+  if (command === 'tabs.return') {
+    const tabId = readInteger(params, 'tab_id', 1);
+    const result = await sessions.returnTab(tabId);
+    observeDeltas.drop(tabId);
+    return result;
+  }
   if (command === 'navigate') {
     const tabId = await ownedTab(params);
     const url = readString(params, 'url', 4_096);
     if (!isNavigableUrl(url)) throw new DispatchError('invalid_url', 'Only http and https navigation is allowed.');
-    await sessions.cleanupTab(tabId);
-    const navigation = createTabNavigationWait(tabId);
-    try {
-      await browser.tabs.update(tabId, { url });
-      return await navigation.promise;
-    } catch (error) {
-      navigation.cancel();
-      throw error;
-    }
+    return enqueueTabMutation(tabId, async () => {
+      assertNotCancelled(state);
+      await sessions.cleanupTab(tabId);
+      const navigation = createTabNavigationWait(tabId);
+      try {
+        await browser.tabs.update(tabId, { url });
+        return await navigation.promise;
+      } catch (error) {
+        navigation.cancel();
+        throw error;
+      }
+    });
   }
   if (command === 'back' || command === 'forward' || command === 'reload') {
     const tabId = await targetTab(params);
-    await sessions.cleanupTab(tabId);
-    const navigation = createTabNavigationWait(tabId);
-    try {
-      if (command === 'reload') {
-        await browser.tabs.reload(tabId);
-      } else {
-        const delta = command === 'back' ? -1 : 1;
-        await runHistoryNavigation(tabId, delta);
+    return enqueueTabMutation(tabId, async () => {
+      assertNotCancelled(state);
+      await sessions.cleanupTab(tabId);
+      const navigation = createTabNavigationWait(tabId);
+      try {
+        if (command === 'reload') {
+          await browser.tabs.reload(tabId);
+        } else {
+          const delta = command === 'back' ? -1 : 1;
+          await runHistoryNavigation(tabId, delta);
+        }
+        return await navigation.promise;
+      } catch (error) {
+        navigation.cancel();
+        throw error;
       }
-      return await navigation.promise;
-    } catch (error) {
-      navigation.cancel();
-      throw error;
-    }
+    });
   }
-  if (command === 'snapshot' || command === 'observe') return runAction(params, { kind: command, maxNodes: optionalInteger(params, 'max_nodes') }, state);
+  if (command === 'snapshot' || command === 'observe') {
+    if (params.changes !== undefined && params.changes !== true) throw new DispatchError('invalid_params', 'changes must be true when supplied.');
+    if (command === 'observe' && params.changes === true) {
+      const tabId = await targetTab(params);
+      const nodes = await runAction(params, { kind: 'observe', maxNodes: optionalInteger(params, 'max_nodes') }, state) as SnapshotNode[];
+      const { delta, next } = computeObserveDelta(observeDeltas.read(tabId), nodes);
+      observeDeltas.write(tabId, next);
+      return delta;
+    }
+    return runAction(params, { kind: command, maxNodes: optionalInteger(params, 'max_nodes') }, state);
+  }
+  if (command === 'wait.for') {
+    const tabId = await targetTab(params);
+    const target = parseWaitTarget(params);
+    assertNotCancelled(state);
+    const remainingMs = state.deadlineAt === undefined ? target.timeoutMs : state.deadlineAt - Date.now();
+    if (remainingMs <= 0) throw timeoutError();
+    const timeoutMs = Math.min(target.timeoutMs, remainingMs);
+    if (target.kind === 'page') {
+      const result = await runWaitFor(tabId, target.condition, timeoutMs);
+      assertNotCancelled(state);
+      return result;
+    }
+    return waitForTabState(tabId, target, timeoutMs, state);
+  }
   if (command === 'click' || command === 'hover') return runAction(params, { kind: command, ref: readString(params, 'ref', 128) }, state);
   if (command === 'fill') return runAction(params, { kind: 'fill', ref: readString(params, 'ref', 128), value: readStringAllowEmpty(params, 'value', 32_000) }, state);
   if (command === 'type') return runAction(params, { kind: 'type', ref: readString(params, 'ref', 128), text: readString(params, 'text', 32_000) }, state);
@@ -850,7 +920,10 @@ async function dispatchCommand(request: NativeRequest, state: InflightRequest): 
   if (command === 'evaluate') {
     if (!evaluateEnabled) throw new DispatchError('capability_required', 'Evaluate is disabled. Enable the explicit capability in the popup.', 'Open the popup and enable page evaluation.');
     const tabId = await targetTab(params);
-    return runPageEvaluation(tabId, readString(params, 'source', 32_000));
+    return enqueueTabMutation(tabId, () => {
+      assertNotCancelled(state);
+      return runPageEvaluation(tabId, readString(params, 'source', 32_000));
+    });
   }
   if (command === 'console.start' || command === 'console.read' || command === 'console.stop') {
     const tabId = await targetTab(params);
@@ -904,7 +977,7 @@ function isPausedCommand(command: Command): boolean {
     command === 'scroll' || command === 'evaluate' || command === 'console.start' ||
     command === 'console.read' || command === 'console.stop' || command === 'network.read' ||
     command === 'screenshot.visible' || command === 'screenshot.element' || command === 'upload' ||
-    command === 'batch';
+    command === 'batch' || command === 'wait.for';
 }
 
 async function ownedTab(params: Record<string, unknown>): Promise<number> {
@@ -935,9 +1008,13 @@ async function targetTab(params: Record<string, unknown>): Promise<number> {
 async function runAction(params: Record<string, unknown>, action: AutomationAction, state: InflightRequest): Promise<unknown> {
   const tabId = await targetTab(params);
   assertNotCancelled(state);
-  const result = await runInIsolatedWorld(tabId, action);
-  assertNotCancelled(state);
-  return result;
+  if (!MUTATING_ACTION_KINDS.has(action.kind)) return runInIsolatedWorld(tabId, action);
+  return enqueueTabMutation(tabId, async () => {
+    assertNotCancelled(state);
+    const result = await runInIsolatedWorld(tabId, action);
+    assertNotCancelled(state);
+    return result;
+  });
 }
 
 async function runUpload(params: Record<string, unknown>, state: InflightRequest): Promise<unknown> {
@@ -1007,6 +1084,75 @@ export function createTabNavigationWait(tabId: number): TabNavigationWait {
     },
   };
 }
+/**
+ * Event-driven wait on tab URL or load status. Listeners and timers are
+ * released on match, timeout, tab close, or outer request cancellation;
+ * `timeoutMs` is pre-capped at the remaining request deadline.
+ */
+async function waitForTabState(
+  tabId: number,
+  target: { kind: 'url'; urlContains: string; timeoutMs: number } | { kind: 'ready'; timeoutMs: number },
+  timeoutMs: number,
+  state: InflightRequest,
+): Promise<unknown> {
+  const matchesTab = (tab: chrome.tabs.Tab): boolean =>
+    target.kind === 'url' ? (tab.url?.includes(target.urlContains) ?? false) : tab.status === 'complete';
+  const initial = await browser.tabs.get(tabId);
+  if (matchesTab(initial)) return { matched: true, ...(initial.url ? { url: initial.url.slice(0, 2_048) } : {}) };
+  let settled = false;
+  let timer: TimerHandle | undefined;
+  // Executor form: the shipped tsconfig pins ES2022, before Promise.withResolvers.
+  let resolveWait!: (value: unknown) => void;
+  let rejectWait!: (error: unknown) => void;
+  const promise = new Promise<unknown>((resolvePromise, rejectPromise) => {
+    resolveWait = resolvePromise;
+    rejectWait = rejectPromise;
+  });
+  const cleanup = (): void => {
+    clearTimeout(timer);
+    chrome.tabs.onUpdated.removeListener(onUpdated);
+    chrome.tabs.onRemoved.removeListener(onRemoved);
+  };
+  const check = (): void => {
+    if (settled) return;
+    void browser.tabs.get(tabId).then((tab) => {
+      if (settled || !matchesTab(tab)) return;
+      settled = true;
+      cleanup();
+      resolveWait({ matched: true, ...(tab.url ? { url: tab.url.slice(0, 2_048) } : {}) });
+    }, () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      rejectWait(new DispatchError('tab_closed', 'The target tab closed during the wait.'));
+    });
+  };
+  const onUpdated = (updatedTabId: number, changeInfo: chrome.tabs.TabChangeInfo): void => {
+    if (updatedTabId !== tabId || settled) return;
+    if (changeInfo.url !== undefined || changeInfo.status !== undefined) check();
+  };
+  const onRemoved = (removedTabId: number): void => {
+    if (removedTabId !== tabId || settled) return;
+    settled = true;
+    cleanup();
+    rejectWait(new DispatchError('tab_closed', 'The target tab closed during the wait.'));
+  };
+  chrome.tabs.onUpdated.addListener(onUpdated);
+  chrome.tabs.onRemoved.addListener(onRemoved);
+  timer = setTimeout(() => {
+    if (settled) return;
+    settled = true;
+    cleanup();
+    rejectWait(new WaitError('wait_timeout', 'The wait condition was not met before its timeout.', 'Observe the page to inspect its current state, then retry with a longer timeout_ms.'));
+  }, timeoutMs);
+  void cancellationSignal(state).catch(() => {
+    if (settled) return;
+    settled = true;
+    cleanup();
+  });
+  return promise;
+}
+
 export async function runHistoryNavigation(tabId: number, delta: -1 | 1): Promise<void> {
   try {
     await chrome.scripting.executeScript({
@@ -1294,6 +1440,7 @@ async function popupReturnActive(): Promise<unknown> {
       throw new DispatchError('tab_not_borrowed', 'The active tab is not borrowed by this session.');
     }
     await sessions.returnTab(activeTab.id);
+    observeDeltas.drop(activeTab.id);
     return { ok: true, state: await popupState() };
   } catch (error) {
     return { ok: false, error: normalizeError(error) };
@@ -1352,7 +1499,7 @@ export async function dispatchWithinDeadline(request: NativeRequest, state: Infl
 }
 
 function normalizeError(error: unknown): NormalizedDispatchError {
-  if (error instanceof DispatchError || error instanceof SessionError || error instanceof AutomationError || error instanceof ScreenshotError) {
+  if (error instanceof DispatchError || error instanceof SessionError || error instanceof AutomationError || error instanceof ScreenshotError || error instanceof WaitError) {
     return { code: error.code, message: error.message, fallback: error.fallback };
   }
   if (error instanceof Error) return { code: 'operation_failed', message: error.message };
