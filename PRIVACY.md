@@ -1,74 +1,53 @@
 # Privacy
 
 
-## What stays local
+## What stays on the device
 
-The extension, native host, CLI, and optional meeting adapter communicate on the same device. They may hold local state needed to execute an operator request:
+The extension, native host, and CLI may keep bounded local state needed to execute a request:
 
-- session, window, tab, stable element-reference, and meeting-delivery state kept in browser session storage and cleared on browser restart;
-- command arguments entered by the operator;
-- screenshots, uploads, and page observations requested by the operator;
-- a random local host token and connection metadata;
+- session, window, tab, element-reference, and meeting-delivery state;
+- command arguments supplied by the calling client;
+- screenshots, uploads, and page observations explicitly requested by that client;
+- a random local host token and connection metadata.
 
+The extension and native host do not independently upload these values. A calling client may deliberately forward returned observations, screenshots, uploads, or action results to another service; that transfer is outside this repository and must be evaluated under the client's privacy policy. Shell history, browser profiles, operating-system logs, backups, browser sync, and user-selected upload destinations can also retain data independently.
 
-## Permissions
+Runtime state is bounded and local. Session state and pending meeting delivery are cleared when the browser restarts or the connection/session ends. Uninstalling removes the native host registration and this application's local runtime files; it does not delete shared browser data.
 
-Permissions separate autonomous site reach from command authority:
+## Permissions and access boundaries
 
-- **Required all-site access:** `<all_urls>` is a required host permission so agents can navigate, inspect, screenshot, and interact with any HTTP(S) origin without runtime permission prompts. It does not authorize commands by itself: every action still requires the user-only native transport, an active session, and a session-owned or explicitly borrowed tab.
-- **Limited persistent meeting detection:** content scripts remain matched only to the exact Google Meet and Zoom hosts needed for reminders. No persistent general-site content script is registered.
-- **Native Messaging:** connects the extension to the local host only. It is not a network permission.
-- **No debugger permission:** the extension does not use `chrome.debugger` and cannot access debugger-only capabilities.
+- **Required `<all_urls>` host access:** permits navigation, inspection, screenshots, and interaction on HTTP(S) origins without repeated origin prompts. It does not authorize a command by itself; every action still requires the local transport, an active session, and a session-owned or explicitly borrowed tab.
+- **Native Messaging:** connects the extension to the local native host and is not a network permission.
+- **Storage, scripting, tabs, and windows:** support the visible popup, session ownership, content traversal, and browser actions.
+- **No debugger permission:** the extension does not invoke `chrome.debugger` or request debugger access.
+- **Limited meeting content scripts:** meeting detection is matched only to the supported meeting hosts. No persistent general-site content script is registered.
 
-The manifest must not add history, bookmarks, webRequest, `activeTab`, or `optional_host_permissions`. Broad required host access is intentional for autonomous operation; uninstalling or disabling the extension is the revocation path.
+The manifest must not add history, bookmarks, `webRequest`, `activeTab`, or optional host permissions. Uninstalling or disabling the extension revokes its browser access.
 
-## Agent Window and borrow model
+## Session and tab ownership
 
-The default Agent Window is visibly separate from normal browsing. The extension owns and automates tabs created in that window. A normal tab is read-only until the operator explicitly borrows it through the popup. Borrowed tabs are returned when requested and as part of session stop. The extension never passively inventories arbitrary tabs or injects automation code into tabs that are not session-owned or borrowed.
+A dedicated Agent Window is the default. The extension automates tabs created in that window. A normal tab is read-only until the user explicitly borrows it through the popup. Borrowed tabs are returned when requested and during session stop. The extension does not passively inventory arbitrary tabs or inject automation code into tabs that are not session-owned or borrowed.
 
-This is a privacy boundary, not a claim that a webpage is trustworthy. A page can still display or receive whatever the operator explicitly asks the automation to display or enter. Do not use browser control with credentials or sensitive data unless that is the intended task.
+This is an access boundary, not a claim that a webpage is trustworthy. A page can still display or receive anything the user explicitly asks the automation to display or enter. Do not use browser control with credentials or sensitive data unless that is the intended task.
 
 ## Meeting data minimization
 
-Meeting reminders support Google Meet and Zoom only. A detector emits:
+Meeting reminders support only the hosts documented by the current build. A detector emits a versioned event containing a detection ID, provider, timestamp, and a 64-character lowercase hexadecimal opaque salted SHA-256 `meeting_key`.
 
-```text
-version, detection_id, provider, meeting_key, detected_at_ms
-```
-
-`meeting_key` is a 64-character lowercase hexadecimal opaque salted SHA-256 value derived inside the extension. The raw URL, query string, meeting ID, title, page content, participant list, credentials, cookies, and recording data never leave the extension as part of this event. The provider and opaque key are retained only long enough for bounded deduplication and local delivery.
-
-The native host may forward the same minimised event over same-user Unix IPC to an optional UltraVox adapter. UltraVox may show a visible prompt. The extension never records audio/video and never starts recording. Recording requires an affirmative `Start recording` action; `Not now` or Escape declines. Disable the meeting-detection setting to stop reminder events.
+The raw URL, query string, meeting ID, title, page content, participant list, credentials, cookies, and recording data are not included. The native host may deliver the same minimized event over same-user local IPC to an optional adapter. Adapters must preserve the schema, keep the opaque key, bound retention, and never add page data. The extension never records audio or video and never starts recording; any recording action must be a separate visible user choice.
 
 ## Threat boundaries
 
-The local design reduces—but cannot eliminate—these risks:
-
 | Boundary | Protected by | Remaining risk |
 | --- | --- | --- |
-| CLI → host | random token, framed messages, user-only socket, peer-UID check where supported | another process running as the same user may access local IPC or read local state |
-| Host → extension | Chrome Native Messaging, exact extension ID in `allowed_origins`, versioned frames | a user who can modify the browser profile or host registration can alter the trust chain |
-| Extension → page | active session, Agent Window/borrow ownership, isolated-world content scripts, required all-site host access | explicitly controlled pages can observe actions and values sent to them |
-| Meeting page → reminder | exact hosts, parser, opaque salted key, bounded deduplication | a compromised page or browser can present false UI; detection is a reminder, not proof of attendance |
-| Local files → privacy | per-user paths, restrictive modes, no external upload by default | OS backups, shell history, browser sync, malware, or an administrator may expose local files |
+| CLI → host | random token, framed messages, user-only socket, peer-UID check where supported | another process running as the same user may access local IPC or state |
+| Host → extension | Chrome Native Messaging, exact extension identity in `allowed_origins`, versioned frames | a user who can modify the browser profile or host registration can alter the trust chain |
+| Extension → page | active session, Agent Window/borrow ownership, isolated-world scripts, required host access | explicitly controlled pages can observe actions and values sent to them |
+| Meeting page → reminder | exact host matches, parser, opaque salted key, bounded deduplication | a compromised page or browser can present false UI |
+| Local files → privacy | per-user paths, restrictive modes, no external upload by default | backups, shell history, browser sync, malware, or an administrator may expose local files |
 
-No browser extension can protect against a compromised browser, compromised operating system, malicious same-user process, or misuse of its required all-site access. Use a separate browser profile or OS account for high-sensitivity work.
+No browser extension can protect against a compromised browser, operating system, malicious same-user process, or misuse of required all-site access. Use a separate browser profile or OS account for high-sensitivity work.
 
-## No-debugger and no-infobar invariant
+## Security invariants
 
-The project does not request `debugger` and never invokes `chrome.debugger`. It does not rely on a Chrome launch switch to hide an infobar. Required `<all_urls>` host access enables autonomous HTTP(S) automation but does not weaken session ownership or command gating. A release or local build that adds debugger access, history, bookmarks, webRequest, passive general-site content scripts, or external browser control fails the privacy review and must not be used. Debugger-only operations return explicit unsupported errors and must be handled by an approved OverSeer cloud/desktop fallback instead.
-
-## Retention and deletion
-
-
-On startup, version 0.1.3 and later delete the obsolete `overseer.automation.origins.v1` allowlist left by per-origin releases.
-
-## Privacy review checklist
-
-Before publishing a build, reviewers should inspect the manifest and source for:
-
-- required `<all_urls>` host access, no runtime permission-request path, exact persistent Meet/Zoom content-script matches, and session/tab ownership gating;
-- no debugger API or `debugger` permission;
-- no raw meeting identifiers in host or adapter messages;
-- no passive tab/history/bookmark collection;
-- bounded frames, timeouts, cancellation, and restrictive local file permissions.
+A release or local build must fail review if it adds debugger access, passive browsing collection, broad external control, runtime permission prompts, unbounded frames, or raw meeting data to a host/adapter message. Debugger-only capabilities must return an explicit `unsupported_capability` result rather than silently using a weaker substitute. See [SECURITY.md](SECURITY.md) for the vulnerability-reporting process and release checklist.
