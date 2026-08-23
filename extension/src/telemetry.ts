@@ -1,4 +1,4 @@
-export const TELEMETRY_ENDPOINT = 'https://analytics.libertydesign.studio/api/app-telemetry/event';
+export const TELEMETRY_ENDPOINT = 'https://analytics.implosecybernetics.com/api/app-telemetry/event';
 export const TELEMETRY_SCHEMA = 'lds.app-telemetry.event.v2';
 
 export type TelemetryConsent = 'undecided' | 'accepted' | 'declined';

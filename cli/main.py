@@ -299,7 +299,15 @@ def local_health(paths: RuntimePaths | None = None) -> dict[str, Any]:
         "external_traffic": False,
     }
     checks["ok"] = all(item.get("ok", False) for item in checks.values() if isinstance(item, dict))
-    checks["hint"] = "Open the extension popup to connect" if not checks["socket"]["ok"] else "Local host is available"
+    if checks["socket"]["ok"]:
+        checks["hint"] = "Local host is available"
+    elif not checks["native_manifest"]["ok"]:
+        checks["hint"] = "Reinstall the native host manifest, then reload the extension"
+    else:
+        checks["hint"] = (
+            "Reload or load the unpacked extension; it reconnects automatically unless "
+            "Stop reconnecting was selected, in which case reconnect from the popup"
+        )
     return checks
 
 

@@ -11,7 +11,7 @@ export default defineConfig({
     description: 'Local-first Chromium browser automation.',
     version: '0.1.3',
     key: publicKey,
-    permissions: ['nativeMessaging', 'storage', 'scripting', 'tabs', 'windows'],
+    permissions: ['alarms', 'nativeMessaging', 'storage', 'scripting', 'tabs', 'windows'],
     host_permissions: ['<all_urls>'],
     icons: {
       16: 'icon-16.png',
@@ -29,7 +29,7 @@ export default defineConfig({
       },
     },
     content_security_policy: {
-      extension_pages: "script-src 'self'; object-src 'self'; connect-src https://analytics.libertydesign.studio",
+      extension_pages: "script-src 'self'; object-src 'self'; connect-src https://analytics.implosecybernetics.com",
     },
   },
 });
