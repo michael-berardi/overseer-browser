@@ -170,6 +170,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertFalse(status["ok"])
         self.assertFalse(status["socket"]["ok"])
         self.assertEqual(status["token"], {"ok": False})
+        self.assertIn("Reinstall the native host manifest", status["hint"])
 
 class HostRoutingTests(unittest.TestCase):
     def test_request_is_authenticated_then_forwarded_without_token(self) -> None:

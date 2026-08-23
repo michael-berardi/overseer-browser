@@ -38,6 +38,7 @@ const MEETING_RETRY_MS = 5_000;
 const CONSOLE_LEASE_MS = 60_000;
 const CAPABILITY_STORAGE_KEY = 'overseer.capability.evaluate.v1';
 const CONNECTION_STORAGE_KEY = 'overseer.connection.enabled.v1';
+const NATIVE_RECONNECT_ALARM = 'overseer.native.reconnect.v1';
 const TAKEOVER_STORAGE_KEY = 'overseer.takeover.requested.v1';
 const BATCHABLE_COMMANDS: ReadonlySet<Command> = new Set([
   'windows.resize', 'tabs.list', 'tabs.create', 'tabs.select', 'tabs.close', 'tabs.return',
@@ -397,15 +398,44 @@ async function restoreBackgroundState(): Promise<void> {
   }
 }
 
+function configureReconnectAlarm(enabled: boolean): void {
+  if (!chrome.alarms) return;
+  if (enabled) {
+    chrome.alarms.create(NATIVE_RECONNECT_ALARM, { periodInMinutes: 1 });
+  } else {
+    void chrome.alarms.clear(NATIVE_RECONNECT_ALARM);
+  }
+}
+
 function startBackground(): void {
   meetingStateReady = Promise.allSettled([
     deduper.restore(meetingSessionStore),
     pendingMeetings.restore(meetingSessionStore),
   ]).then(() => undefined);
   backgroundStateReady = restoreBackgroundState();
+  if (chrome.alarms) {
+    chrome.alarms.onAlarm.addListener((alarm) => {
+      if (alarm.name === NATIVE_RECONNECT_ALARM) {
+        void backgroundStateReady.then(() => {
+          if (nativeEnabled && !connected) connectNative();
+        });
+      }
+    });
+  }
   chrome.runtime.onStartup?.addListener(() => {
+    void backgroundStateReady.then(() => {
+      configureReconnectAlarm(nativeEnabled);
+      if (nativeEnabled && !connected) connectNative();
+    });
+  });
+  chrome.runtime.onInstalled?.addListener(() => {
+    void backgroundStateReady.then(() => {
+      configureReconnectAlarm(nativeEnabled);
+      if (nativeEnabled && !connected) connectNative();
+    });
   });
   void backgroundStateReady.then(() => {
+    configureReconnectAlarm(nativeEnabled);
     if (nativeEnabled) connectNative();
   });
   void loadCapability();
@@ -497,6 +527,7 @@ async function setConnectionEnabled(enabled: boolean): Promise<void> {
   await backgroundStateReady;
   await browser.storage.local.set({ [CONNECTION_STORAGE_KEY]: enabled });
   nativeEnabled = enabled;
+  configureReconnectAlarm(enabled);
   if (!enabled) {
     await cleanupSessionConsoles();
     if (reconnectTimer !== undefined) {
