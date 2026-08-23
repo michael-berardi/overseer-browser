@@ -16,7 +16,7 @@ License: https://github.com/facebook/react/blob/main/LICENSE
 
 3. BrowserSkill — concept/reference only
 
-Tencent BrowserSkill is an MIT-licensed open-source project consulted for session, window, and human-handoff concepts. This repository does not claim to include BrowserSkill source code or proprietary Kimi/ChatGPT bundles. Any future adapted source must be identified in the relevant file and accompanied by the required notice.
+Tencent BrowserSkill is an MIT-licensed open-source project consulted for session, window, and human-handoff concepts. This repository does not claim to include BrowserSkill source code or bundled model-specific integrations. Any future adapted source must be identified in the relevant file and accompanied by the required notice.
 Project: https://github.com/Tencent/BrowserSkill
 License: https://github.com/Tencent/BrowserSkill/blob/main/LICENSE
 

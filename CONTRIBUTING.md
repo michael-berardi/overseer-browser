@@ -1,27 +1,27 @@
 # Contributing
 
-Contributions are welcome when they preserve the local-first, controlled-autonomy contract. Read [README.md](README.md), [PROTOCOL.md](PROTOCOL.md), [PRIVACY.md](PRIVACY.md), and [SECURITY.md](SECURITY.md) first.
+Contributions are welcome when they preserve the local-first, controlled-automation contract. Read [README.md](README.md), [PROTOCOL.md](PROTOCOL.md), [PRIVACY.md](PRIVACY.md), and [SECURITY.md](SECURITY.md) first.
 
 ## Design rules
 
-- Keep all browser control local. Do not add telemetry or network behavior beyond the existing explicit-consent v2 telemetry contract; never add hidden network fallbacks, remote logging, or external control servers.
-- Never use `chrome.debugger`, CDP, the `debugger` permission, history, bookmarks, webRequest, `activeTab`, or `optional_host_permissions` to make a feature easier. Required `<all_urls>` host access is intentional for autonomous HTTP(S) control.
-- Preserve exact persistent Meet/Zoom content-script matches, no runtime site-permission prompts, and active-session plus tab-ownership command gating.
+- Keep browser control local. Do not add hidden network fallbacks, remote logging, or external control servers. Optional usage sharing must remain explicit and minimized.
+- Never use `chrome.debugger`, CDP, the `debugger` permission, history, bookmarks, `webRequest`, `activeTab`, or `optional_host_permissions` to make a feature easier. Required `<all_urls>` host access is intentional for autonomous HTTP(S) control.
+- Preserve exact supported meeting-host matches, no runtime site-permission prompts, and active-session plus tab-ownership command gating.
 - Keep the Agent Window as the default. Require an explicit borrow for normal tabs and return borrowed tabs on stop.
 - Never put raw meeting URLs, IDs, titles, page content, participants, credentials, cookies, or recording data into host or adapter messages.
-- Unsupported debugger-only work must return an explicit structured error and point callers to an approved fallback.
-- Do not add proprietary application code or private infrastructure configuration. UltraVox integration is an optional adapter around the public meeting event.
+- Unsupported debugger-only work must return an explicit structured error. Do not silently substitute a weaker action.
+- Do not add proprietary application code or private infrastructure configuration. Local adapters must use the public, minimized event contract.
 
 ## Local setup
 
-Use a clean checkout and a supported Node.js/npm version. Do not commit generated output, release ZIPs, credentials, or personal configuration. Generated `.output/` and `chrome-extension/` directories are local staging output and are ignored by Git.
+Use a clean checkout and a supported Node.js/npm version. Do not commit generated output, release archives, credentials, or personal configuration. Generated `.output/` and `chrome-extension/` directories are local staging output and are ignored by Git.
 
 ```sh
 npm ci --prefix extension
 npm run dev --prefix extension
 ```
 
-`npm run dev` is for local extension development. Load the generated development directory through the browser's **Load unpacked** flow, and use a test browser profile whenever possible. Native-host registration should be per-user and use the documented installer/OS adapter; never paste an absolute home path, token, or private key into a public manifest.
+`npm run dev` is for local extension development. Load the generated development directory through the browser's **Load unpacked** flow and use a test browser profile whenever possible. Native-host registration should be per-user and use the documented installer/OS adapter; never paste an absolute home path, token, or private key into a public manifest.
 
 For a reproducible extension build, keep the lockfile under review, start from a clean checkout, use `npm ci --prefix extension`, and build with `npm run build --prefix extension`. Never hand-edit generated output.
 
@@ -35,36 +35,36 @@ npm run build --prefix extension
 python3 -m unittest tests.test_browser_bridge
 ```
 
-The test suite should cover observable behavior, not implementation snapshots. At minimum, changes touching these boundaries need focused coverage for:
+Tests should cover observable behavior, not implementation snapshots. At minimum, changes touching these boundaries need focused coverage for:
 
 - protocol schema, framing, request IDs, bounded messages, timeouts, cancellation, and host authentication;
 - session ownership, Agent Window defaults, borrow/return transitions, and disconnect cleanup;
 - required all-site host access, autonomous navigation across unrelated origins, and rejection of non-HTTP(S) schemes;
-- required meeting-host parsing, opaque hash format, deduplication, capture suppression, and payload minimization;
+- supported meeting-host parsing, opaque hash format, deduplication, capture suppression, and payload minimization;
 - explicit telemetry consent, no pre-consent identifier/network/counters, cadence, disable cleanup, and exact payload minimization;
-- explicit unsupported errors and UltraVox accept/decline state.
+- explicit unsupported errors and adapter acknowledgement state.
 
-Exercise the smoke path in a real Chromium profile when browser behavior changes: connect, create an Agent Window, navigate across at least two unrelated origins without a permission prompt, observe, click/fill, screenshot, borrow/return, stop, and confirm no debugger infobar. Use deterministic Meet/Zoom fixtures or local pages and verify that only the opaque meeting event reaches the host.
+Exercise the smoke path in a real Chromium profile when browser behavior changes: connect, create an Agent Window, navigate across unrelated origins without a permission prompt, observe, click/fill, screenshot, borrow/return, stop, and confirm no debugger infobar. Use deterministic meeting fixtures or local pages and verify that only the opaque event reaches the host.
 
-Do not add GitHub Actions. GitHub source is the only distribution path: contributors build the unpacked extension locally with the documented installer and update commands.
+Do not add GitHub Actions. GitHub source is the distribution path; contributors build the unpacked extension locally with the documented installer and update commands.
 
 ## Accessibility and interaction review
 
-The popup and takeover surfaces are operator tools, not decorative dashboards:
+The popup and takeover surfaces are user tools, not decorative dashboards:
 
 - Every action is keyboard reachable with visible focus.
 - Buttons and status indicators have accessible names and meaningful states.
-- The connection state and primary action are announced without relying on color alone.
+- Connection state and primary actions are announced without relying on color alone.
 - Error and permission text is readable, concise, and associated with the relevant control.
 - Reduced-motion preferences disable entrance motion.
-- The UltraVox meeting prompt has one clear question, a visible focus trap, an inert background, `Start recording` as the primary action, `Not now` as the secondary action, and Escape-to-decline behavior.
+- Any meeting prompt has one clear question, a visible focus trap, an inert background, an affirmative primary action, a decline action, and Escape-to-decline behavior.
 - Check compact popup sizing and prompt layouts at narrow, tablet-equivalent, and desktop widths without clipping or inaccessible overflow.
 
 ## Pull requests
 
 Describe the user-visible behavior, permissions affected, data flow, and tests run. Call out any protocol or error-code change and update [PROTOCOL.md](PROTOCOL.md). Include screenshots only from deterministic fixtures; remove URLs, tokens, page content, and personal data.
 
-Reviewers should inspect the manifest diff, generated permissions, native-host registration, release verifier output, and public artifacts—not only the TypeScript diff. A change is not ready if it weakens the no-debugger, exact meeting-host, all-site autonomy, session/tab ownership, or opt-in-telemetry invariants.
+Reviewers should inspect the manifest diff, generated permissions, native-host registration, and public artifacts—not only the TypeScript diff. A change is not ready if it weakens the no-debugger, exact meeting-host, all-site autonomy, session/tab ownership, or opt-in-telemetry invariants.
 
 ## Commit and license
 

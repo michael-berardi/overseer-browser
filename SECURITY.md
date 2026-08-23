@@ -4,7 +4,7 @@ OverSeer Browser controls a real browser, so a bug can expose page data or cause
 
 ## Reporting
 
-Use the repository's private vulnerability-reporting channel (GitHub Security Advisories when enabled) or contact the maintainers through the private security contact listed by the repository owner. If no private channel is available, open an issue containing only the words **private security report requested** and no exploit details; maintainers will provide a private channel.
+Use GitHub's private vulnerability-reporting channel when it is enabled for this repository. If no private channel is available, open an issue containing only **private security report requested** and no exploit details; maintainers will provide a private channel.
 
 Include:
 
@@ -21,14 +21,14 @@ Do not include passwords, cookies, meeting URLs, raw meeting IDs, participant da
 A release is not acceptable if it violates any of these:
 
 - no `chrome.debugger` call and no `debugger` permission;
-- required `<all_urls>` host access for autonomous HTTP(S) control, with no runtime permission-request path and no history, bookmarks, webRequest, `activeTab`, or `optional_host_permissions`;
-- no telemetry before explicit opt-in; opted-in telemetry must use only the documented endpoint, schema, required identity/day fields, and exact allowlisted counters;
-- exact extension ID and native-host `allowed_origins` binding;
+- required `<all_urls>` host access for autonomous HTTP(S) control, with no runtime permission-request path and no history, bookmarks, `webRequest`, `activeTab`, or `optional_host_permissions`;
+- no telemetry before explicit opt-in; opted-in telemetry must use only the release's disclosed schema, fields, and exact allowlisted counters;
+- exact extension identity and native-host `allowed_origins` binding;
 - CLI socket directory mode `0700`, socket/token mode `0600` where supported, and peer-UID validation where supported;
 - native and CLI length-prefixed frames are bounded and authenticated;
 - request IDs, timeouts, cancellation, and disconnect handling prevent indefinite or cross-request confusion;
 - automation code runs only in session-owned or explicitly borrowed tabs;
-- meeting events contain only the versioned minimised payload with an opaque 64-character lowercase hexadecimal key;
+- meeting events contain only the versioned minimized payload with an opaque 64-character lowercase hexadecimal key;
 - meeting events never start recording without a visible affirmative user action.
 
 Debugger-only capabilities—response bodies, print-to-PDF through debugger control, device emulation, and trusted CDP input—must return an explicit `unsupported_capability` result. A hidden fallback is a security bug.
@@ -39,4 +39,4 @@ Maintainers should acknowledge private reports, reproduce in an isolated profile
 
 ## Dependency and release hygiene
 
-Review dependency licenses and changes before release. Build from a clean checkout with a lockfile and a pinned Node/npm toolchain. Inspect the generated manifest and native-host registration before loading the extension. Keep signing private keys, tokens, local paths, credentials, and production configuration outside the repository. Releases must be reproducible without GitHub Actions and without an external service.
+Review dependency licenses and changes before release. Build from a clean checkout with a lockfile and a pinned Node/npm toolchain. Inspect the generated manifest and native-host registration before loading the extension. Keep signing private keys, tokens, local paths, credentials, and production configuration outside the repository. Releases must be reproducible from source without GitHub Actions.

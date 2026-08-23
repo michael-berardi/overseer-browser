@@ -8,7 +8,7 @@ export default defineConfig({
   manifest: {
     name: 'OverSeer Browser',
     short_name: 'OverSeer',
-    description: 'Autonomous local-first browser control with optional anonymous usage sharing.',
+    description: 'Local-first Chromium browser automation.',
     version: '0.1.3',
     key: publicKey,
     permissions: ['nativeMessaging', 'storage', 'scripting', 'tabs', 'windows'],
