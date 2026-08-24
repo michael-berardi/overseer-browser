@@ -58,7 +58,6 @@ DEFAULT_REQUEST_TIMEOUT = 30.0
 MAX_PENDING = 128
 MAX_CLIENT_REQUEST_IDS = 4_096
 MAX_ABANDONED_REQUEST_IDS = 16_384
-DEADLINE_WORKER_IDLE_SECONDS = 0.25
 
 
 @dataclass(eq=False)
@@ -258,14 +257,11 @@ class NativeHost:
     def _expiry_loop(self) -> None:
         while True:
             with self._pending_condition:
-                if self._stop.is_set():
+                if self._stop.is_set() or not self._pending:
+                    # Every mutation of _pending or _stop notifies this condition,
+                    # so the worker wakes on drain or shutdown instead of polling.
                     self._expiry_thread = None
                     return
-                if not self._pending:
-                    self._pending_condition.wait(DEADLINE_WORKER_IDLE_SECONDS)
-                    if self._stop.is_set() or not self._pending:
-                        self._expiry_thread = None
-                        return
                 now = time.monotonic()
                 next_deadline = min(item.deadline_at for item in self._pending.values())
                 wait_seconds = next_deadline - now
