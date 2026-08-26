@@ -11,7 +11,7 @@ Include:
 - affected release, commit, browser, and operating system;
 - a concise description and impact;
 - reproducible steps or a minimal proof of concept;
-- whether the issue depends on all-site host access, a borrowed tab, native-host access, or same-user access;
+- whether the issue depends on current-origin or unlimited host access, a borrowed tab, native-host access, User Scripts, or same-user access;
 - any suggested mitigation.
 
 Do not include passwords, cookies, meeting URLs, raw meeting IDs, participant data, page content, tokens, private keys, device identifiers, or personal data. Redact logs and screenshots. Do not test against another person's browser or data.
@@ -21,13 +21,13 @@ Do not include passwords, cookies, meeting URLs, raw meeting IDs, participant da
 A release is not acceptable if it violates any of these:
 
 - no `chrome.debugger` call and no `debugger` permission;
-- required `<all_urls>` host access for autonomous HTTP(S) control, with no runtime permission-request path and no history, bookmarks, `webRequest`, `activeTab`, or `optional_host_permissions`;
+- no required all-site access; HTTP(S) access is an explicit, revocable current-origin or unlimited popup grant, with no history, bookmarks, `webRequest`, `activeTab`, or debugger permission;
 - no telemetry before explicit opt-in; opted-in telemetry must use only the release's disclosed schema, fields, and exact allowlisted counters;
 - exact extension identity and native-host `allowed_origins` binding;
 - CLI socket directory mode `0700`, socket/token mode `0600` where supported, and peer-UID validation where supported;
 - native and CLI length-prefixed frames are bounded and authenticated;
 - request IDs, timeouts, cancellation, and disconnect handling prevent indefinite or cross-request confusion;
-- automation code runs only in session-owned or explicitly borrowed tabs;
+- automation code runs only in session-owned or explicitly borrowed tabs with an effective site grant;
 - meeting events contain only the versioned minimized payload with an opaque 64-character lowercase hexadecimal key;
 - meeting events never start recording without a visible affirmative user action.
 

@@ -115,10 +115,24 @@ describe('isolated automation contracts', () => {
     });
   });
 
-  it('returns a structured error for page-world evaluation failures', async () => {
+  it('uses CSP-exempt user scripts for page evaluation', async () => {
+    const execute = vi.fn(async () => [{ result: { ok: true, value: 2 } }]);
+    vi.stubGlobal('chrome', { userScripts: { execute } });
+
+    await expect(runPageEvaluation(7, '1 + 1')).resolves.toBe(2);
+    expect(execute).toHaveBeenCalledWith(expect.objectContaining({
+      target: { tabId: 7 },
+      world: 'USER_SCRIPT',
+    }));
+    const program = execute.mock.calls[0]?.[0].js[0].code;
+    expect(program).toContain('await (1 + 1)');
+    expect(program).not.toContain('Function(');
+  });
+
+  it('returns a structured error for page evaluation failures', async () => {
     vi.stubGlobal('chrome', {
-      scripting: {
-        executeScript: vi.fn(async () => [{
+      userScripts: {
+        execute: vi.fn(async () => [{
           result: { ok: false, error: { code: 'evaluation_failed', message: 'Page evaluation failed in the target tab.' } },
         }]),
       },
@@ -132,8 +146,8 @@ describe('isolated automation contracts', () => {
 
   it('rejects non-serializable evaluation results with their stable code', async () => {
     vi.stubGlobal('chrome', {
-      scripting: {
-        executeScript: vi.fn(async () => [{
+      userScripts: {
+        execute: vi.fn(async () => [{
           result: { ok: false, error: { code: 'evaluation_result_invalid', message: 'Page evaluation must return a JSON-serializable value.' } },
         }]),
       },

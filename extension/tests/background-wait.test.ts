@@ -33,8 +33,16 @@ async function loadBackground() {
     if (injection.func.name === 'isolatedWaitFor') return [{ result: { ok: true, value: { matched: true } } }];
     return [{ result: { ok: true, value: pageNodes } }];
   });
+  const userScriptsExecute = vi.fn(async () => [{ result: { ok: true, value: 'evaluated' } }]);
   const browserStub = {
-    storage: { local: storageArea({ 'overseer.connection.enabled.v1': false, 'overseer.capability.evaluate.v1': true }), session: storageArea({}) },
+    storage: {
+      local: storageArea({
+        'overseer.connection.enabled.v1': false,
+        'overseer.capability.evaluate.v1': true,
+        'overseer.site.unlimited.v2': true,
+      }),
+      session: storageArea({}),
+    },
     tabs: {
       onUpdated,
       onRemoved,
@@ -53,6 +61,15 @@ async function loadBackground() {
       create: async () => ({ id: 10, tabs: [{ id: 11, windowId: 10, url: 'about:blank', active: true }] }),
     },
     scripting: { executeScript },
+    permissions: {
+      contains: vi.fn(async () => true),
+      request: vi.fn(async () => true),
+      remove: vi.fn(async () => true),
+    },
+    userScripts: {
+      execute: userScriptsExecute,
+      getScripts: vi.fn(async () => []),
+    },
   };
   vi.stubGlobal('browser', browserStub);
   vi.stubGlobal('chrome', browserStub);
@@ -66,6 +83,7 @@ async function loadBackground() {
     onRemoved,
     tabs,
     executeScript,
+    userScriptsExecute,
     setPageNodes: (nodes: unknown[]) => {
       pageNodes = nodes;
     },
@@ -184,7 +202,7 @@ describe('multi-agent mutation serialization', () => {
   });
 
   it('never executes a queued evaluate whose request was cancelled while queued', async () => {
-    const { background, executeScript } = await loadBackground();
+    const { background, executeScript, userScriptsExecute } = await loadBackground();
     const gates: Array<() => void> = [];
     executeScript.mockImplementation(async (injection: { func: (...args: never[]) => unknown; args?: [{ kind: string }] }) => {
       if (injection.func.name === 'installDialogGuards') return [{ result: true }];
@@ -209,7 +227,7 @@ describe('multi-agent mutation serialization', () => {
     gates[0]!();
     await expect(first).resolves.toEqual({ changed: true });
     await expect(queued).rejects.toMatchObject({ code: 'cancelled' });
-    expect(executeScript.mock.calls.filter(([injection]: [{ func: (...args: never[]) => unknown }]) => injection.func.name === 'pageWorldEvaluation')).toEqual([]);
+    expect(userScriptsExecute).not.toHaveBeenCalled();
   });
 });
 

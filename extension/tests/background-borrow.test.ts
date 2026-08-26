@@ -10,7 +10,10 @@ function storageArea(store: Record<string, unknown>) {
 
 describe('native tab borrowing approval', () => {
   it('consumes native disconnect errors, rejects arbitrary borrowing, and permits the popup user-gesture path', async () => {
-    const localStore: Record<string, unknown> = { 'overseer.connection.enabled.v1': true };
+    const localStore: Record<string, unknown> = {
+      'overseer.connection.enabled.v1': true,
+      'overseer.site.unlimited.v2': true,
+    };
     const sessionStore: Record<string, unknown> = {};
     const tabs = new Map<number, chrome.tabs.Tab>([
       [11, { id: 11, windowId: 10, url: 'about:blank', title: 'Agent', active: true }],
@@ -26,7 +29,10 @@ describe('native tab borrowing approval', () => {
     const executeScript = vi.fn(async () => [{ result: { installed: true, entries: 0 } }]);
     const browserStub = {
       storage: { local: storageArea(localStore), session: storageArea(sessionStore) },
-      permissions: { contains: async () => true },
+      permissions: {
+        contains: async () => true,
+        remove: async () => true,
+      },
       windows: {
         create: async () => ({ id: 10, tabs: [{ id: 11, windowId: 10, url: 'about:blank', active: true }] }),
         get: async (id: number) => ({ id }),
@@ -43,10 +49,12 @@ describe('native tab borrowing approval', () => {
         remove: async (id: number) => tabs.delete(id),
       },
       scripting: { executeScript },
+      userScripts: { getScripts: async () => [] },
       runtime: {
         onMessage: { addListener: vi.fn() },
         connectNative: () => port,
         getURL: (path: string) => path,
+        getManifest: () => ({ version: '0.1.5' }),
         get lastError() {
           runtimeLastErrorReads += 1;
           return { message: 'Native host has exited.' };

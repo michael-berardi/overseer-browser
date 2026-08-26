@@ -16,10 +16,11 @@ describe('popup meeting host disclosure', () => {
   });
 });
 
-describe('popup autonomous site access disclosure', () => {
-  it('states that agents do not need per-site approval', () => {
-    expect(SITE_ACCESS_POLICY).toContain('any HTTP or HTTPS site');
-    expect(SITE_ACCESS_POLICY).toContain('without per-site approval');
+describe('popup scoped site access disclosure', () => {
+  it('states the secure default and both user-controlled access scopes', () => {
+    expect(SITE_ACCESS_POLICY).toContain('off by default');
+    expect(SITE_ACCESS_POLICY).toContain('current site');
+    expect(SITE_ACCESS_POLICY).toContain('unlimited access');
     expect(SITE_ACCESS_POLICY).toContain('session-owned or explicitly borrowed tab');
   });
 });

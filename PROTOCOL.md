@@ -83,7 +83,7 @@ The required command families are:
 - `snapshot` / `observe` with stable element references; `observe` can return a bounded per-document delta
 - event-driven bounded `wait.for` conditions
 - `click`, `hover`, `fill`, `type`, `select`, `press`, `scroll`
-- capability-gated `evaluate`
+- site-scope- and capability-gated `evaluate`, executed through Chrome User Scripts so page CSP does not require `unsafe-eval`
 - visible-tab or element screenshots
 - bounded chunked upload of 1–16 files
 - opt-in bounded console capture and redacted Resource Timing metadata
@@ -92,11 +92,11 @@ The required command families are:
 - `help` and `cancel`
 - `capture.start`, `capture.stop`
 
-Commands operate on the active session/tab or IDs supplied in `params`. Automation code is injected only into session-owned or explicitly borrowed tabs. Traversal covers the top document, open shadow roots, and visible same-origin nested frames; cross-origin frame DOM remains opaque. There is no passive general-browsing collection.
+Commands operate on the active session/tab or IDs supplied in `params`. Automation code is injected only into session-owned or explicitly borrowed tabs whose current HTTP(S) origin has been granted, or while unlimited HTTP(S) access is enabled. Traversal covers the top document, open shadow roots, and visible same-origin nested frames; cross-origin frame DOM remains opaque. There is no passive general-browsing collection.
 
 A session owns a dedicated Agent Window by default. A normal tab is read-only until `tabs.borrow` succeeds. `tabs.return` restores ownership, and stopping a session returns borrowed tabs before releasing session state.
 
-`health.status` reports effective required-host access and retains the version-1 permission fields for compatibility. The extension never requests site permission at runtime.
+`health.status` reports current-origin access, unlimited access, evaluation enablement, and Chrome User Scripts availability while retaining version-one permission fields for compatibility. Site grants are requested only from an explicit popup action and remain revocable.
 
 ## Bounds and concurrency
 

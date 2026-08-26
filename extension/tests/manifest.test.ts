@@ -4,14 +4,14 @@ import { describe, expect, it } from 'vitest';
 const config = readFileSync(new URL('../wxt.config.ts', import.meta.url), 'utf8');
 
 describe('manifest privacy invariants', () => {
-  it('uses the stable source-build identity and autonomous site permissions', () => {
+  it('uses the stable identity and secure-by-default optional site permissions', () => {
     expect(config).toContain('key: publicKey');
     expect(config).toContain('MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8A');
     expect(config).toContain('IDAQAB');
-    expect(config).toContain("version: '0.1.3'");
-    expect(config).toContain("permissions: ['alarms', 'nativeMessaging', 'storage', 'scripting', 'tabs', 'windows']");
-    expect(config).toContain("host_permissions: ['<all_urls>']");
-    expect(config).not.toContain('optional_host_permissions');
+    expect(config).toContain("version: '0.1.5'");
+    expect(config).toContain("permissions: ['alarms', 'nativeMessaging', 'storage', 'scripting', 'tabs', 'userScripts', 'windows']");
+    expect(config).toContain("host_permissions: ['https://meet.google.com/*', 'https://zoom.us/*', 'https://*.zoom.us/*']");
+    expect(config).toContain("optional_host_permissions: ['http://*/*', 'https://*/*']");
     expect(config).not.toContain('activeTab');
     expect(config).not.toContain('update_url');
     expect(config).toContain("connect-src https://analytics.implosecybernetics.com");

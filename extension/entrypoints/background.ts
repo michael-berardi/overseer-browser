@@ -18,7 +18,7 @@ import {
 import { AutomationError, runInIsolatedWorld, runPageEvaluation, runWaitFor, type AutomationAction, type SnapshotNode } from '../src/automation';
 import { ObserveDeltaStore, computeObserveDelta } from '../src/observe_delta';
 import { WaitError, parseWaitTarget } from '../src/wait';
-import { clearLegacyAutomationOrigins, getPermissionState, isNavigableUrl } from '../src/permissions';
+import { getPermissionState, isNavigableUrl, normalizeSiteAccess } from '../src/permissions';
 import { MeetingDeduper, PendingMeetingQueue } from '../src/meeting';
 import { SessionError, SessionManager } from '../src/session';
 import { captureScreenshot, requireActiveScreenshotTarget, ScreenshotError } from '../src/screenshot';
@@ -393,9 +393,9 @@ async function restoreBackgroundState(): Promise<void> {
     takeoverRequested = false;
   }
   try {
-    await clearLegacyAutomationOrigins();
+    await normalizeSiteAccess();
   } catch {
-    // Legacy permission metadata is non-authoritative; retry removal on the next startup.
+    // Keep the secure default and retry normalization on the next startup.
   }
 }
 
@@ -834,10 +834,12 @@ async function dispatchCommand(request: NativeRequest, state: InflightRequest): 
     return {
       version: 1,
       connected,
+      extension_version: browser.runtime.getManifest().version,
       extension_id: EXTENSION_ID,
       evaluate_enabled: evaluateEnabled,
       takeover_requested: takeoverRequested,
       permissions: await getPermissionState(currentUrl),
+      user_scripts_available: await userScriptsAvailable(),
       sessions: await sessions.list(),
       runtime: {
         inflight_requests: Math.max(0, inflight.size - 1),
@@ -949,7 +951,7 @@ async function dispatchCommand(request: NativeRequest, state: InflightRequest): 
   if (command === 'press') return runAction(params, { kind: 'press', ref: optionalString(params, 'ref'), key: readString(params, 'key', 64), code: optionalString(params, 'code') }, state);
   if (command === 'scroll') return runAction(params, { kind: 'scroll', ref: optionalString(params, 'ref'), x: optionalInteger(params, 'x'), y: optionalInteger(params, 'y') }, state);
   if (command === 'evaluate') {
-    if (!evaluateEnabled) throw new DispatchError('capability_required', 'Evaluate is disabled. Enable the explicit capability in the popup.', 'Open the popup and enable page evaluation.');
+    if (!evaluateEnabled) throw new DispatchError('capability_required', 'Evaluate is disabled. Grant this site or enable unlimited access in the popup.', 'Open the popup and choose the intended access scope.');
     const tabId = await targetTab(params);
     return enqueueTabMutation(tabId, () => {
       assertNotCancelled(state);
@@ -1033,6 +1035,10 @@ async function targetTab(params: Record<string, unknown>): Promise<number> {
   const tab = await browser.tabs.get(tabId);
   if (params.frame_id !== undefined) throw new DispatchError('unsupported_frame', 'Only the top frame is supported by this extension.', 'Use a top-frame ref or a browser fallback for nested frames.');
   if (!tab.url || !isNavigableUrl(tab.url)) throw new DispatchError('unsupported_page', 'This page cannot receive isolated automation.', 'Navigate to an http or https page.');
+  const permissions = await getPermissionState(tab.url);
+  if (!permissions.currentOriginAccess) {
+    throw new DispatchError('site_access_required', 'This site has not been granted to OverSeer Browser.', 'Open the popup and grant the current site or enable unlimited access.');
+  }
   return tabId;
 }
 
@@ -1434,6 +1440,15 @@ function popupTabDetails(tab: chrome.tabs.Tab, session?: { ownedTabIds: number[]
   };
 }
 
+async function userScriptsAvailable(): Promise<boolean> {
+  try {
+    await chrome.userScripts.getScripts();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function popupState(): Promise<unknown> {
   const [activeTab] = await browser.tabs.query({ active: true, lastFocusedWindow: true });
   const sessionsState = await sessions.list();
@@ -1443,6 +1458,7 @@ async function popupState(): Promise<unknown> {
     native_enabled: nativeEnabled,
     native_error: lastNativeError,
     evaluate_enabled: evaluateEnabled,
+    user_scripts_available: await userScriptsAvailable(),
     takeover_requested: takeoverRequested,
     permissions: await getPermissionState(activeTab?.url),
     sessions: sessionsState,

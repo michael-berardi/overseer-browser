@@ -37,13 +37,14 @@ Telemetry never contains URLs, titles, page data, screenshots, form values, comm
 
 ## Permissions and access boundaries
 
-- **Required `<all_urls>` host access:** permits navigation, inspection, screenshots, and interaction on HTTP(S) origins without repeated origin prompts. It does not authorize a command by itself; every action still requires the local transport, an active session, and a session-owned or explicitly borrowed tab.
+- **Optional HTTP(S) host access:** site automation is off by default. The popup can grant one current origin or explicitly grant every HTTP(S) origin with **Enable unlimited**. Both grants can be revoked.
+- **User Scripts:** CSP-safe page evaluation uses Chrome’s `userScripts` API only after the user enables Chrome’s one-time **Allow User Scripts** setting and grants a site-access scope in the popup.
 - **Native Messaging:** connects the extension to the local native host and is not a network permission.
 - **Storage, scripting, tabs, and windows:** support the visible popup, session ownership, content traversal, and browser actions.
 - **No debugger permission:** the extension does not invoke `chrome.debugger` or request debugger access.
-- **Limited meeting content scripts:** meeting detection is matched only to the supported meeting hosts. No persistent general-site content script is registered.
+- **Limited required meeting hosts:** the exact supported Meet and Zoom hosts remain available for local reminder detection. No persistent general-site content script is registered.
 
-The manifest must not add history, bookmarks, `webRequest`, `activeTab`, or optional host permissions. Uninstalling or disabling the extension revokes its browser access.
+The manifest must not add history, bookmarks, `webRequest`, `activeTab`, required all-site access, or debugger access. Uninstalling or disabling the extension revokes its browser access.
 
 ## Session and tab ownership
 
@@ -63,12 +64,12 @@ The raw URL, query string, meeting ID, title, page content, participant list, cr
 | --- | --- | --- |
 | CLI → host | random token, framed messages, user-only socket, peer-UID check where supported | another process running as the same user may access local IPC or state |
 | Host → extension | Chrome Native Messaging, exact extension identity in `allowed_origins`, versioned frames | a user who can modify the browser profile or host registration can alter the trust chain |
-| Extension → page | active session, Agent Window/borrow ownership, isolated-world scripts, required host access | explicitly controlled pages can observe actions and values sent to them |
+| Extension → page | active session, Agent Window/borrow ownership, explicit current-origin or unlimited HTTP(S) grant, CSP-exempt User Scripts evaluation | explicitly controlled pages can observe actions and values sent to them; unlimited access widens the set of reachable pages |
 | Meeting page → reminder | exact host matches, parser, opaque salted key, bounded deduplication | a compromised page or browser can present false UI |
 | Local files → privacy | per-user paths, restrictive modes, no external upload by default | backups, shell history, browser sync, malware, or an administrator may expose local files |
 
-No browser extension can protect against a compromised browser, operating system, malicious same-user process, or misuse of required all-site access. Use a separate browser profile or OS account for high-sensitivity work.
+No browser extension can protect against a compromised browser, operating system, malicious same-user process, or misuse of an explicitly granted site scope. Keep unlimited access off in general browsing profiles; use it only in a dedicated agent profile or for a deliberate automation window.
 
 ## Security invariants
 
-A release or local build must fail review if it adds debugger access, passive browsing collection, broad external control, runtime permission prompts, unbounded frames, or raw meeting data to a host/adapter message. Debugger-only capabilities must return an explicit `unsupported_capability` result rather than silently using a weaker substitute. See [SECURITY.md](SECURITY.md) for the vulnerability-reporting process and release checklist.
+A release or local build must fail review if it adds debugger access, passive browsing collection, broad external control, required all-site access, unbounded frames, or raw meeting data to a host/adapter message. Optional current-origin and unlimited HTTP(S) grants must remain visible, user-initiated, and revocable. Debugger-only capabilities must return an explicit `unsupported_capability` result rather than silently using a weaker substitute. See [SECURITY.md](SECURITY.md) for the vulnerability-reporting process and release checklist.

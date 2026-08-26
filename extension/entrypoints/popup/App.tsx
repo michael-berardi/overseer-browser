@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import type { PermissionState } from '../../src/permissions';
+import { setAllSiteAccess, setCurrentOriginAccess, type PermissionState } from '../../src/permissions';
 import type { TelemetryConsent } from '../../src/telemetry';
 
 
@@ -16,6 +16,7 @@ type PopupState = {
   connected: boolean;
   native_enabled: boolean;
   evaluate_enabled: boolean;
+  user_scripts_available: boolean;
   takeover_requested: boolean;
   native_error: { code: string; message: string } | null;
   permissions: PermissionState;
@@ -31,7 +32,7 @@ type RuntimeReply = Partial<PopupState> & {
 };
 
 export const MEETING_HOST_POLICY = 'Only the exact Meet host meet.google.com and Zoom provider subdomains such as us02web.zoom.us are watched.';
-export const SITE_ACCESS_POLICY = 'Agents can navigate, inspect, and act on any HTTP or HTTPS site without per-site approval. Commands still require an active session and a session-owned or explicitly borrowed tab. If access shows OFF, change Chrome site access once to On all sites.';
+export const SITE_ACCESS_POLICY = 'Agent access is off by default. Allow only the current site or enable unlimited access for every HTTP and HTTPS site. Commands still require an active session and a session-owned or explicitly borrowed tab.';
 
 export function connectionStatusPresentation(connected: boolean): {
   label: 'Connected' | 'Disconnected';
@@ -78,6 +79,7 @@ const initialState: PopupState = {
   connected: false,
   native_enabled: false,
   evaluate_enabled: false,
+  user_scripts_available: false,
   takeover_requested: false,
   native_error: null,
   telemetry_consent: 'undecided',
@@ -165,17 +167,26 @@ export default function App() {
   };
 
 
-  const setEvaluate = async (enabled: boolean): Promise<void> => {
+  const setAgentAccess = async (scope: 'current' | 'unlimited', enabled: boolean): Promise<void> => {
     setBusy(true);
     setNotice('');
     try {
-      const reply = (await browser.runtime.sendMessage({ kind: 'set_capability', capability: 'evaluate', enabled })) as RuntimeReply;
-      const failure = runtimeReplyError(reply, 'The page evaluation capability change was rejected.');
-      if (failure) throw failure;
-      if (reply.enabled !== enabled) throw new Error('The page evaluation capability was not changed.');
-      setState((current) => ({ ...current, evaluate_enabled: enabled }));
+      const changed = scope === 'unlimited'
+        ? await setAllSiteAccess(enabled)
+        : activeTab?.url
+          ? await setCurrentOriginAccess(activeTab.url, enabled)
+          : false;
+      if (!changed) throw new Error(enabled ? 'Chrome did not grant the requested site access.' : 'Chrome did not remove the requested site access.');
+      const evaluateEnabled = enabled ? true : scope === 'unlimited' ? false : state.evaluate_enabled;
+      if (evaluateEnabled !== state.evaluate_enabled) {
+        const reply = (await browser.runtime.sendMessage({ kind: 'set_capability', capability: 'evaluate', enabled: evaluateEnabled })) as RuntimeReply;
+        const failure = runtimeReplyError(reply, 'The page evaluation capability change was rejected.');
+        if (failure) throw failure;
+        if (reply.enabled !== evaluateEnabled) throw new Error('The page evaluation capability was not changed.');
+      }
+      await refresh();
     } catch (error) {
-      setNotice(formatPopupError('Unable to change page evaluation', error));
+      setNotice(formatPopupError('Unable to change agent access', error));
     } finally {
       setBusy(false);
     }
@@ -215,6 +226,9 @@ export default function App() {
   const activeTab = state.active_tab;
   const activeTabLabel = activeTab?.title || activeTab?.url || 'No active browser tab';
   const connectionStatus = connectionStatusPresentation(state.connected);
+  const currentSiteEnabled = state.permissions.currentOriginAccess && state.evaluate_enabled;
+  const unlimitedEnabled = state.permissions.allSiteAccess && state.evaluate_enabled;
+  const accessLabel = unlimitedEnabled ? 'UNLIMITED' : currentSiteEnabled ? 'THIS SITE' : 'OFF';
 
 
   return (
@@ -291,18 +305,31 @@ export default function App() {
         <div className="section-heading compact">
           <div>
             <p className="eyebrow">CAPABILITIES</p>
-            <h2 id="access-heading">Site access</h2>
+            <h2 id="access-heading">Agent access</h2>
           </div>
-          <span className={`tag ${state.permissions.allSiteAccess ? 'tag-on' : ''}`}>{state.permissions.allSiteAccess ? 'ON' : 'OFF'}</span>
+          <span className={`tag ${accessLabel !== 'OFF' ? 'tag-on' : ''}`}>{accessLabel}</span>
         </div>
         <p className="body-copy">{SITE_ACCESS_POLICY}</p>
+        {!state.permissions.allSiteAccess ? (
+          <button
+            className="button secondary"
+            type="button"
+            onClick={() => void setAgentAccess('current', !currentSiteEnabled)}
+            disabled={busy || !activeTab?.url || !state.permissions.currentOrigin}
+          >
+            {currentSiteEnabled ? 'Revoke this site' : 'Allow this site'}
+          </button>
+        ) : null}
         <label className="capability-row">
-          <input type="checkbox" checked={state.evaluate_enabled} onChange={(event) => void setEvaluate(event.target.checked)} disabled={busy} />
+          <input type="checkbox" checked={unlimitedEnabled} onChange={(event) => void setAgentAccess('unlimited', event.target.checked)} disabled={busy} />
           <span>
-            <strong>Enable page evaluation</strong>
-            <small>High-risk capability. Only session-owned or explicitly borrowed tabs; requests remain local.</small>
+            <strong>Enable unlimited</strong>
+            <small>Allows page evaluation and automation on every HTTP and HTTPS site until disabled.</small>
           </span>
         </label>
+        {!state.user_scripts_available ? (
+          <p className="notice" role="status">Chrome’s Allow User Scripts setting is off. Enable it once in this extension’s Chrome settings to use page evaluation.</p>
+        ) : null}
       </section>
 
       <section className="section" aria-labelledby="privacy-heading">

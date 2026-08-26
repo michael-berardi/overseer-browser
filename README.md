@@ -18,8 +18,8 @@ The project is designed for explicit, visible automation:
 
 - Browser control stays on the local machine. The repository does not require a remote browser or control service.
 - A session owns a dedicated Agent Window by default. A normal tab must be explicitly borrowed and is returned when the session ends.
-- Required `<all_urls>` access supports navigation and interaction on HTTP(S) sites without repeated origin prompts. It does not grant command authority by itself.
-- The extension does not request `chrome.debugger`, CDP, history, bookmarks, `webRequest`, `activeTab`, or optional host permissions. Debugger-only capabilities return structured `unsupported_capability` errors.
+- HTTP(S) site access is off by default. The popup grants only the current origin or, when the user explicitly chooses it, unlimited HTTP(S) access.
+- The extension does not request `chrome.debugger`, CDP, history, bookmarks, `webRequest`, or `activeTab`. Debugger-only capabilities return structured `unsupported_capability` errors.
 - Page observations, screenshots, uploads, and action results remain local unless the calling client deliberately forwards them under its own privacy policy.
 - Optional anonymous usage sharing is disabled until consent. It is not required for browser control; see [PRIVACY.md](PRIVACY.md) for the data boundary.
 
@@ -27,7 +27,7 @@ Read [PRIVACY.md](PRIVACY.md) and [SECURITY.md](SECURITY.md) before using the ex
 
 ## Requirements
 
-- A Chromium-based browser with Chrome Native Messaging support.
+- Chromium 135 or newer with Chrome Native Messaging and User Scripts support.
 - Node.js and npm to build the extension.
 - Python 3 to run the native host and CLI.
 - macOS for the included installer. Other platforms can provide an adapter that preserves the same per-user Native Messaging and least-privilege rules.
@@ -44,6 +44,10 @@ cd overseer-browser
 ```
 
 In Chrome or another Chromium browser, open `chrome://extensions`, enable **Developer mode**, and choose **Load unpacked**. Select the generated `chrome-extension/` directory. The installer writes the matching Native Messaging registration; never weaken `allowed_origins` to work around an extension-ID mismatch.
+For CSP-safe page evaluation, open the extension details and enable Chrome’s
+**Allow User Scripts** setting once. OverSeer Browser still keeps agent access
+off until the popup grants the current site or explicitly enables unlimited
+HTTP(S) access.
 
 To update an installation, stop active sessions, update the checkout, rebuild, and reload the unpacked extension:
 
@@ -60,10 +64,11 @@ The generated `.output/` and `chrome-extension/` directories are staging output 
 ## First use
 
 1. Run `overseer-browser health` to check the local runtime, then `overseer-browser status --json` to inspect the extension connection.
-2. Start a session with `overseer-browser sessions start`.
-3. Create or select a tab, navigate, observe, and perform actions using the CLI.
-4. To automate a normal browsing tab, open it and choose **Borrow active tab** in the extension popup. Return it explicitly or stop the session before closing the browser.
-5. End work with `overseer-browser sessions stop`. Confirm that borrowed tabs were returned.
+2. Open the popup on the intended page and choose **Allow this site**. For a dedicated agent profile, **Enable unlimited** grants every HTTP(S) origin until disabled.
+3. Start a session with `overseer-browser sessions start`.
+4. Create or select a tab, navigate, observe, and perform actions using the CLI.
+5. To automate a normal browsing tab, open it and choose **Borrow active tab** in the extension popup. Return it explicitly or stop the session before closing the browser.
+6. End work with `overseer-browser sessions stop`. Confirm that borrowed tabs were returned.
 
 ## CLI surface
 
@@ -114,7 +119,7 @@ overseer-browser takeover resume
 overseer-browser cancel <request-id>
 ```
 
-`evaluate` is capability-gated. Uploads, console capture, Resource Timing metadata, screenshots, and batches are bounded; see [PROTOCOL.md](PROTOCOL.md) for limits and response shapes. Commands return structured errors with stable codes. Unsupported debugger-only capabilities are never silently downgraded.
+`evaluate` requires an explicit site-access scope and Chrome’s one-time **Allow User Scripts** setting. It runs in the CSP-exempt User Scripts world, so strict websites do not need `unsafe-eval`. Uploads, console capture, Resource Timing metadata, screenshots, and batches are bounded; see [PROTOCOL.md](PROTOCOL.md) for limits and response shapes. Commands return structured errors with stable codes. Unsupported debugger-only capabilities are never silently downgraded.
 
 Ref-based actions work through the top document, open shadow roots, and visible same-origin nested frames. Cross-origin frame DOM remains opaque. Mutation actions report a bounded `dom_mutations` count. Use explicit tab IDs for concurrent clients and serialize navigation or other mutations per tab.
 
