@@ -22,7 +22,10 @@ function storageArea(store: Record<string, unknown>) {
 async function loadBackground(connectionReadFails = false) {
   const onUpdated = event();
   const onRemoved = event();
-  const localStorage = storageArea({ 'overseer.connection.enabled.v1': false });
+  const localStorage = storageArea({
+    'overseer.connection.enabled.v1': false,
+    'overseer.site.unlimited.v2': true,
+  });
   const backgroundReady = Promise.withResolvers<void>();
   const getLocalValues = localStorage.get;
   const removeLocalValue = localStorage.remove;
@@ -56,6 +59,8 @@ async function loadBackground(connectionReadFails = false) {
       create: async () => ({ id: 1, tabs: [{ id: 7, windowId: 1, url: 'about:blank' }] }),
     },
     scripting: { executeScript: vi.fn() },
+    permissions: { contains: vi.fn(async () => true), remove: vi.fn(async () => true) },
+    userScripts: { getScripts: vi.fn(async () => []) },
   };
   vi.stubGlobal('browser', browserStub);
   vi.stubGlobal('chrome', browserStub);

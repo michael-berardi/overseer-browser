@@ -22,7 +22,10 @@ function storageArea(store: Record<string, unknown>) {
 async function loadBackground() {
   const browserStub = {
     storage: {
-      local: storageArea({ 'overseer.connection.enabled.v1': false }),
+      local: storageArea({
+        'overseer.connection.enabled.v1': false,
+        'overseer.site.unlimited.v2': true,
+      }),
       session: storageArea({}),
     },
     tabs: {
@@ -41,6 +44,8 @@ async function loadBackground() {
       create: async () => ({ id: 1, tabs: [{ id: 7, windowId: 1, url: 'about:blank' }] }),
     },
     scripting: { executeScript: vi.fn() },
+    permissions: { contains: vi.fn(async () => true), remove: vi.fn(async () => true) },
+    userScripts: { getScripts: vi.fn(async () => []) },
   };
   vi.stubGlobal('browser', browserStub);
   vi.stubGlobal('chrome', browserStub);

@@ -134,16 +134,47 @@ export async function runInIsolatedWorld(tabId: number, action: AutomationAction
   return envelope.value;
 }
 
-export async function runPageEvaluation(tabId: number, source: string): Promise<unknown> {  if (source.length === 0 || source.length > 32_000) {
+export async function runPageEvaluation(tabId: number, source: string): Promise<unknown> {
+  if (source.length === 0 || source.length > 32_000) {
     throw new AutomationError('invalid_evaluate', 'Evaluate source must be between 1 and 32000 characters.');
   }
-  const [injection] = await chrome.scripting.executeScript({
-    target: { tabId },
-    world: 'MAIN',
-    func: pageWorldEvaluation,
-    args: [source],
-  });
-  const envelope = injection?.result;
+  const program = `(async () => {
+    let resolved;
+    try {
+      resolved = await (${source});
+    } catch {
+      return { ok: false, error: { code: 'evaluation_failed', message: 'Page evaluation failed in the target tab.' } };
+    }
+    if (resolved === undefined) return { ok: true, value: null };
+    let serialized;
+    try {
+      serialized = JSON.stringify(resolved);
+    } catch {
+      return { ok: false, error: { code: 'evaluation_result_invalid', message: 'Page evaluation must return a JSON-serializable value.' } };
+    }
+    if (serialized === undefined) {
+      return { ok: false, error: { code: 'evaluation_result_invalid', message: 'Page evaluation must return a JSON-serializable value.' } };
+    }
+    if (serialized.length > 512000) {
+      return { ok: false, error: { code: 'evaluation_result_too_large', message: 'Page evaluation result exceeds the 512000-character limit.' } };
+    }
+    return { ok: true, value: JSON.parse(serialized) };
+  })()`;
+  let injections: chrome.userScripts.InjectionResult[];
+  try {
+    injections = await chrome.userScripts.execute({
+      target: { tabId },
+      world: 'USER_SCRIPT',
+      js: [{ code: program }],
+    });
+  } catch {
+    throw new AutomationError(
+      'user_scripts_required',
+      'Page evaluation requires Chrome user-script access.',
+      'Enable Allow User Scripts for OverSeer Browser in Chrome extension settings.',
+    );
+  }
+  const envelope = injections[0]?.result;
   if (!isExecutionEnvelope(envelope)) {
     throw new AutomationError('evaluation_failed', 'Page evaluation failed in the target tab.');
   }
@@ -934,29 +965,4 @@ async function collectDialogGuards(token: string): Promise<CapturedDialog[]> {
   };
   visit(window);
   return dialogs;
-}
-
-async function pageWorldEvaluation(source: string): Promise<ExecutionEnvelope> {
-  // This callback runs only in the requested tab's MAIN world through scripting.executeScript.
-  let resolved: unknown;
-  try {
-    const evaluateSource = (globalThis as { Function: Function }).Function;
-    resolved = await evaluateSource(`"use strict"; return (${source});`)();
-  } catch {
-    return { ok: false, error: { code: 'evaluation_failed', message: 'Page evaluation failed in the target tab.' } };
-  }
-  if (resolved === undefined) return { ok: true, value: null };
-  let serialized: string | undefined;
-  try {
-    serialized = JSON.stringify(resolved);
-  } catch {
-    return { ok: false, error: { code: 'evaluation_result_invalid', message: 'Page evaluation must return a JSON-serializable value.' } };
-  }
-  if (serialized === undefined) {
-    return { ok: false, error: { code: 'evaluation_result_invalid', message: 'Page evaluation must return a JSON-serializable value.' } };
-  }
-  if (serialized.length > 512_000) {
-    return { ok: false, error: { code: 'evaluation_result_too_large', message: 'Page evaluation result exceeds the 512000-character limit.' } };
-  }
-  return { ok: true, value: JSON.parse(serialized) };
 }
