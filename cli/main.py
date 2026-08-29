@@ -695,10 +695,39 @@ def _materialize_screenshot(payload: dict[str, Any], output: Path | None) -> dic
         metadata["path"] = str(path)
     return {**payload, "result": metadata}
 
+def _uc_bin() -> str:
+    """UC binary location; UC_BIN overrides the default dev checkout."""
+    return os.environ.get("UC_BIN") or os.path.expanduser(
+        "~/dev/ultracompact/target/release/uc"
+    )
 
-def _render(payload: dict[str, Any], json_output: bool) -> None:
+
+def _uc_encode(payload: dict[str, Any]) -> str:
+    """Encode `payload` as an UltraCompact packet (token-minimizing), with a
+    token report on stderr. UC failures fall back to canonical JSON — never
+    lose data."""
+    try:
+        proc = subprocess.run(
+            [_uc_bin(), "encode", "--stats"],
+            input=json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env={**os.environ, "UC_TELEMETRY_SOURCE": "overseer-browser"},
+        )
+        if proc.returncode != 0:
+            raise RuntimeError(proc.stderr.strip())
+        if proc.stderr.strip():
+            print(proc.stderr.strip(), file=sys.stderr)
+        return proc.stdout
+    except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
+        print(f"Warning: UC encoding failed ({exc}); emitting JSON", file=sys.stderr)
+        return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+
+def _render(payload: dict[str, Any], json_output: bool, raw_json: bool = False) -> None:
     if json_output:
-        print(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+        print(_uc_encode(payload) if not raw_json else json.dumps(payload, ensure_ascii=False, separators=(",", ":")), end="")
         return
     if payload.get("ok") is False:
         err = payload.get("error") or {}
@@ -715,18 +744,19 @@ def _render(payload: dict[str, Any], json_output: bool) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     raw = list(sys.argv[1:] if argv is None else argv)
-    json_output = "--json" in raw
-    raw = [arg for arg in raw if arg != "--json"]
+    raw_json = "--raw-json" in raw
+    json_output = "--json" in raw or raw_json
+    raw = [arg for arg in raw if arg not in ("--json", "--raw-json")]
     timeout = 30.0
     if "--timeout" in raw:
         index = raw.index("--timeout")
         try:
             timeout = _checked_timeout(raw[index + 1])
         except IndexError:
-            _render({"ok": False, "error": {"code": "usage", "message": "--timeout requires seconds"}}, json_output)
+            _render({"ok": False, "error": {"code": "usage", "message": "--timeout requires seconds"}}, json_output, raw_json)
             return 2
         except CLIError as exc:
-            _render({"ok": False, "error": {"code": exc.code, "message": exc.message}}, json_output)
+            _render({"ok": False, "error": {"code": exc.code, "message": exc.message}}, json_output, raw_json)
             return 2
         del raw[index : index + 2]
     request_id: str | None = None
@@ -735,10 +765,10 @@ def main(argv: list[str] | None = None) -> int:
         try:
             request_id = _checked_request_id(raw[index + 1])
         except IndexError:
-            _render({"ok": False, "error": {"code": "usage", "message": "--request-id requires an ID"}}, json_output)
+            _render({"ok": False, "error": {"code": "usage", "message": "--request-id requires an ID"}}, json_output, raw_json)
             return 2
         except CLIError as exc:
-            _render({"ok": False, "error": {"code": exc.code, "message": exc.message}}, json_output)
+            _render({"ok": False, "error": {"code": exc.code, "message": exc.message}}, json_output, raw_json)
             return 2
         del raw[index : index + 2]
     tab_id: int | None = None
@@ -747,10 +777,10 @@ def main(argv: list[str] | None = None) -> int:
         try:
             tab_id = _integer(raw[index + 1])
         except IndexError:
-            _render({"ok": False, "error": {"code": "usage", "message": "--tab-id requires a tab ID"}}, json_output)
+            _render({"ok": False, "error": {"code": "usage", "message": "--tab-id requires a tab ID"}}, json_output, raw_json)
             return 2
         except CLIError as exc:
-            _render({"ok": False, "error": {"code": exc.code, "message": exc.message}}, json_output)
+            _render({"ok": False, "error": {"code": exc.code, "message": exc.message}}, json_output, raw_json)
             return 2
         del raw[index : index + 2]
     max_nodes: int | None = None
@@ -759,22 +789,19 @@ def main(argv: list[str] | None = None) -> int:
         try:
             max_nodes = _integer(raw[index + 1], maximum=500)
         except IndexError:
-            _render({"ok": False, "error": {"code": "usage", "message": "--max-nodes requires a node count"}}, json_output)
+            _render({"ok": False, "error": {"code": "usage", "message": "--max-nodes requires a node count"}}, json_output, raw_json)
             return 2
         except CLIError as exc:
-            _render({"ok": False, "error": {"code": exc.code, "message": exc.message}}, json_output)
+            _render({"ok": False, "error": {"code": exc.code, "message": exc.message}}, json_output, raw_json)
             return 2
         del raw[index : index + 2]
     if not raw or raw[0] in {"-h", "--help"}:
-        _render(
-            {
-                "ok": True,
-                "result": {
-                    "commands": list(CLI_COMMANDS)
-                },
+        _render({
+            "ok": True,
+            "result": {
+                "commands": list(CLI_COMMANDS)
             },
-            json_output,
-        )
+        }, json_output, raw_json)
         return 0
     command, args = raw[0], raw[1:]
     try:
@@ -853,7 +880,7 @@ def main(argv: list[str] | None = None) -> int:
         payload = {"ok": False, "error": {"code": "native_io_error", "message": "native host communication failed"}}
     except ValueError as exc:
         payload = {"ok": False, "error": {"code": "error", "message": str(exc)}}
-    _render(payload, json_output)
+    _render(payload, json_output, raw_json)
     return 0 if payload.get("ok") else 1
 
 
