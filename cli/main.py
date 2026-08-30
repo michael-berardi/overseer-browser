@@ -826,12 +826,15 @@ def _uc_encode(payload: dict[str, Any]) -> str:
     (emitting its token report on stderr), then to canonical JSON — never
     lose data."""
     source = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    # Tag telemetry for the in-process FFI path too — the engine reads the
+    # process environment, and only the subprocess fallback set it before.
+    os.environ.setdefault("UC_TELEMETRY_SOURCE", "overseer-browser")
     encoded = _uc_encode_ffi(source)
     if encoded is not None:
         return encoded
     try:
         proc = subprocess.run(
-            [_uc_bin(), "encode", "--stats"],
+            [_uc_bin(), "encode", "--readable", "--stats"],
             input=source,
             capture_output=True,
             text=True,
