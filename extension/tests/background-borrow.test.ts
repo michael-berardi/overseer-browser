@@ -54,7 +54,7 @@ describe('native tab borrowing approval', () => {
         onMessage: { addListener: vi.fn() },
         connectNative: () => port,
         getURL: (path: string) => path,
-        getManifest: () => ({ version: '0.1.5' }),
+        getManifest: () => ({ version: '0.2.0' }),
         get lastError() {
           runtimeLastErrorReads += 1;
           return { message: 'Native host has exited.' };

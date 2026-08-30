@@ -34,9 +34,29 @@ export async function captureScreenshot(
   }
   await requireActiveScreenshotTarget(tabId, windowId);
   const captureOptions = format === 'jpeg' ? { format: 'jpeg' as const, quality: 82 } : { format: 'png' as const };
-  const dataUrl = await chrome.tabs.captureVisibleTab(windowId, captureOptions);
-  const source = await createImageBitmap(captureDataUrlToBlob(dataUrl));
-  const viewport = (await runInIsolatedWorld(tabId, { kind: 'viewport' })) as { width: number; height: number; devicePixelRatio: number };
+  let dataUrl: string;
+  try {
+    dataUrl = await chrome.tabs.captureVisibleTab(windowId, captureOptions);
+  } catch (error) {
+    // Chrome accepts only '<all_urls>' (or an activeTab gesture) for
+    // captureVisibleTab; scoped per-origin and legacy wildcard grants do not
+    // cover it. Unlimited grants issued before 0.2.0 predate '<all_urls>'.
+    if (error instanceof Error && error.message.includes("'<all_urls>'")) {
+      throw new ScreenshotError(
+        'screenshot_permission_required',
+        'Chrome blocks tab capture without an <all_urls> grant.',
+        'Enable unlimited access in the popup; if it is already on, toggle it off and on once to upgrade the grant.',
+      );
+    }
+    throw error;
+  }
+  // Validate the capture payload before touching the page; the bitmap decode
+  // and the viewport probe are independent and run together.
+  const captured = captureDataUrlToBlob(dataUrl);
+  const [source, viewport] = await Promise.all([
+    createImageBitmap(captured),
+    runInIsolatedWorld(tabId, { kind: 'viewport' }) as Promise<{ width: number; height: number; devicePixelRatio: number }>,
+  ]);
   try {
     const crop = rect ? calculateCrop(rect, viewport, source.width, source.height) : { left: 0, top: 0, width: source.width, height: source.height };
     for (const scale of SCALE_FACTORS) {

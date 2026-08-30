@@ -73,7 +73,16 @@ _TAB_TARGETED_COMMANDS = {
 }
 
 
-def _apply_targeting(command: str, params: dict[str, Any], tab_id: int | None, max_nodes: int | None) -> dict[str, Any]:
+_WAIT_UNTIL_COMMANDS = {"navigate", "tabs.create", "back", "forward", "reload"}
+
+
+def _apply_targeting(
+    command: str,
+    params: dict[str, Any],
+    tab_id: int | None,
+    max_nodes: int | None,
+    wait_until: str | None = None,
+) -> dict[str, Any]:
     if tab_id is not None:
         if command not in _TAB_TARGETED_COMMANDS:
             raise CLIError("usage", f"--tab-id does not apply to {command}")
@@ -82,6 +91,10 @@ def _apply_targeting(command: str, params: dict[str, Any], tab_id: int | None, m
         if command not in {"snapshot", "observe"}:
             raise CLIError("usage", "--max-nodes applies only to snapshot and observe")
         params["max_nodes"] = max_nodes
+    if wait_until is not None:
+        if command not in _WAIT_UNTIL_COMMANDS:
+            raise CLIError("usage", f"--wait-until does not apply to {command}")
+        params["wait_until"] = wait_until
     return params
 
 _BATCH_COMMANDS = {
@@ -247,6 +260,8 @@ def request_once(
     connection: socket.socket | None = None
     last_refused: ConnectionRefusedError | None = None
     try:
+        if not hasattr(socket, "AF_UNIX"):
+            raise CLIError("unsupported_platform", "Unix domain sockets require Windows 10 1803+ and Python 3.9+")
         for delay in CONNECT_RETRY_DELAYS:
             if delay > 0:
                 remaining = deadline - time.monotonic()
@@ -292,7 +307,7 @@ def local_health(paths: RuntimePaths | None = None) -> dict[str, Any]:
     checks: dict[str, Any] = {
         "runtime_directory": {"path": str(paths.root), "ok": paths.root.is_dir() and _private_dir(paths.root)},
         "token": {"ok": paths.token.is_file() and is_private_file(paths.token)},
-        "socket": {"path": str(paths.socket), "ok": not paths.socket.is_symlink() and paths.socket.is_socket() and _private_socket(paths.socket)},
+        "socket": {"path": str(paths.socket), "ok": not paths.socket.is_symlink() and (paths.socket.exists() if os.name == "nt" else paths.socket.is_socket()) and _private_socket(paths.socket)},
         "native_manifest": {"ok": _manifest_exists()},
         "extension_id": "iabfdeokmilpklblkgccpjlekchfjcno",
         "tcp_listener": False,
@@ -311,11 +326,16 @@ def local_health(paths: RuntimePaths | None = None) -> dict[str, Any]:
     return checks
 
 
+# POSIX permission bits are synthetic on Windows; skip mode-bit checks there.
+_POSIX_MODE_BITS = os.name != "nt"
+
+
 def _private_dir(path: Path) -> bool:
     try:
         stat_result = path.stat()
         owner_ok = not hasattr(os, "getuid") or stat_result.st_uid == os.getuid()
-        return owner_ok and (stat_result.st_mode & 0o077) == 0
+        mode_ok = not _POSIX_MODE_BITS or (stat_result.st_mode & 0o077) == 0
+        return owner_ok and mode_ok
     except (FileNotFoundError, OSError):
         return False
 
@@ -324,9 +344,13 @@ def _private_socket(path: Path) -> bool:
     try:
         stat_result = path.stat()
         owner_ok = not hasattr(os, "getuid") or stat_result.st_uid == os.getuid()
-        return owner_ok and (stat_result.st_mode & 0o077) == 0
+        mode_ok = not _POSIX_MODE_BITS or (stat_result.st_mode & 0o077) == 0
+        return owner_ok and mode_ok
     except (FileNotFoundError, OSError):
         return False
+
+
+_MANIFEST_FILENAME = "com.imploselabs.overseer_browser.json"
 
 
 def _manifest_paths() -> list[Path]:
@@ -334,18 +358,45 @@ def _manifest_paths() -> list[Path]:
     if override:
         return [Path(override).expanduser()]
     if sys.platform == "darwin":
-        base = Path.home() / "Library" / "Application Support" / "Google"
-        filename = "com.imploselabs.overseer_browser.json"
+        base = Path.home() / "Library" / "Application Support"
         return [
-            base / "Chrome" / "NativeMessagingHosts" / filename,
-            base / "Chrome for Testing" / "NativeMessagingHosts" / filename,
+            base / "Google" / "Chrome" / "NativeMessagingHosts" / _MANIFEST_FILENAME,
+            base / "Google" / "Chrome for Testing" / "NativeMessagingHosts" / _MANIFEST_FILENAME,
+            base / "Chromium" / "NativeMessagingHosts" / _MANIFEST_FILENAME,
+            base / "BraveSoftware" / "Brave-Browser" / "NativeMessagingHosts" / _MANIFEST_FILENAME,
+            base / "Microsoft Edge" / "NativeMessagingHosts" / _MANIFEST_FILENAME,
         ]
     if os.name == "nt":
+        # Windows native messaging is registered in the registry; the on-disk
+        # manifest is the payload those keys point at.
         return [Path(os.environ.get("LOCALAPPDATA", Path.home())) / "OverSeer" / "browser" / "native-host.json"]
-    return [Path.home() / ".config" / "google-chrome" / "NativeMessagingHosts" / "com.imploselabs.overseer_browser.json"]
+    config_home = Path(os.environ.get("XDG_CONFIG_HOME", "").strip() or (Path.home() / ".config"))
+    return [
+        config_home / "google-chrome" / "NativeMessagingHosts" / _MANIFEST_FILENAME,
+        config_home / "chromium" / "NativeMessagingHosts" / _MANIFEST_FILENAME,
+        config_home / "BraveSoftware" / "Brave-Browser" / "NativeMessagingHosts" / _MANIFEST_FILENAME,
+        config_home / "microsoft-edge" / "NativeMessagingHosts" / _MANIFEST_FILENAME,
+    ]
+
+
+_WINDOWS_NATIVE_HOST_KEYS = (
+    r"Software\Google\Chrome\NativeMessagingHosts\com.imploselabs.overseer_browser",
+    r"Software\Microsoft\Edge\NativeMessagingHosts\com.imploselabs.overseer_browser",
+    r"Software\BraveSoftware\Brave\NativeMessagingHosts\com.imploselabs.overseer_browser",
+)
 
 
 def _manifest_exists() -> bool:
+    if os.name == "nt" and not os.environ.get("OVERSEER_BROWSER_MANIFEST", "").strip():
+        import winreg
+
+        for key_path in _WINDOWS_NATIVE_HOST_KEYS:
+            try:
+                with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path):
+                    return True
+            except (OSError, FileNotFoundError):
+                continue
+        return False
     return any(path.is_file() for path in _manifest_paths())
 
 
@@ -684,11 +735,13 @@ def _materialize_screenshot(payload: dict[str, Any], output: Path | None) -> dic
         path.parent.mkdir(parents=True, exist_ok=True)
         descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
         try:
-            os.fchmod(descriptor, 0o600)
+            if hasattr(os, "fchmod"):
+                os.fchmod(descriptor, 0o600)
             with os.fdopen(descriptor, "wb") as handle:
                 handle.write(data)
             os.replace(temporary, path)
-            os.chmod(path, 0o600)
+            if _POSIX_MODE_BITS:
+                os.chmod(path, 0o600)
         finally:
             if os.path.exists(temporary):
                 os.unlink(temporary)
@@ -696,23 +749,93 @@ def _materialize_screenshot(payload: dict[str, Any], output: Path | None) -> dic
     return {**payload, "result": metadata}
 
 def _uc_bin() -> str:
-    """UC binary location; UC_BIN overrides the default dev checkout."""
-    return os.environ.get("UC_BIN") or os.path.expanduser(
-        "~/dev/ultracompact/target/release/uc"
-    )
+    """UC binary location: UC_BIN override, then PATH."""
+    override = os.environ.get("UC_BIN", "").strip()
+    if override:
+        return override
+    return shutil.which("uc") or "uc"
+
+
+# Only env-override and conventional install locations: a released tool never
+# loads a native library from an unversioned developer-checkout path.
+_UC_LIB_CANDIDATES = (
+    "~/.local/lib/ultracompact/libultracompact.dylib",
+    "~/.local/lib/ultracompact/libultracompact.so",
+)
+_UC_ENCODE_TIMEOUT = 30
+_uc_library_handle: Any = None
+_uc_library_unavailable = False
+
+
+def _uc_library() -> Any:
+    """Load the UltraCompact shared library once; UC_LIB overrides the path.
+
+    In-process encoding avoids a subprocess spawn and tokenizer re-init per
+    CLI call (~150 ms saved per rendered response). The ctypes import itself
+    is deferred so commands that never render stay on the fast path.
+    """
+    global _uc_library_handle, _uc_library_unavailable
+    if _uc_library_handle is not None or _uc_library_unavailable:
+        return _uc_library_handle
+    import ctypes
+
+    candidates: list[Path] = []
+    override = os.environ.get("UC_LIB", "").strip()
+    if override:
+        candidates.append(Path(override).expanduser())
+    candidates.extend(Path(candidate).expanduser() for candidate in _UC_LIB_CANDIDATES)
+    for path in candidates:
+        try:
+            library = ctypes.CDLL(str(path))
+            # A stale or incompatible library at a candidate path must not
+            # break the fallback chain: require both symbols before adopting.
+            encode_json = library.uc_encode_json
+            free_string = library.uc_free_string
+        except (OSError, AttributeError):
+            continue
+        encode_json.argtypes = (ctypes.c_char_p, ctypes.c_char_p)
+        encode_json.restype = ctypes.c_void_p
+        free_string.argtypes = (ctypes.c_void_p,)
+        free_string.restype = None
+        _uc_library_handle = library
+        return library
+    _uc_library_unavailable = True
+    return None
+
+
+def _uc_encode_ffi(source: str) -> str | None:
+    """Encode via the shared library; None when the library or call fails."""
+    library = _uc_library()
+    if library is None:
+        return None
+    import ctypes
+
+    pointer = library.uc_encode_json(source.encode("utf-8"), None)
+    if not pointer:
+        return None
+    try:
+        return ctypes.string_at(pointer).decode("utf-8")
+    finally:
+        library.uc_free_string(pointer)
 
 
 def _uc_encode(payload: dict[str, Any]) -> str:
-    """Encode `payload` as an UltraCompact packet (token-minimizing), with a
-    token report on stderr. UC failures fall back to canonical JSON — never
+    """Encode `payload` as an UltraCompact packet (token-minimizing).
+
+    Prefers the in-process shared library; falls back to the `uc` binary
+    (emitting its token report on stderr), then to canonical JSON — never
     lose data."""
+    source = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    encoded = _uc_encode_ffi(source)
+    if encoded is not None:
+        return encoded
     try:
         proc = subprocess.run(
             [_uc_bin(), "encode", "--stats"],
-            input=json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+            input=source,
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=_UC_ENCODE_TIMEOUT,
             env={**os.environ, "UC_TELEMETRY_SOURCE": "overseer-browser"},
         )
         if proc.returncode != 0:
@@ -735,7 +858,16 @@ def _render(payload: dict[str, Any], json_output: bool, raw_json: bool = False) 
         return
     if "result" in payload:
         value = payload["result"]
-        print(json.dumps(value, ensure_ascii=False, indent=2) if isinstance(value, (dict, list)) else value)
+        if isinstance(value, (dict, list)):
+            # Interactive terminals get pretty JSON for humans; piped output
+            # is consumed by agents, so serve the token-minimal UC packet
+            # (`uc decode` restores the exact JSON; --raw-json stays exact).
+            if sys.stdout.isatty():
+                print(json.dumps(value, ensure_ascii=False, indent=2))
+            else:
+                print(_uc_encode(value))
+        else:
+            print(value)
     elif "hint" in payload:
         print(payload["hint"])
     else:
@@ -795,6 +927,18 @@ def main(argv: list[str] | None = None) -> int:
             _render({"ok": False, "error": {"code": exc.code, "message": exc.message}}, json_output, raw_json)
             return 2
         del raw[index : index + 2]
+    wait_until: str | None = None
+    if "--wait-until" in raw:
+        index = raw.index("--wait-until")
+        try:
+            wait_until = raw[index + 1]
+        except IndexError:
+            _render({"ok": False, "error": {"code": "usage", "message": "--wait-until requires load or interactive"}}, json_output, raw_json)
+            return 2
+        if wait_until not in {"load", "interactive"}:
+            _render({"ok": False, "error": {"code": "usage", "message": "--wait-until must be load or interactive"}}, json_output, raw_json)
+            return 2
+        del raw[index : index + 2]
     if not raw or raw[0] in {"-h", "--help"}:
         _render({
             "ok": True,
@@ -832,6 +976,8 @@ def main(argv: list[str] | None = None) -> int:
             _require(args, 2, "upload REF PATH [PATH...]")
             if max_nodes is not None:
                 raise CLIError("usage", "--max-nodes applies only to snapshot and observe")
+            if wait_until is not None:
+                raise CLIError("usage", "--wait-until does not apply to upload")
             ref = args[0]
             path_args = args[1:]
             if len(path_args) > MAX_UPLOAD_FILES:
@@ -857,7 +1003,7 @@ def main(argv: list[str] | None = None) -> int:
             output_path = Path(output_arg).expanduser() if output_arg else None
             if output_path is not None:
                 params["format"] = _screenshot_output_format(output_path)
-            params = _apply_targeting(extension_command, params, tab_id, max_nodes)
+            params = _apply_targeting(extension_command, params, tab_id, max_nodes, wait_until)
             payload = request_once(extension_command, params, timeout=timeout, request_id=request_id)
             payload = _materialize_screenshot(payload, output_path)
         elif command == "help":
@@ -870,7 +1016,7 @@ def main(argv: list[str] | None = None) -> int:
             }
         else:
             extension_command, params = _command_request(command, args)
-            params = _apply_targeting(extension_command, params, tab_id, max_nodes)
+            params = _apply_targeting(extension_command, params, tab_id, max_nodes, wait_until)
             payload = request_once(extension_command, params, timeout=timeout, request_id=request_id)
     except CLIError as exc:
         payload = {"ok": False, "error": {"code": exc.code, "message": exc.message}}
@@ -880,7 +1026,16 @@ def main(argv: list[str] | None = None) -> int:
         payload = {"ok": False, "error": {"code": "native_io_error", "message": "native host communication failed"}}
     except ValueError as exc:
         payload = {"ok": False, "error": {"code": "error", "message": str(exc)}}
-    _render(payload, json_output, raw_json)
+    try:
+        _render(payload, json_output, raw_json)
+    except BrokenPipeError:
+        # A downstream consumer (head, a failed parser) closed stdout; exit
+        # quietly instead of dumping a traceback, and silence the final flush.
+        try:
+            sys.stdout = open(os.devnull, "w")
+        except OSError:
+            pass
+        return 1
     return 0 if payload.get("ok") else 1
 
 

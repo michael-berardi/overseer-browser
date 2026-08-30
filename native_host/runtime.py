@@ -43,14 +43,33 @@ def sys_platform() -> str:
     return sys.platform
 
 
+# POSIX permission bits are synthetic on Windows (dirs report 0o777, files
+# 0o666), where ACLs govern access instead; mode-bit privacy checks only
+# apply where the bits are real.
+POSIX_MODE_BITS = os.name != "nt"
+
+
+def _is_group_world_accessible(mode: int) -> bool:
+    return POSIX_MODE_BITS and bool(stat.S_IMODE(mode) & 0o077)
+
+
+def _restrict_permissions(path: Path, mode: int, fd: int | None = None) -> None:
+    if not POSIX_MODE_BITS:
+        return
+    if fd is not None and hasattr(os, "fchmod"):
+        os.fchmod(fd, mode)
+    else:
+        os.chmod(path, mode)
+
+
 def ensure_private_directory(path: Path) -> None:
     if path.is_symlink():
         raise PermissionError("runtime directory must not be a symlink")
     path.mkdir(mode=0o700, parents=True, exist_ok=True)
-    os.chmod(path, 0o700)
+    _restrict_permissions(path, 0o700)
     if hasattr(os, "getuid") and path.stat().st_uid != os.getuid():
         raise PermissionError("runtime directory is not owned by the current user")
-    if stat.S_IMODE(path.stat().st_mode) & 0o077:
+    if _is_group_world_accessible(path.stat().st_mode):
         raise PermissionError("runtime directory is accessible by another user")
 
 
@@ -67,11 +86,11 @@ def ensure_token(paths: RuntimePaths) -> str:
     token = secrets.token_urlsafe(32)
     fd, temporary = tempfile.mkstemp(prefix="token.", dir=paths.root)
     try:
-        os.fchmod(fd, 0o600)
+        _restrict_permissions(paths.token, 0o600, fd=fd)
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(token + "\n")
         os.replace(temporary, paths.token)
-        os.chmod(paths.token, 0o600)
+        _restrict_permissions(paths.token, 0o600)
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
@@ -86,7 +105,7 @@ def is_private_file(path: Path) -> bool:
     except FileNotFoundError:
         return False
     owner_ok = not hasattr(os, "getuid") or stat_result.st_uid == os.getuid()
-    return owner_ok and (stat.S_IMODE(stat_result.st_mode) & 0o077) == 0
+    return owner_ok and not _is_group_world_accessible(stat_result.st_mode)
 
 
 
@@ -95,8 +114,18 @@ def prepare_socket(paths: RuntimePaths) -> None:
     ensure_private_directory(paths.root)
     if not paths.socket.exists() and not paths.socket.is_symlink():
         return
-    if paths.socket.is_symlink() or not stat.S_ISSOCK(paths.socket.stat().st_mode):
+    # Windows reports AF_UNIX sockets through a reparse point whose mode does
+    # not reliably read as S_ISSOCK; require the reparse-point attribute so an
+    # arbitrary file at the socket path is never unlinked below.
+    if paths.socket.is_symlink():
         raise FileExistsError("runtime socket path is not a socket")
+    if POSIX_MODE_BITS:
+        if not stat.S_ISSOCK(paths.socket.stat().st_mode):
+            raise FileExistsError("runtime socket path is not a socket")
+    else:
+        attributes = paths.socket.stat().st_file_attributes
+        if not (attributes & 0x400):  # FILE_ATTRIBUTE_REPARSE_POINT
+            raise FileExistsError("runtime socket path is not a socket")
     if hasattr(os, "getuid") and paths.socket.stat().st_uid != os.getuid():
         raise PermissionError("runtime socket is not owned by the current user")
     import socket
@@ -129,11 +158,11 @@ def write_manifest(path: Path, host_path: Path) -> None:
     payload = json.dumps(native_manifest(host_path), indent=2, sort_keys=True) + "\n"
     fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
-        os.fchmod(fd, 0o600)
+        _restrict_permissions(path, 0o600, fd=fd)
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(payload)
         os.replace(temporary, path)
-        os.chmod(path, 0o600)
+        _restrict_permissions(path, 0o600)
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)

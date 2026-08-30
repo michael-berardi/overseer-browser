@@ -283,7 +283,15 @@ function encodeBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
-const sessions = new SessionManager(restorePageConsole);
+// Tabs with a live in-page console capture. Restoration only pays for a
+// page-world script call when a capture was actually installed; lease expiry
+// or navigation may leave a stale entry, which costs one harmless no-op
+// cleanup call and is then removed.
+const consoleCaptureTabs = new Set<number>();
+const sessions = new SessionManager(async (tabId) => {
+  if (!consoleCaptureTabs.delete(tabId)) return;
+  await restorePageConsole(tabId);
+});
 const deduper = new MeetingDeduper();
 const pendingMeetings = new PendingMeetingQueue();
 const uploads = new UploadAssembler();
@@ -333,15 +341,15 @@ const COMMAND_PARAM_KEYS: Record<Command, readonly string[]> = {
   'sessions.list': [],
   'windows.resize': ['width', 'height', 'left', 'top'],
   'tabs.list': [],
-  'tabs.create': ['url'],
+  'tabs.create': ['url', 'wait_until'],
   'tabs.select': ['tab_id'],
   'tabs.close': ['tab_id'],
   'tabs.borrow': ['tab_id'],
   'tabs.return': ['tab_id'],
-  navigate: ['tab_id', 'url'],
-  back: ['tab_id'],
-  forward: ['tab_id'],
-  reload: ['tab_id'],
+  navigate: ['tab_id', 'url', 'wait_until'],
+  back: ['tab_id', 'wait_until'],
+  forward: ['tab_id', 'wait_until'],
+  reload: ['tab_id', 'wait_until'],
   snapshot: ['tab_id', 'max_nodes'],
   observe: ['tab_id', 'max_nodes', 'changes'],
   'wait.for': ['tab_id', 'timeout_ms', 'ready', 'url_contains', 'text', 'absent', 'selector', 'state', 'dom_stable_ms'],
@@ -447,7 +455,10 @@ function startBackground(): void {
   chrome.tabs.onUpdated.addListener((updatedTabId, changeInfo) => {
     if (changeInfo.url !== undefined || changeInfo.status === 'loading') observeDeltas.drop(updatedTabId);
   });
-  chrome.tabs.onRemoved.addListener((removedTabId) => observeDeltas.drop(removedTabId));
+  chrome.tabs.onRemoved.addListener((removedTabId) => {
+    observeDeltas.drop(removedTabId);
+    consoleCaptureTabs.delete(removedTabId);
+  });
   chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) => {
     if (!message || typeof message !== 'object') return false;
     const value = message as Record<string, unknown>;
@@ -824,13 +835,19 @@ async function dispatchCommand(request: NativeRequest, state: InflightRequest): 
   assertNotCancelled(state);
   if (takeoverRequested && isPausedCommand(command)) throw new DispatchError('human_takeover_active', 'Automation is paused for human takeover.', 'Run overseer-browser takeover resume to return control to the agent.');
   if (command === 'health.status') {
-    let currentUrl: string | undefined;
-    try {
-      const selectedTabId = await sessions.getSelectedTabId();
-      currentUrl = (await browser.tabs.get(selectedTabId)).url;
-    } catch {
-      currentUrl = undefined;
-    }
+    const currentUrl = async (): Promise<string | undefined> => {
+      try {
+        const selectedTabId = await sessions.getSelectedTabId();
+        return (await browser.tabs.get(selectedTabId)).url;
+      } catch {
+        return undefined;
+      }
+    };
+    const [permissions, scriptsAvailable, sessionsState] = await Promise.all([
+      currentUrl().then((url) => getPermissionState(url)),
+      userScriptsAvailable(),
+      sessions.list(),
+    ]);
     return {
       version: 1,
       connected,
@@ -838,9 +855,9 @@ async function dispatchCommand(request: NativeRequest, state: InflightRequest): 
       extension_id: EXTENSION_ID,
       evaluate_enabled: evaluateEnabled,
       takeover_requested: takeoverRequested,
-      permissions: await getPermissionState(currentUrl),
-      user_scripts_available: await userScriptsAvailable(),
-      sessions: await sessions.list(),
+      permissions,
+      user_scripts_available: scriptsAvailable,
+      sessions: sessionsState,
       runtime: {
         inflight_requests: Math.max(0, inflight.size - 1),
         incomplete_uploads: uploads.size,
@@ -864,7 +881,7 @@ async function dispatchCommand(request: NativeRequest, state: InflightRequest): 
     if (!isNavigableUrl(url)) throw new DispatchError('invalid_url', 'Only http and https navigation is allowed.');
     const tab = await sessions.createTab();
     if (tab.id === undefined) throw new DispatchError('tab_required', 'Chrome did not return the new tab id.');
-    const navigation = createTabNavigationWait(tab.id);
+    const navigation = await prepareNavigationWait(tab.id, params);
     try {
       await browser.tabs.update(tab.id, { url });
       return await navigation.promise;
@@ -889,7 +906,7 @@ async function dispatchCommand(request: NativeRequest, state: InflightRequest): 
     return enqueueTabMutation(tabId, async () => {
       assertNotCancelled(state);
       await sessions.cleanupTab(tabId);
-      const navigation = createTabNavigationWait(tabId);
+      const navigation = await prepareNavigationWait(tabId, params);
       try {
         await browser.tabs.update(tabId, { url });
         return await navigation.promise;
@@ -904,7 +921,7 @@ async function dispatchCommand(request: NativeRequest, state: InflightRequest): 
     return enqueueTabMutation(tabId, async () => {
       assertNotCancelled(state);
       await sessions.cleanupTab(tabId);
-      const navigation = createTabNavigationWait(tabId);
+      const navigation = await prepareNavigationWait(tabId, params);
       try {
         if (command === 'reload') {
           await browser.tabs.reload(tabId);
@@ -960,7 +977,10 @@ async function dispatchCommand(request: NativeRequest, state: InflightRequest): 
   }
   if (command === 'console.start' || command === 'console.read' || command === 'console.stop') {
     const tabId = await targetTab(params);
-    return runConsoleCommand(tabId, command, params.clear === true);
+    const result = await runConsoleCommand(tabId, command, params.clear === true);
+    if (command === 'console.start') consoleCaptureTabs.add(tabId);
+    if (command === 'console.stop') consoleCaptureTabs.delete(tabId);
+    return result;
   }
   if (command === 'network.read') {
     const tabId = await targetTab(params);
@@ -974,8 +994,12 @@ async function dispatchCommand(request: NativeRequest, state: InflightRequest): 
     if (requestedFormat !== 'jpeg' && requestedFormat !== 'png') {
       throw new DispatchError('invalid_params', 'Screenshot format must be jpeg or png.');
     }
+    if (command === 'screenshot.element') {
+      // element_rect scrolls the page as a side effect; reject non-active
+      // targets before touching the page. captureScreenshot re-checks anyway.
+      await requireActiveScreenshotTarget(tabId, tab.windowId);
+    }
     const rect = command === 'screenshot.element' ? (await runAction(params, { kind: 'element_rect', ref: readString(params, 'ref', 128) }, state) as { left: number; top: number; width: number; height: number }) : undefined;
-    await requireActiveScreenshotTarget(tabId, tab.windowId);
     return captureScreenshot(tabId, tab.windowId, rect, requestedFormat);
   }
   if (command === 'upload') return runUpload(params, state);
@@ -1068,6 +1092,172 @@ interface TabNavigationWait {
   cancel: () => void;
 }
 
+const INTERACTIVE_PROBE_MS = 150;
+
+/**
+ * Marks the current document before a navigation is triggered. Interactive
+ * probes accept only documents WITHOUT the mark, so a probe can never
+ * resolve against the pre-navigation page.
+ */
+export async function stampNavigationMark(tabId: number, mark: string): Promise<void> {
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    world: 'ISOLATED',
+    injectImmediately: true,
+    func: (value: string) => {
+      // Without a document element the mark cannot be applied; throwing here
+      // degrades the caller to load-wait semantics instead of letting probes
+      // resolve against the unmarked pre-navigation page.
+      if (!document.documentElement) throw new Error('no document element to mark');
+      document.documentElement.setAttribute('data-overseer-nav', value);
+    },
+    args: [mark],
+  });
+}
+
+/**
+ * Best-effort removal of a navigation mark after a cancelled or failed
+ * navigation, so the page does not retain the attribute permanently.
+ */
+async function clearNavigationMark(tabId: number, mark: string): Promise<void> {
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      world: 'ISOLATED',
+      func: (value: string) => {
+        if (document.documentElement?.getAttribute('data-overseer-nav') === value) {
+          document.documentElement.removeAttribute('data-overseer-nav');
+        }
+      },
+      args: [mark],
+    });
+  } catch {
+    // The tab may already hold a new document or be gone; residue is cosmetic.
+  }
+}
+
+/**
+ * Resolves as soon as the post-navigation document reports readyState
+ * interactive. Probes use immediate injection so they run while the page is
+ * still loading; failures mean no committed document yet and are retried
+ * until the caller's load-based wait resolves or times out.
+ */
+export function createTabInteractiveWait(tabId: number, mark: string): TabNavigationWait {
+  let settled = false;
+  let timer: TimerHandle | undefined;
+  let resolveWait: (tab: chrome.tabs.Tab) => void = () => undefined;
+  let rejectWait: (error: unknown) => void = () => undefined;
+  const promise = new Promise<chrome.tabs.Tab>((resolve, reject) => {
+    resolveWait = resolve;
+    rejectWait = reject;
+  });
+  const probe = async (): Promise<void> => {
+    while (!settled) {
+      try {
+        const [result] = await chrome.scripting.executeScript({
+          target: { tabId },
+          world: 'ISOLATED',
+          injectImmediately: true,
+          func: (value: string) => (
+            document.documentElement?.getAttribute('data-overseer-nav') === value ? 'pending' : document.readyState
+          ),
+          args: [mark],
+        });
+        if (result?.result === 'interactive' || result?.result === 'complete') {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          void browser.tabs.get(tabId).then(resolveWait, rejectWait);
+          return;
+        }
+      } catch {
+        // No committed document yet, or the probe raced a navigation commit.
+      }
+      await new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, INTERACTIVE_PROBE_MS);
+      });
+    }
+  };
+  void probe();
+  return {
+    promise,
+    cancel: () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+    },
+  };
+}
+
+/**
+ * Navigation wait honoring `wait_until`: 'load' keeps the historical
+ * complete-status semantics; 'interactive' resolves at DOM readiness, but
+ * only when the old document was successfully marked first — otherwise the
+ * wait degrades to load semantics so a stale document can never satisfy it.
+ * The losing arm is always cancelled so no listeners or probes outlive the wait.
+ */
+export function createNavigationWait(tabId: number, waitUntil: 'load' | 'interactive', mark?: string): TabNavigationWait {
+  const loadWait = createTabNavigationWait(tabId);
+  if (waitUntil !== 'interactive' || mark === undefined) return loadWait;
+  const interactiveWait = createTabInteractiveWait(tabId, mark);
+  return {
+    promise: Promise.race([loadWait.promise, interactiveWait.promise]).finally(() => {
+      loadWait.cancel();
+      interactiveWait.cancel();
+    }),
+    cancel: () => {
+      loadWait.cancel();
+      interactiveWait.cancel();
+    },
+  };
+}
+
+function readWaitUntil(params: Record<string, unknown>): 'load' | 'interactive' {
+  if (params.wait_until === undefined) return 'load';
+  const value = readString(params, 'wait_until', 16);
+  if (value !== 'load' && value !== 'interactive') {
+    throw new DispatchError('invalid_params', 'wait_until must be load or interactive.');
+  }
+  return value;
+}
+
+interface PreparedNavigationWait extends TabNavigationWait {
+  mark?: string;
+}
+
+/**
+ * Builds the navigation wait for a dispatch site. For 'interactive', the
+ * current document is marked BEFORE the navigation is triggered; when the
+ * mark cannot be applied, the wait degrades to load semantics. The mark is
+ * always scrubbed once the wait settles or is cancelled, covering
+ * same-document (hash) navigations where the old document survives.
+ */
+async function prepareNavigationWait(tabId: number, params: Record<string, unknown>): Promise<PreparedNavigationWait> {
+  const waitUntil = readWaitUntil(params);
+  if (waitUntil !== 'interactive') return createNavigationWait(tabId, waitUntil);
+  const mark = crypto.randomUUID();
+  try {
+    await stampNavigationMark(tabId, mark);
+  } catch {
+    return createNavigationWait(tabId, 'load');
+  }
+  const wait = createNavigationWait(tabId, waitUntil, mark);
+  const cancel = wait.cancel;
+  const scrub = (): void => {
+    void clearNavigationMark(tabId, mark);
+  };
+  return {
+    // The inner race cancels both arms before this finally runs, so no probe
+    // can resolve from the scrubbed mark afterwards.
+    promise: wait.promise.finally(scrub),
+    mark,
+    cancel: () => {
+      cancel();
+      scrub();
+    },
+  };
+}
+
 export function createTabNavigationWait(tabId: number): TabNavigationWait {
   let settled = false;
   let loading = false;
@@ -1134,8 +1324,6 @@ async function waitForTabState(
 ): Promise<unknown> {
   const matchesTab = (tab: chrome.tabs.Tab): boolean =>
     target.kind === 'url' ? (tab.url?.includes(target.urlContains) ?? false) : tab.status === 'complete';
-  const initial = await browser.tabs.get(tabId);
-  if (matchesTab(initial)) return { matched: true, ...(initial.url ? { url: initial.url.slice(0, 2_048) } : {}) };
   let settled = false;
   let timer: TimerHandle | undefined;
   // Executor form: the shipped tsconfig pins ES2022, before Promise.withResolvers.
@@ -1187,6 +1375,9 @@ async function waitForTabState(
     settled = true;
     cleanup();
   });
+  // The initial state check runs only after listeners are attached: a tab
+  // update landing between the check and registration can never be missed.
+  check();
   return promise;
 }
 

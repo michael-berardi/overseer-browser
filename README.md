@@ -27,10 +27,10 @@ Read [PRIVACY.md](PRIVACY.md) and [SECURITY.md](SECURITY.md) before using the ex
 
 ## Requirements
 
-- Chromium 135 or newer with Chrome Native Messaging and User Scripts support.
+- A Chromium-family browser (Chrome, Edge, Brave, Chromium, and derivatives) with Chrome Native Messaging and User Scripts support.
 - Node.js and npm to build the extension.
-- Python 3 to run the native host and CLI.
-- macOS for the included installer. Other platforms can provide an adapter that preserves the same per-user Native Messaging and least-privilege rules.
+- Python 3.9 or newer to run the native host and CLI.
+- macOS, Linux, or Windows 10 1803+ (the native host uses a per-user AF_UNIX socket; on Windows it registers through HKCU registry keys and mode-bit privacy checks yield to NTFS ACLs).
 
 ## Install from source on macOS
 
@@ -61,6 +61,32 @@ The installed CLI also provides `install`, `status`, `update`, and `uninstall`. 
 
 The generated `.output/` and `chrome-extension/` directories are staging output and are ignored by Git. Source under `extension/` and its lockfile are authoritative.
 
+## Install from source on Linux
+
+The Linux installer registers the per-user native host and CLI for Chrome, Chromium, Brave, and Edge (it does not build the extension — build once with `npm ci && npm run build --prefix extension`):
+
+```sh
+git clone https://github.com/michael-berardi/overseer-browser.git
+cd overseer-browser
+npm ci --prefix extension && npm run build --prefix extension
+./scripts/install-linux.sh
+```
+
+Re-run `./scripts/install-linux.sh` after `git pull --ff-only` to update. Then load the unpacked `chrome-extension/` directory from your browser's extensions page as described above.
+
+## Install from source on Windows
+
+Build the extension first (Node.js required), then run the PowerShell installer, which copies the host and CLI into `%LOCALAPPDATA%\OverSeer\browser`, writes the native-host manifest, and registers it under HKCU for Chrome, Edge, and Brave:
+
+```powershell
+git clone https://github.com/michael-berardi/overseer-browser.git
+cd overseer-browser
+npm ci --prefix extension; npm run build --prefix extension
+powershell -ExecutionPolicy Bypass -File .\scripts\install-windows.ps1
+```
+
+Re-run the installer after `git pull --ff-only` to update. Then load the unpacked `chrome-extension\` directory from `chrome://extensions` (Developer mode → **Load unpacked**).
+
 ## First use
 
 1. Run `overseer-browser health` to check the local runtime, then `overseer-browser status --json` to inspect the extension connection.
@@ -82,15 +108,15 @@ overseer-browser sessions stop
 overseer-browser sessions list
 overseer-browser windows resize <width> <height>
 overseer-browser tabs list
-overseer-browser tabs create [url]
+overseer-browser tabs create [url] [--wait-until load|interactive]
 overseer-browser tabs select <tab-id>
 overseer-browser tabs close <tab-id>
 overseer-browser tabs borrow <tab-id>
 overseer-browser tabs return <tab-id>
-overseer-browser navigate <url>
-overseer-browser back
-overseer-browser forward
-overseer-browser reload
+overseer-browser navigate <url> [--wait-until load|interactive]
+overseer-browser back [--wait-until load|interactive]
+overseer-browser forward [--wait-until load|interactive]
+overseer-browser reload [--wait-until load|interactive]
 overseer-browser snapshot [--max-nodes N]
 overseer-browser observe [--max-nodes N] [--changes]
 overseer-browser wait --ready [--timeout-ms N]
@@ -106,7 +132,7 @@ overseer-browser select <ref> <value>
 overseer-browser press <key> [ref]
 overseer-browser scroll <y> | <x> <y> | <ref> [<x> <y>]
 overseer-browser evaluate <script>
-overseer-browser screenshot [path]
+overseer-browser screenshot [path]            # requires unlimited access (Chrome's <all_urls> capture rule)
 overseer-browser screenshot-element <ref> [path]
 overseer-browser upload <ref> <path> [path...]
 overseer-browser console start|read|stop
@@ -118,6 +144,8 @@ overseer-browser takeover
 overseer-browser takeover resume
 overseer-browser cancel <request-id>
 ```
+
+Structured results are served as UltraCompact packets when stdout is not a terminal (and under `--json`), cutting agent token cost; `uc decode` restores the exact JSON and `--raw-json` always emits it directly. Interactive terminals keep pretty-printed JSON. UltraCompact encoding uses the UltraCompact encoder when available (`UC_BIN`/`UC_LIB` environment overrides, a `uc` binary on `PATH`, or `~/.local/lib/ultracompact/`); without it the CLI emits canonical JSON with a warning, so nothing breaks.
 
 `evaluate` requires an explicit site-access scope and Chrome’s one-time **Allow User Scripts** setting. It runs in the CSP-exempt User Scripts world, so strict websites do not need `unsafe-eval`. Uploads, console capture, Resource Timing metadata, screenshots, and batches are bounded; see [PROTOCOL.md](PROTOCOL.md) for limits and response shapes. Commands return structured errors with stable codes. Unsupported debugger-only capabilities are never silently downgraded.
 

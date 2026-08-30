@@ -85,18 +85,31 @@ describe('isolated automation contracts', () => {
   });
 
   it('returns bounded dialog results instead of leaving click blocked', async () => {
+    // The in-page action merges guard-captured dialogs into its own result
+    // through the shared DOM, so the success path needs no third call.
     const dialog = { type: 'confirm', message: 'Continue?', response: false };
     const executeScript = vi.fn()
       .mockResolvedValueOnce([{ result: true }])
-      .mockResolvedValueOnce([{ result: { ok: true, value: { changed: true } } }])
-      .mockResolvedValueOnce([{ result: [dialog] }]);
+      .mockResolvedValueOnce([{ result: { ok: true, value: { changed: true, dialogs: [dialog] } } }]);
     vi.stubGlobal('chrome', { scripting: { executeScript } });
 
     await expect(runInIsolatedWorld(7, { kind: 'click', ref: 'osr-confirm' })).resolves.toEqual({
       changed: true,
       dialogs: [dialog],
     });
+    expect(executeScript).toHaveBeenCalledTimes(2);
+  });
+
+  it('collects orphaned dialog guards only when the action injection fails', async () => {
+    const executeScript = vi.fn()
+      .mockResolvedValueOnce([{ result: true }])
+      .mockRejectedValueOnce(new Error('The frame was removed.'))
+      .mockResolvedValueOnce([{ result: [] }]);
+    vi.stubGlobal('chrome', { scripting: { executeScript } });
+
+    await expect(runInIsolatedWorld(7, { kind: 'click', ref: 'osr-navigated' })).rejects.toThrow('The frame was removed.');
     expect(executeScript).toHaveBeenCalledTimes(3);
+    expect(executeScript).toHaveBeenNthCalledWith(3, expect.objectContaining({ world: 'MAIN' }));
   });
 
   it('rejects missing isolated-world envelopes instead of reporting false success', async () => {

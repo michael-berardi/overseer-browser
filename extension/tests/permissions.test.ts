@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   ALL_SITE_ORIGINS,
+  ALL_URLS_ORIGIN,
   normalizeSiteAccess,
   getPermissionState,
   isNavigableUrl,
@@ -68,8 +69,21 @@ describe('scoped site access', () => {
     await expect(setAllSiteAccess(false)).resolves.toBe(true);
     expect(request).toHaveBeenNthCalledWith(1, { origins: ['https://example.test/*'] });
     expect(remove).toHaveBeenNthCalledWith(1, { origins: ['https://example.test/*'] });
-    expect(request).toHaveBeenNthCalledWith(2, { origins: [...ALL_SITE_ORIGINS] });
-    expect(remove).toHaveBeenNthCalledWith(2, { origins: [...ALL_SITE_ORIGINS] });
+    // Unlimited access requests '<all_urls>' because Chrome's captureVisibleTab
+    // honors nothing less; removal also covers legacy wildcard grants.
+    expect(request).toHaveBeenNthCalledWith(2, { origins: [ALL_URLS_ORIGIN] });
+    expect(remove).toHaveBeenNthCalledWith(2, { origins: [ALL_URLS_ORIGIN, ...ALL_SITE_ORIGINS] });
+  });
+
+  it('treats a legacy wildcard-pair grant as unlimited access', async () => {
+    const contains = vi.fn(async ({ origins }: { origins: string[] }) => origins[0] !== ALL_URLS_ORIGIN);
+    const local = storageArea({ 'overseer.site.unlimited.v2': true });
+    vi.stubGlobal('browser', { permissions: { contains }, storage: { local } });
+
+    await expect(getPermissionState('https://example.test/path')).resolves.toMatchObject({
+      currentOriginAccess: true,
+      allSiteAccess: true,
+    });
   });
 
   it('revokes inherited all-site access unless unlimited was explicitly enabled', async () => {
@@ -79,6 +93,6 @@ describe('scoped site access', () => {
 
     await normalizeSiteAccess();
     expect(local.remove).toHaveBeenCalledWith('overseer.automation.origins.v1');
-    expect(remove).toHaveBeenCalledWith({ origins: [...ALL_SITE_ORIGINS] });
+    expect(remove).toHaveBeenCalledWith({ origins: [ALL_URLS_ORIGIN, ...ALL_SITE_ORIGINS] });
   });
 });
