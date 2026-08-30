@@ -99,7 +99,6 @@ export async function runInIsolatedWorld(tabId: number, action: AutomationAction
       throw new AutomationError('dialog_guard_failed', 'Browser dialog protection could not be installed in the target tab.');
     }
   }
-  let dialogs: CapturedDialog[] = [];
   let injection: chrome.scripting.InjectionResult<unknown> | undefined;
   try {
     [injection] = await chrome.scripting.executeScript({
@@ -108,29 +107,29 @@ export async function runInIsolatedWorld(tabId: number, action: AutomationAction
       func: isolatedAutomation,
       args: [action, dialogToken ?? null],
     });
-  } finally {
+  } catch (error) {
+    // The action itself reports captured dialogs through the shared DOM on
+    // success. A failed injection can leave orphaned guards behind, so only
+    // then pay for the cross-world collection call.
     if (dialogToken !== undefined) {
       try {
-        const [captured] = await chrome.scripting.executeScript({
+        await chrome.scripting.executeScript({
           target: { tabId },
           world: 'MAIN',
           func: collectDialogGuards,
           args: [dialogToken],
         });
-        if (Array.isArray(captured?.result)) dialogs = captured.result as CapturedDialog[];
       } catch {
-        // The action may have navigated or closed the document after its in-page cleanup signal.
+        // The page may have navigated or closed while the guards were live.
       }
     }
+    throw error;
   }
   const envelope = injection?.result;
   if (!isExecutionEnvelope(envelope)) {
     throw new AutomationError('automation_failed', 'Browser automation failed in the target tab.');
   }
   if (!envelope.ok) throw new AutomationError(envelope.error.code, envelope.error.message, envelope.error.fallback);
-  if (dialogs.length > 0 && envelope.value && typeof envelope.value === 'object' && !Array.isArray(envelope.value)) {
-    return { ...envelope.value as Record<string, unknown>, dialogs };
-  }
   return envelope.value;
 }
 
@@ -448,9 +447,12 @@ async function isolatedAutomation(action: AutomationAction, dialogToken: string 
   const allElements = (): HTMLElement[] => {
     const nodes: HTMLElement[] = [];
     const visit = (root: Document | ShadowRoot): void => {
-      for (const element of Array.from(root.querySelectorAll('*'))) {
-        if (isHtmlElement(element)) nodes.push(element);
-        if (isHtmlElement(element) && element.shadowRoot) visit(element.shadowRoot);
+      const descendants = root.querySelectorAll('*');
+      for (let index = 0; index < descendants.length; index += 1) {
+        const element = descendants[index]!;
+        if (!isHtmlElement(element)) continue;
+        nodes.push(element);
+        if (element.shadowRoot) visit(element.shadowRoot);
         if (tagOf(element) === 'iframe' && visible(element)) {
           try {
             const frameDocument = (element as HTMLIFrameElement).contentDocument;
@@ -512,7 +514,35 @@ async function isolatedAutomation(action: AutomationAction, dialogToken: string 
     element.setAttribute('data-overseer-ref', ref);
     return ref;
   };
+  // Fast path: snapshot-stamped refs resolve through one native query per
+  // document instead of walking every element. Stamped values are
+  // contract-bound to `osr-[a-z0-9]+`, so the attribute selector is safe
+  // without escaping. Shadow-DOM hits and unstamped pages fall through to
+  // the full scan below.
+  const queryStampedRef = (ref: string): HTMLElement | null => {
+    const visit = (root: Document): HTMLElement | null => {
+      const hit = root.querySelector(`[data-overseer-ref="${ref}"]`);
+      if (hit && isHtmlElement(hit)) return hit;
+      const frames = root.querySelectorAll('iframe');
+      for (let index = 0; index < frames.length; index += 1) {
+        try {
+          const frameDocument = (frames[index] as HTMLIFrameElement).contentDocument;
+          if (!frameDocument) continue;
+          const nested = visit(frameDocument);
+          if (nested) return nested;
+        } catch {
+          // Cross-origin frames are intentionally opaque.
+        }
+      }
+      return null;
+    };
+    return visit(document);
+  };
   const findByRef = (ref: string): HTMLElement => {
+    if (/^osr-[a-z0-9]+$/.test(ref)) {
+      const stamped = queryStampedRef(ref);
+      if (stamped) return stamped;
+    }
     const elements = allElements();
     for (const element of elements) {
       if (element.getAttribute('data-overseer-ref') === ref) return element;
@@ -644,6 +674,31 @@ async function isolatedAutomation(action: AutomationAction, dialogToken: string 
     };
     visit(document);
   };
+  // Dialogs captured by the MAIN-world guard arrive through the shared DOM
+  // attribute written by the guard's release handler; reading it here after
+  // the cleanup signal avoids a separate cross-world collection call.
+  const collectFlushedDialogs = (): CapturedDialog[] => {
+    if (dialogToken === null) return [];
+    try {
+      const holder = document.documentElement;
+      if (!holder) return [];
+      const raw = holder.getAttribute('data-overseer-dialogs');
+      if (raw === null) return [];
+      holder.removeAttribute('data-overseer-dialogs');
+      const parsed: unknown = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return [];
+      return parsed.slice(0, 16) as CapturedDialog[];
+    } catch {
+      return [];
+    }
+  };
+  const withFlushedDialogs = (result: ExecutionEnvelope): ExecutionEnvelope => {
+    const flushed = collectFlushedDialogs();
+    if (flushed.length > 0 && result.ok && result.value && typeof result.value === 'object' && !Array.isArray(result.value)) {
+      return { ok: true, value: { ...(result.value as Record<string, unknown>), dialogs: flushed } };
+    }
+    return result;
+  };
   const execute = (): ExecutionEnvelope => {
     try {
       if (action.kind === 'snapshot' || action.kind === 'observe') {
@@ -651,20 +706,63 @@ async function isolatedAutomation(action: AutomationAction, dialogToken: string 
         const actionableTags = ['button', 'input', 'select', 'textarea', 'summary'];
         const actionableRoles = ['button', 'checkbox', 'combobox', 'link', 'menuitem', 'option', 'radio', 'searchbox', 'slider', 'spinbutton', 'switch', 'tab', 'textbox'];
         const semanticTags = ['address', 'article', 'aside', 'details', 'figcaption', 'figure', 'footer', 'form', 'header', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'main', 'nav', 'section', 'table'];
-        type SnapshotCandidate = HTMLElement;
+        type SnapshotCandidate = { element: HTMLElement; tag: string; role?: string; name?: string; href?: string };
         // Priority has only three values; buckets preserve DOM order without sorting every visible node.
         const buckets: [SnapshotCandidate[], SnapshotCandidate[], SnapshotCandidate[]] = [[], [], []];
-        for (const element of allElements()) {
-          if (!visible(element)) continue;
+        // Depth-first walk in document order: shadow roots and same-origin
+        // frame documents are entered at their host's position, matching the
+        // previous flattened querySelectorAll order. A subtree under a
+        // display:none, visibility:hidden, or opacity:0 container cannot
+        // produce a candidate under the snapshot's visibility rules, so the
+        // walk prunes it without computing per-descendant styles or boxes —
+        // large hidden menus and modals cost nothing. Each visible-chain
+        // element pays exactly one computed style and one rect.
+        const stack: { items: HTMLCollection; index: number }[] = [];
+        if (document.childElementCount > 0) stack.push({ items: document.children, index: 0 });
+        while (stack.length > 0) {
+          const frame = stack[stack.length - 1]!;
+          if (frame.index >= frame.items.length) {
+            stack.pop();
+            continue;
+          }
+          const element = frame.items[frame.index]!;
+          frame.index += 1;
+          // Non-HTML subtrees (SVG, MathML, including foreignObject content)
+          // were never snapshot candidates: the previous visibility rule
+          // rejected any element with a non-HTML composed ancestor. Skipping
+          // the whole subtree preserves that exactly and prunes the work.
+          if (!isHtmlElement(element)) continue;
+          const style = elementWindow(element).getComputedStyle(element);
+          if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0) continue;
           const tag = tagOf(element);
-          const role = element.getAttribute('role') ?? undefined;
-          const name = element.getAttribute('aria-label') ?? element.getAttribute('name') ?? undefined;
-          const href = tag === 'a' ? (element as HTMLAnchorElement).href : undefined;
-          const priority: 0 | 1 | 2 = actionableTags.includes(tag) || (tag === 'a' && Boolean(href)) ||
-            (role !== undefined && actionableRoles.includes(role.toLowerCase()))
-            ? 0
-            : (role || name || semanticTags.includes(tag)) ? 1 : 2;
-          buckets[priority].push(element);
+          const rect = element.getBoundingClientRect();
+          const rendered = rect.width > 0 && rect.height > 0;
+          if (rendered) {
+            const role = element.getAttribute('role') ?? undefined;
+            const name = element.getAttribute('aria-label') ?? element.getAttribute('name') ?? undefined;
+            const href = tag === 'a' ? (element as HTMLAnchorElement).href : undefined;
+            const priority: 0 | 1 | 2 = actionableTags.includes(tag) || (tag === 'a' && Boolean(href)) ||
+              (role !== undefined && actionableRoles.includes(role.toLowerCase()))
+              ? 0
+              : (role || name || semanticTags.includes(tag)) ? 1 : 2;
+            buckets[priority].push({ element, tag, ...(role ? { role } : {}), ...(name ? { name } : {}), ...(href ? { href } : {}) });
+          }
+          // Light children are pushed first so shadow and frame contents
+          // (stack is LIFO) are visited at the host's document position.
+          if (element.childElementCount > 0) stack.push({ items: element.children, index: 0 });
+          if (tag === 'iframe' && rendered) {
+            try {
+              const frameDocument = (element as HTMLIFrameElement).contentDocument;
+              if (frameDocument && frameDocument.childElementCount > 0) {
+                stack.push({ items: frameDocument.children, index: 0 });
+              }
+            } catch {
+              // Cross-origin frames are intentionally opaque.
+            }
+          }
+          if (element.shadowRoot && element.shadowRoot.childElementCount > 0) {
+            stack.push({ items: element.shadowRoot.children, index: 0 });
+          }
         }
         const ordered: SnapshotCandidate[] = [];
         for (const bucket of buckets) {
@@ -674,20 +772,16 @@ async function isolatedAutomation(action: AutomationAction, dialogToken: string 
           }
           if (ordered.length >= maxNodes) break;
         }
-        return succeed(ordered.map((element) => {
-          const tag = tagOf(element);
-          const role = element.getAttribute('role') ?? undefined;
-          const name = element.getAttribute('aria-label') ?? element.getAttribute('name') ?? undefined;
-          const href = tag === 'a' ? (element as HTMLAnchorElement).href : undefined;
-          const rawText = element.innerText?.replace(/\s+/g, ' ').trim();
+        return succeed(ordered.map((candidate) => {
+          const rawText = candidate.element.innerText?.replace(/\s+/g, ' ').trim();
           return {
-            ref: refFor(element),
-            tag,
-            ...(role ? { role } : {}),
-            ...(name ? { name: name.slice(0, 300) } : {}),
+            ref: refFor(candidate.element),
+            tag: candidate.tag,
+            ...(candidate.role ? { role: candidate.role } : {}),
+            ...(candidate.name ? { name: candidate.name.slice(0, 300) } : {}),
             ...(rawText ? { text: rawText.slice(0, 500) } : {}),
-            ...((tag === 'button' || tag === 'input') ? { disabled: Boolean((element as HTMLButtonElement).disabled) } : {}),
-            ...(href ? { href: href.slice(0, 1_000) } : {}),
+            ...((candidate.tag === 'button' || candidate.tag === 'input') ? { disabled: Boolean((candidate.element as HTMLButtonElement).disabled) } : {}),
+            ...(candidate.href ? { href: candidate.href.slice(0, 1_000) } : {}),
           } satisfies SnapshotNode;
         }));
       }
@@ -832,7 +926,7 @@ async function isolatedAutomation(action: AutomationAction, dialogToken: string 
       signalDialogCleanup();
     }
   };
-  if (!MUTATION_EVIDENCE_KINDS[action.kind]) return execute();
+  if (!MUTATION_EVIDENCE_KINDS[action.kind]) return withFlushedDialogs(execute());
   let mutations = 0;
   const observer = new MutationObserver((records) => {
     mutations += records.length;
@@ -844,9 +938,9 @@ async function isolatedAutomation(action: AutomationAction, dialogToken: string 
     // Flush one macrotask so microtask-batched framework reactions are counted.
     await new Promise((resolve) => setTimeout(resolve, 0));
     if (result.ok && result.value && typeof result.value === 'object' && !Array.isArray(result.value)) {
-      return { ok: true, value: { ...(result.value as Record<string, unknown>), dom_mutations: Math.min(mutations, MUTATION_EVIDENCE_CAP) } };
+      return withFlushedDialogs({ ok: true, value: { ...(result.value as Record<string, unknown>), dom_mutations: Math.min(mutations, MUTATION_EVIDENCE_CAP) } });
     }
-    return result;
+    return withFlushedDialogs(result);
   } finally {
     observer.disconnect();
   }
@@ -895,6 +989,26 @@ export function installDialogGuards(token: string): boolean {
         };
         const state = {} as DialogState;
         let listening = false;
+        // On the in-page release signal, hand captured dialogs to the
+        // isolated-world action through the shared DOM so collection needs
+        // no extra cross-world script call. Only same-origin frames are
+        // guarded, and same-origin frames can always reach the top document.
+        // The attribute name is a literal because this function is serialized
+        // into the page and cannot close over module scope.
+        const flushDialogs = (): void => {
+          if (dialogs.length === 0) return;
+          try {
+            const holder = (target.top ?? target).document.documentElement;
+            if (!holder) return;
+            const existing = holder.getAttribute('data-overseer-dialogs');
+            const prior: unknown = existing === null ? [] : JSON.parse(existing);
+            const merged = (Array.isArray(prior) ? prior : []).concat(dialogs).slice(0, 16);
+            holder.setAttribute('data-overseer-dialogs', JSON.stringify(merged));
+            dialogs.length = 0;
+          } catch {
+            // A page that locks its root element loses only the dialog report.
+          }
+        };
         const restoreGlobals = (): void => {
           for (const name of ['alert', 'confirm', 'prompt'] as const) {
             try {
@@ -908,7 +1022,10 @@ export function installDialogGuards(token: string): boolean {
             }
           }
         };
-        const release = (): void => restoreGlobals();
+        const release = (): void => {
+          flushDialogs();
+          restoreGlobals();
+        };
         const cleanup = (): void => {
           restoreGlobals();
           if (listening) target.document.removeEventListener(token, release);

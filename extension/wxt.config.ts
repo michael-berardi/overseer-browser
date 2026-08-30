@@ -9,11 +9,14 @@ export default defineConfig({
     name: 'OverSeer Browser',
     short_name: 'OverSeer',
     description: 'Local-first Chromium browser automation.',
-    version: '0.1.5',
+    version: '0.2.0',
     key: publicKey,
     permissions: ['alarms', 'nativeMessaging', 'storage', 'scripting', 'tabs', 'userScripts', 'windows'],
     host_permissions: ['https://meet.google.com/*', 'https://zoom.us/*', 'https://*.zoom.us/*'],
-    optional_host_permissions: ['http://*/*', 'https://*/*'],
+    // '<all_urls>' is the only optional grant Chrome's captureVisibleTab
+    // accepts for screenshots; the wildcard pair remains for scoped
+    // per-origin grants and for legacy unlimited grants issued before 0.2.0.
+    optional_host_permissions: ['<all_urls>', 'http://*/*', 'https://*/*'],
     icons: {
       16: 'icon-16.png',
       32: 'icon-32.png',

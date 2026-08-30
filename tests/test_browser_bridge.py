@@ -449,7 +449,35 @@ class CLIMappingTests(unittest.TestCase):
                 [
                     Path("/Users/test/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.imploselabs.overseer_browser.json"),
                     Path("/Users/test/Library/Application Support/Google/Chrome for Testing/NativeMessagingHosts/com.imploselabs.overseer_browser.json"),
+                    Path("/Users/test/Library/Application Support/Chromium/NativeMessagingHosts/com.imploselabs.overseer_browser.json"),
+                    Path("/Users/test/Library/Application Support/BraveSoftware/Brave-Browser/NativeMessagingHosts/com.imploselabs.overseer_browser.json"),
+                    Path("/Users/test/Library/Application Support/Microsoft Edge/NativeMessagingHosts/com.imploselabs.overseer_browser.json"),
                 ],
+            )
+
+    def test_linux_manifest_discovery_honors_xdg_config_home(self) -> None:
+        with (
+            patch("cli.main.sys.platform", "linux"),
+            patch("cli.main.os.name", "posix"),
+            patch.dict(os.environ, {"XDG_CONFIG_HOME": "/xdg"}, clear=False),
+        ):
+            paths = _manifest_paths()
+        self.assertIn(Path("/xdg/google-chrome/NativeMessagingHosts/com.imploselabs.overseer_browser.json"), paths)
+        self.assertIn(Path("/xdg/chromium/NativeMessagingHosts/com.imploselabs.overseer_browser.json"), paths)
+        self.assertIn(Path("/xdg/BraveSoftware/Brave-Browser/NativeMessagingHosts/com.imploselabs.overseer_browser.json"), paths)
+        self.assertIn(Path("/xdg/microsoft-edge/NativeMessagingHosts/com.imploselabs.overseer_browser.json"), paths)
+
+    def test_windows_manifest_discovery_uses_local_app_data(self) -> None:
+        with (
+            patch("cli.main.sys.platform", "win32"),
+            patch("cli.main.os") as mock_os,
+        ):
+            mock_os.name = "nt"
+            mock_os.environ = {"LOCALAPPDATA": r"C:\Users\test\AppData\Local"}
+            mock_os.path = os.path
+            self.assertEqual(
+                _manifest_paths(),
+                [Path(r"C:\Users\test\AppData\Local") / "OverSeer" / "browser" / "native-host.json"],
             )
 
     def test_status_combines_local_and_extension_readiness(self) -> None:
@@ -523,6 +551,12 @@ class CLIMappingTests(unittest.TestCase):
             _command_request("wait", ["--stable", "10"])
         self.assertEqual(cli_main_module._apply_targeting("observe", {}, 7, 50), {"tab_id": 7, "max_nodes": 50})
         self.assertEqual(cli_main_module._apply_targeting("click", {"ref": "osr-a"}, 3, None), {"ref": "osr-a", "tab_id": 3})
+        self.assertEqual(
+            cli_main_module._apply_targeting("navigate", {"url": "https://example.test"}, None, None, "interactive"),
+            {"url": "https://example.test", "wait_until": "interactive"},
+        )
+        with self.assertRaises(CLIError):
+            cli_main_module._apply_targeting("click", {"ref": "osr-a"}, None, None, "interactive")
         with self.assertRaises(CLIError):
             cli_main_module._apply_targeting("sessions.list", {}, 7, None)
         with self.assertRaises(CLIError):
@@ -538,8 +572,12 @@ class CLIMappingTests(unittest.TestCase):
         with patch("cli.main.request_once", side_effect=fake_request), patch("cli.main._render"):
             self.assertEqual(cli_main(["observe", "--tab-id", "42", "--max-nodes", "25"]), 0)
             self.assertEqual(cli_main(["wait", "--ready", "--tab-id", "42"]), 0)
+            self.assertEqual(cli_main(["navigate", "https://example.test", "--wait-until", "interactive"]), 0)
         self.assertEqual(captured[0], ("observe", {"tab_id": 42, "max_nodes": 25}))
         self.assertEqual(captured[1], ("wait.for", {"ready": True, "tab_id": 42}))
+        self.assertEqual(captured[2], ("navigate", {"url": "https://example.test", "wait_until": "interactive"}))
+        with patch("cli.main._render"):
+            self.assertEqual(cli_main(["navigate", "https://example.test", "--wait-until", "bogus"]), 2)
         with patch("cli.main._render"):
             self.assertEqual(cli_main(["sessions", "list", "--tab-id", "42"]), 1)
 

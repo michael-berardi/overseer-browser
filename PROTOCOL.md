@@ -79,7 +79,7 @@ The required command families are:
 - `sessions.start`, `sessions.stop`, `sessions.list`
 - `windows.resize`
 - `tabs.list`, `tabs.create`, `tabs.select`, `tabs.close`, `tabs.borrow`, `tabs.return`
-- `navigate`, `back`, `forward`, `reload`
+- `navigate`, `back`, `forward`, `reload` — accept `wait_until`: `load` (default; resolves when the tab reports complete) or `interactive` (resolves at DOM readiness of the post-navigation document; the prior document is marker-stamped before the navigation so a stale page can never satisfy the wait, and stamping failure degrades to `load` semantics)
 - `snapshot` / `observe` with stable element references; `observe` can return a bounded per-document delta
 - event-driven bounded `wait.for` conditions
 - `click`, `hover`, `fill`, `type`, `select`, `press`, `scroll`

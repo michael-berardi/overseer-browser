@@ -114,6 +114,8 @@ class NativeHost:
         self._clients_lock = threading.Lock()
 
     def serve(self) -> None:
+        if not hasattr(socket, "AF_UNIX"):
+            raise ValueError("Unix domain sockets are unavailable on this platform (Windows 10 1803+ and Python 3.9+ are required)")
         self.token = ensure_token(self.paths)
         prepare_socket(self.paths)
         server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)

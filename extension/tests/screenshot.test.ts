@@ -66,6 +66,20 @@ describe('screenshot target selection', () => {
   });
 
 
+  it('maps Chrome capture permission rejection to an actionable grant error', async () => {
+    const query = vi.fn(async () => [{ id: 21, windowId: 7, active: true }]);
+    const captureVisibleTab = vi.fn(async () => {
+      throw new Error("Either the '<all_urls>' or 'activeTab' permission is required.");
+    });
+    vi.stubGlobal('browser', { tabs: { query } });
+    vi.stubGlobal('chrome', { tabs: { captureVisibleTab } });
+
+    await expect(captureScreenshot(21, 7)).rejects.toMatchObject({
+      code: 'screenshot_permission_required',
+      fallback: expect.stringContaining('unlimited'),
+    });
+  });
+
   it('rejects element rectangles that do not intersect the viewport', () => {
     expect(() => calculateCrop({ left: 900, top: 0, width: 50, height: 50 }, { width: 800, height: 600 }, 1_600, 1_200))
       .toThrowError(expect.objectContaining({ code: 'screenshot_target_not_visible' }));

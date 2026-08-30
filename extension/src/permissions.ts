@@ -1,4 +1,11 @@
 export const ALL_SITE_ORIGINS = ['http://*/*', 'https://*/*'] as const;
+/**
+ * chrome.tabs.captureVisibleTab only honors '<all_urls>' (or activeTab), not
+ * wildcard per-scheme grants, so unlimited access requests this pattern.
+ * Legacy unlimited installs hold ALL_SITE_ORIGINS instead and keep full
+ * automation access; only screenshots require re-granting unlimited once.
+ */
+export const ALL_URLS_ORIGIN = '<all_urls>';
 const LEGACY_AUTOMATION_ORIGINS_KEY = 'overseer.automation.origins.v1';
 const SITE_ORIGINS_KEY = 'overseer.site.origins.v2';
 const UNLIMITED_SITE_ACCESS_KEY = 'overseer.site.unlimited.v2';
@@ -45,7 +52,7 @@ export interface PermissionState {
 export async function normalizeSiteAccess(): Promise<void> {
   await browser.storage.local.remove(LEGACY_AUTOMATION_ORIGINS_KEY);
   const stored = await storedSiteAccess();
-  if (!stored.unlimited) await browser.permissions.remove({ origins: [...ALL_SITE_ORIGINS] });
+  if (!stored.unlimited) await browser.permissions.remove({ origins: [ALL_URLS_ORIGIN, ...ALL_SITE_ORIGINS] });
   await browser.storage.local.set({ [SITE_ORIGINS_KEY]: stored.origins });
 }
 
@@ -68,14 +75,14 @@ export async function setCurrentOriginAccess(rawUrl: string, enabled: boolean): 
 
 export async function setAllSiteAccess(enabled: boolean): Promise<boolean> {
   if (enabled) {
-    const granted = await browser.permissions.request({ origins: [...ALL_SITE_ORIGINS] });
+    const granted = await browser.permissions.request({ origins: [ALL_URLS_ORIGIN] });
     if (!granted) return false;
     await browser.storage.local.set({ [UNLIMITED_SITE_ACCESS_KEY]: true });
     return true;
   }
   const stored = await storedSiteAccess();
   await browser.storage.local.set({ [UNLIMITED_SITE_ACCESS_KEY]: false });
-  const removed = await browser.permissions.remove({ origins: [...ALL_SITE_ORIGINS] });
+  const removed = await browser.permissions.remove({ origins: [ALL_URLS_ORIGIN, ...ALL_SITE_ORIGINS] });
   return stored.unlimited || removed;
 }
 
@@ -84,7 +91,9 @@ export async function getPermissionState(currentUrl?: string): Promise<Permissio
   let allSiteAccess = false;
   if (stored.unlimited) {
     try {
-      allSiteAccess = await browser.permissions.contains({ origins: [...ALL_SITE_ORIGINS] });
+      allSiteAccess =
+        (await browser.permissions.contains({ origins: [ALL_URLS_ORIGIN] })) ||
+        (await browser.permissions.contains({ origins: [...ALL_SITE_ORIGINS] }));
     } catch {
       // Report unavailable permission state as disabled.
     }
