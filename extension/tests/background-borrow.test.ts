@@ -204,6 +204,18 @@ describe('native tab borrowing approval', () => {
         incomplete_upload_bytes: 0,
       },
     });
+    // Installed broad host permissions do not grant runtime access to borrowed
+    // tabs. Only the session-owned Agent Window bypasses the popup grant.
+    localStore['overseer.site.unlimited.v2'] = false;
+    tabs.get(11)!.url = 'https://agent.example.test/';
+    tabs.set(98, { id: 98, windowId: 20, url: 'https://unowned.example.test/', active: false });
+    await expect(background.dispatch({ version: 1, kind: 'request', request_id: 'agent-without-grant', command: 'console.start', params: { tab_id: 11 } }, { cancelled: false }))
+      .resolves.toMatchObject({ installed: true });
+    await expect(background.dispatch({ version: 1, kind: 'request', request_id: 'borrowed-without-grant', command: 'console.start', params: { tab_id: 99 } }, { cancelled: false }))
+      .rejects.toMatchObject({ code: 'site_access_required' });
+    await expect(background.dispatch({ version: 1, kind: 'request', request_id: 'unowned-without-grant', command: 'console.start', params: { tab_id: 98 } }, { cancelled: false }))
+      .rejects.toMatchObject({ code: 'tab_not_owned' });
+    localStore['overseer.site.unlimited.v2'] = true;
     await expect(background.dispatch({ version: 1, kind: 'request', request_id: 'console-start', command: 'console.start' }, { cancelled: false }))
       .resolves.toMatchObject({ installed: true });
     await expect(background.dispatch({ version: 1, kind: 'request', request_id: 'return', command: 'tabs.return', params: { tab_id: 99 } }, { cancelled: false }))

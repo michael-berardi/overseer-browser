@@ -10,7 +10,7 @@ describe('manifest privacy invariants', () => {
     expect(config).toContain('IDAQAB');
     expect(config).toContain("version: '0.4.0'");
     expect(config).toContain("permissions: ['alarms', 'nativeMessaging', 'storage', 'scripting', 'tabs', 'userScripts', 'windows']");
-    expect(config).toContain("host_permissions: ['https://meet.google.com/*', 'https://zoom.us/*', 'https://*.zoom.us/*']");
+    expect(config).toContain("host_permissions: ['<all_urls>', 'https://meet.google.com/*', 'https://zoom.us/*', 'https://*.zoom.us/*']");
     expect(config).toContain("optional_host_permissions: ['<all_urls>', 'http://*/*', 'https://*/*']");
     expect(config).not.toContain('activeTab');
     expect(config).not.toContain('update_url');

@@ -37,14 +37,14 @@ Telemetry never contains URLs, titles, page data, screenshots, form values, comm
 
 ## Permissions and access boundaries
 
-- **Optional HTTP(S) host access:** site automation is off by default. The popup can grant one current origin or explicitly grant every HTTP(S) origin with **Enable unlimited**. Both grants can be revoked.
-- **User Scripts:** CSP-safe page evaluation uses Chrome’s `userScripts` API only after the user enables Chrome’s one-time **Allow User Scripts** setting and grants a site-access scope in the popup.
+- **HTTP(S) host access:** the installed extension declares broad `<all_urls>` access for the dedicated Agent Window and screenshots. Runtime automation of borrowed operator tabs remains gated by an explicit popup grant for the current origin or every HTTP(S) origin with **Enable unlimited**; those grants can be revoked.
+- **User Scripts:** CSP-safe page evaluation uses Chrome’s `userScripts` API after Chrome’s one-time **Allow User Scripts** setting is enabled. Dedicated Agent Window tabs use the installed host permission; borrowed tabs additionally require a popup site-access grant.
 - **Native Messaging:** connects the extension to the local native host and is not a network permission.
 - **Storage, scripting, tabs, and windows:** support the visible popup, session ownership, content traversal, and browser actions.
 - **No debugger permission:** the extension does not invoke `chrome.debugger` or request debugger access.
-- **Limited required meeting hosts:** the exact supported Meet and Zoom hosts remain available for local reminder detection. No persistent general-site content script is registered.
+- **Meeting detection:** local reminder detection uses the supported Meet and Zoom hosts. No persistent general-site content script is registered; the broader installed permission supports explicit automation.
 
-The manifest must not add history, bookmarks, `webRequest`, `activeTab`, required all-site access, or debugger access. Uninstalling or disabling the extension revokes its browser access.
+The manifest must not add history, bookmarks, `webRequest`, `activeTab`, or debugger access. Its required `<all_urls>` host permission is intentional for the isolated Agent Window and screenshot implementation. Uninstalling or disabling the extension revokes its browser access.
 
 ## Session and tab ownership
 

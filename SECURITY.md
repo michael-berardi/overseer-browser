@@ -21,7 +21,7 @@ Do not include passwords, cookies, meeting URLs, raw meeting IDs, participant da
 A release is not acceptable if it violates any of these:
 
 - no `chrome.debugger` call and no `debugger` permission;
-- no required all-site access; HTTP(S) access is an explicit, revocable current-origin or unlimited popup grant, with no history, bookmarks, `webRequest`, `activeTab`, or debugger permission;
+- no unauthorized operator-tab access; the installed `<all_urls>` permission is limited by the dedicated Agent Window design, while borrowed operator tabs require an explicit, revocable current-origin or unlimited popup grant, with no history, bookmarks, `webRequest`, `activeTab`, or debugger permission;
 - no telemetry before explicit opt-in; opted-in telemetry must use only the release's disclosed schema, fields, and exact allowlisted counters;
 - exact extension identity and native-host `allowed_origins` binding;
 - CLI socket directory mode `0700`, socket/token mode `0600` where supported, and peer-UID validation where supported;

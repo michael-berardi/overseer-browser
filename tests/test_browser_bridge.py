@@ -115,18 +115,14 @@ class RuntimeTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     NativeHost(request_timeout=timeout)
 
-    def test_native_main_tolerates_chrome_parent_window_argument(self) -> None:
-        with patch("native_host.host.NativeHost.serve"):
-            self.assertEqual(
-                native_main(
-                    [
-                        "chrome-extension://iabfdeokmilpklblkgccpjlekchfjcno/",
-                        "--parent-window",
-                        "0",
-                    ]
-                ),
-                0,
-            )
+    def test_native_main_requires_the_dedicated_isolated_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            os.environ,
+            {"OVERSEER_BROWSER_RUNTIME": directory, "OVERSEER_BROWSER_ISOLATED_PROFILE": str(Path(directory) / "profile")},
+        ), patch("native_host.host.NativeHost.serve"):
+            self.assertEqual(native_main(["chrome-extension://iabfdeokmilpklblkgccpjlekchfjcno/", "--parent-window", "0"]), 0)
+            with patch.dict(os.environ, {"OVERSEER_BROWSER_ISOLATED_PROFILE": str(Path(directory) / "ordinary")}, clear=False):
+                self.assertEqual(native_main(["chrome-extension://iabfdeokmilpklblkgccpjlekchfjcno/"]), 1)
 
     def test_native_host_runs_as_installed_script(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -136,7 +132,7 @@ class RuntimeTests(unittest.TestCase):
                     str(Path(__file__).parents[1] / "native_host" / "host.py"),
                     "chrome-extension://iabfdeokmilpklblkgccpjlekchfjcno/",
                 ],
-                env={**os.environ, "OVERSEER_BROWSER_RUNTIME": directory},
+                env={**os.environ, "OVERSEER_BROWSER_RUNTIME": directory, "OVERSEER_BROWSER_ISOLATED_PROFILE": str(Path(directory) / "profile")},
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -502,11 +498,12 @@ class CLIMappingTests(unittest.TestCase):
         }
         with (
             patch("cli.main.local_health", return_value={"ok": True, "socket": {"ok": True}}),
+            patch.dict(os.environ, {"OVERSEER_BROWSER_SESSION": "test-agent"}),
             patch("cli.main.request_once", return_value=extension) as request,
             patch("cli.main._render") as render,
         ):
             self.assertEqual(cli_main(["--json", "status"]), 0)
-        request.assert_called_once_with("health.status", {}, timeout=30.0, request_id=None)
+        request.assert_called_once_with("health.status", {}, timeout=30.0, request_id=None, session_key="test-agent")
         payload = render.call_args.args[0]
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["extension"], {"ok": True, **extension["result"]})
@@ -616,13 +613,14 @@ class CLIMappingTests(unittest.TestCase):
                     _command_request("batch", [source])
 
     def test_main_passes_caller_request_id_to_cancel_request(self) -> None:
-        with patch("cli.main.request_once", return_value={"ok": True, "result": {"cancelled": True}}) as request:
+        with patch.dict(os.environ, {"OVERSEER_BROWSER_SESSION": "test-agent"}), patch("cli.main.request_once", return_value={"ok": True, "result": {"cancelled": True}}) as request:
             self.assertEqual(cli_main(["--json", "--request-id", "cancel-request", "cancel", "known-request"]), 0)
         request.assert_called_once_with(
             "cancel",
             {"request_id": "known-request"},
             timeout=30.0,
             request_id="cancel-request",
+            session_key="test-agent",
         )
     def test_request_once_emits_caller_request_id(self) -> None:
         class FakeSocket:

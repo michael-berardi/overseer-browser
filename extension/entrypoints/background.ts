@@ -1092,7 +1092,7 @@ async function targetTab(params: Record<string, unknown>, state: InflightRequest
   if (tab.windowId !== (await sessions.requireState()).agentWindowId) {
     const permissions = await getPermissionState(tab.url);
     if (!permissions.currentOriginAccess) {
-      throw new DispatchError('site_access_required', 'This site has not been granted to OverSeer Browser.', 'Open the popup and grant the current site or enable unlimited access. [v2]');
+      throw new DispatchError('site_access_required', 'This site has not been granted to OverSeer Browser.', 'Open the popup and grant the current site or enable unlimited access.');
     }
   }
   return tabId;

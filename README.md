@@ -18,7 +18,7 @@ The project is designed for explicit, visible automation:
 
 - Browser control stays on the local machine. The repository does not require a remote browser or control service.
 - A session owns a dedicated Agent Window by default. A normal tab must be explicitly borrowed and is returned when the session ends.
-- HTTP(S) site access is off by default. The popup grants only the current origin or, when the user explicitly chooses it, unlimited HTTP(S) access.
+- The extension declares broad HTTP(S) host permission at installation for its dedicated Agent Window and screenshots; operator-browser tabs remain blocked until the popup explicitly grants the current origin or unlimited HTTP(S) access.
 - The extension does not request `chrome.debugger`, CDP, history, bookmarks, `webRequest`, or `activeTab`. Debugger-only capabilities return structured `unsupported_capability` errors.
 - Page observations, screenshots, uploads, and action results remain local unless the calling client deliberately forwards them under its own privacy policy.
 - Optional anonymous usage sharing is disabled until consent. It is not required for browser control; see [PRIVACY.md](PRIVACY.md) for the data boundary.
@@ -46,8 +46,8 @@ cd overseer-browser
 In Chrome or another Chromium browser, open `chrome://extensions`, enable **Developer mode**, and choose **Load unpacked**. Select the generated `chrome-extension/` directory. The installer writes the matching Native Messaging registration; never weaken `allowed_origins` to work around an extension-ID mismatch.
 For CSP-safe page evaluation, open the extension details and enable Chrome’s
 **Allow User Scripts** setting once. OverSeer Browser still keeps agent access
-off until the popup grants the current site or explicitly enables unlimited
-HTTP(S) access.
+off for operator-browser tabs until the popup grants the current site or explicitly enables unlimited
+HTTP(S) access. The dedicated Agent Window is exempt from this operator gate.
 
 To update an installation, coordinate with other agents, stop only the sessions you own, update the checkout, rebuild, and reload the unpacked extension. Chrome requires the operator to confirm the reload; do not close another agent's windows or weaken browser security. Site grants remain in local storage. Session bindings survive service-worker suspension, but extension reload/browser restart can clear Chrome session storage; start fresh owned sessions after an upgrade rather than silently adopting old windows:
 
@@ -90,7 +90,7 @@ Re-run the installer after `git pull --ff-only` to update. Then load the unpacke
 ## First use
 
 1. Run `overseer-browser health` to check the local runtime, then `overseer-browser status --json` to inspect the extension connection.
-2. Open the popup on the intended page and choose **Allow this site**. For a dedicated agent profile, **Enable unlimited** grants every HTTP(S) origin until disabled.
+2. For borrowed operator tabs, open the popup on the intended page and choose **Allow this site**; **Enable unlimited** grants every HTTP(S) origin until disabled. Dedicated Agent Window tabs use the extension's installed broad host permission and do not require this operator grant.
 3. Start a session with `overseer-browser sessions start`.
 4. Create or select a tab, navigate, observe, and perform actions using the CLI.
 5. To automate a normal browsing tab, open it and choose **Borrow active tab** in the extension popup. Return it explicitly or stop the session before closing the browser.
@@ -160,7 +160,7 @@ overseer-browser select <ref> <value>
 overseer-browser press <key> [ref]
 overseer-browser scroll <y> | <x> <y> | <ref> [<x> <y>]
 overseer-browser evaluate <script>
-overseer-browser screenshot [path]            # requires unlimited access (Chrome's <all_urls> capture rule)
+overseer-browser screenshot [path]            # dedicated Agent Window works without popup grant; borrowed tabs require site access
 overseer-browser screenshot-element <ref> [path]
 overseer-browser upload <ref> <path> [path...]
 overseer-browser console start|read|stop

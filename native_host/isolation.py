@@ -90,7 +90,7 @@ def supervise(root: Path, chrome: str, extension: str) -> None:
     # not the default Chrome for Testing application-support directory.
     host = root.parent / 'overseer-browser-native-host'
     write_manifest(profile / 'NativeMessagingHosts' / 'com.imploselabs.overseer_browser.json', host)
-    running = root / 'supervisor.running' 
+    running = root / 'supervisor.running'
     # Exclusive creation also protects concurrent or abandoned startup attempts.
     fd = os.open(running, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     process = None
