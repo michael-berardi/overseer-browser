@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import base64
 import binascii
+import contextlib
 import hashlib
 import json
 import math
@@ -28,13 +29,14 @@ except ImportError:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from native_host.protocol import MAX_FRAME_BYTES, ProtocolError, encode_frame, read_frame
     from native_host.runtime import RuntimePaths, is_private_file
-CLI_VERSION = "0.3.0"
+CLI_VERSION = "0.4.0"
 MAX_UPLOAD_BYTES = 8 * 1024 * 1024
 MAX_UPLOAD_CHUNKS = 32
 MAX_UPLOAD_FILES = 16
 MAX_BATCH_ACTIONS = 20
 MAX_PARALLEL_BATCH_ACTIONS = 8
-CONNECT_RETRY_DELAYS = (0.0, 0.005, 0.015, 0.03, 0.06)
+# Cover extension reconnect backoff (up to 10 seconds), without replaying requests.
+CONNECT_RETRY_DELAYS = (0.0, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 4.0, 4.0)
 # The extension rejects a serialized forwarded request above 512 KiB. Keep the
 # source bound below that parser limit even after adding the complete envelope.
 MAX_EXTENSION_REQUEST_BYTES = 512 * 1024
@@ -259,7 +261,34 @@ def _parse_batch_payload(source: str) -> dict[str, Any]:
 
 
 
-def request_once(
+def request_once(command: str, params: dict[str, Any], *, timeout: float,
+                 paths: RuntimePaths | None = None, request_id: str | None = None,
+                 session_key: str | None = None) -> dict[str, Any]:
+    if session_key is not None:
+        session_key = checked_session_key(session_key)
+    timeout = _checked_timeout(timeout)
+    # Explicit paths are the internal transport/testing seam, never a CLI option.
+    if paths is not None:
+        return _request_once(command, params, timeout=timeout, paths=paths,
+                             request_id=request_id, session_key=session_key)
+    from native_host.isolation import isolated_paths, lifecycle_lock, ensure_instance, stop_instance
+    isolated = isolated_paths(RuntimePaths.discover())
+    try:
+        with lifecycle_lock(isolated) if command in {"sessions.start", "sessions.stop"} else contextlib.nullcontext():
+            if command == "sessions.start":
+                ensure_instance(isolated, _checked_timeout(timeout))
+            response = _request_once(command, params, timeout=timeout, paths=isolated,
+                                     request_id=request_id, session_key=session_key)
+            if command == "sessions.stop" and response.get("ok") is True:
+                active = _request_once("sessions.list", {}, timeout=timeout, paths=isolated)
+                if active.get("ok") is True and active.get("result") == []:
+                    stop_instance(isolated)
+            return response
+    except (ValueError, OSError) as exc:
+        raise CLIError("isolation_unavailable", str(exc)) from exc
+
+
+def _request_once(
     command: str,
     params: dict[str, Any],
     *,
@@ -280,15 +309,13 @@ def request_once(
         raise CLIError("native_io_error", "native host token could not be read") from exc
     if not token:
         raise CLIError("not_installed", "native host token is empty; run overseer-browser install")
-    if not paths.socket.exists():
-        raise CLIError("host_unavailable", "native host is not running; open the extension or run status")
     request_id = _checked_request_id(request_id) if request_id is not None else f"cli-{uuid.uuid4().hex}"
     request = {"version": 1, "kind": "request", "request_id": request_id, "command": command, "params": params, "token": token}
     if session_key is not None:
         request["session_key"] = session_key
     deadline = time.monotonic() + timeout_value
     connection: socket.socket | None = None
-    last_refused: ConnectionRefusedError | None = None
+    last_refused: OSError | None = None
     try:
         if not hasattr(socket, "AF_UNIX"):
             raise CLIError("unsupported_platform", "Unix domain sockets require Windows 10 1803+ and Python 3.9+")
@@ -302,7 +329,7 @@ def request_once(
             candidate.settimeout(max(0.001, deadline - time.monotonic()))
             try:
                 candidate.connect(str(paths.socket))
-            except ConnectionRefusedError as exc:
+            except (ConnectionRefusedError, FileNotFoundError) as exc:
                 candidate.close()
                 last_refused = exc
                 continue
@@ -324,7 +351,7 @@ def request_once(
                 capability = _validate_response(read_frame(connection, byteorder="big"), probe_id)
                 result = capability.get("result")
                 if capability.get("ok") is not True or not isinstance(result, dict) or result.get("multi_session") is not True or result.get("session_key") != session_key:
-                    raise CLIError("extension_upgrade_required", "Scoped browser control requires the updated native host and OverSeer Browser 0.3.0+ extension; reload the extension before retrying")
+                    raise CLIError("extension_upgrade_required", "Scoped browser control requires the updated native host and OverSeer Browser 0.4.0+ extension; reload the extension before retrying")
             connection.settimeout(max(0.001, deadline - time.monotonic()))
             connection.sendall(encode_frame(request, byteorder="big"))
             response = read_frame(connection, byteorder="big")
@@ -344,7 +371,8 @@ def request_once(
 
 
 def local_health(paths: RuntimePaths | None = None) -> dict[str, Any]:
-    paths = paths or RuntimePaths.discover()
+    from native_host.isolation import isolated_paths
+    paths = paths or isolated_paths(RuntimePaths.discover())
     checks: dict[str, Any] = {
         "runtime_directory": {"path": str(paths.root), "ok": paths.root.is_dir() and _private_dir(paths.root)},
         "token": {"ok": paths.token.is_file() and is_private_file(paths.token)},

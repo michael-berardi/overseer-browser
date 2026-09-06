@@ -54,6 +54,7 @@ except ImportError:
         validate_request,
     )
     from runtime import RuntimePaths, ensure_token, prepare_socket  # type: ignore[no-redef]
+HOST_VERSION = "0.4.0"
 DEFAULT_REQUEST_TIMEOUT = 30.0
 MAX_PENDING = 128
 MAX_CLIENT_REQUEST_IDS = 4_096
@@ -209,7 +210,7 @@ class NativeHost:
             return
         request_id = request["request_id"]
         if "session_key" in request and request["command"] != "health.status" and not self._multi_session:
-            self._send_response(client, request_id, False, error=error("extension_upgrade_required", "Reload OverSeer Browser 0.3.0+ before using scoped browser control"))
+            self._send_response(client, request_id, False, error=error("extension_upgrade_required", "Reload OverSeer Browser 0.4.0+ before using scoped browser control"))
             return
         with self._pending_condition:
             if request_id in self._abandoned_request_ids:
@@ -319,6 +320,7 @@ class NativeHost:
                     {
                         "version": 1,
                         "kind": "handshake_ack",
+                        "host_version": HOST_VERSION,
                         "ok": True,
                         "extension_id": EXTENSION_ID,
                         "capabilities": ["local_control", "meeting_detection", "multi_session"],
@@ -578,6 +580,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         validate_caller_origin(args.origin)
+        expected_profile = str(RuntimePaths.discover().root / "profile")
+        if os.environ.get("OVERSEER_BROWSER_ISOLATED_PROFILE") != expected_profile:
+            raise ValueError("native automation is restricted to the dedicated agent Chrome instance")
         NativeHost(request_timeout=args.timeout).serve()
     except (FileExistsError, PermissionError, ValueError) as exc:
         print(f"overseer-browser native host: {exc}", file=sys.stderr)

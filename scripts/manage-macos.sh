@@ -90,6 +90,7 @@ build_extension() {
 install_host() {
   install -m 600 "$ROOT/native_host/protocol.py" "$HOST_DIR/protocol.py"
   install -m 600 "$ROOT/native_host/runtime.py" "$HOST_DIR/runtime.py"
+  install -m 600 "$ROOT/native_host/isolation.py" "$HOST_DIR/isolation.py"
   install -m 700 "$ROOT/native_host/host.py" "$HOST_DIR/host.py"
   install -m 600 "$ROOT/cli/__init__.py" "$CLI_DIR/__init__.py"
   install -m 600 "$ROOT/cli/main.py" "$CLI_MAIN"
@@ -203,13 +204,9 @@ EOF
 }
 
 reload_chrome() {
-  if command -v open >/dev/null 2>&1; then
-    # Opening this page is the maximum safe automation for unmanaged Chrome.
-    open -a "Google Chrome" "$CHROME_EXTENSIONS_PAGE" >/dev/null 2>&1 || true
-    say "Chrome extensions page opened. Confirm the extension's reload/load action in Chrome; unmanaged Chrome security confirmation cannot be bypassed."
-  else
-    say "Open $CHROME_EXTENSIONS_PAGE and confirm the extension's reload/load action; unmanaged Chrome security confirmation cannot be bypassed."
-  fi
+  say "Daily Chrome was not opened or reloaded. Start a dedicated instance with: overseer-browser sessions start"
+  say "Set OVERSEER_BROWSER_EXTENSION=$EXTENSION_DIR for the installed CLI."
+  say "In dedicated Chrome for Testing only, enable the extension connection, site access and evaluation as needed."
 }
 
 status() {
