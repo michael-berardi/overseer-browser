@@ -5,6 +5,7 @@ import { setAllSiteAccess, setCurrentOriginAccess, type PermissionState } from '
 type ActiveTab = {
   id: number;
   window_id?: number;
+  session_key?: string;
   url?: string;
   title?: string;
   owned: boolean;
@@ -19,7 +20,7 @@ type PopupState = {
   takeover_requested: boolean;
   native_error: { code: string; message: string } | null;
   permissions: PermissionState;
-  sessions: Array<{ sessionId: string; agentWindowId: number; startedAtMs: number }>;
+  sessions: Array<{ sessionId: string; sessionKey?: string; name?: string; agentWindowId: number; startedAtMs: number }>;
   active_tab: ActiveTab | null;
 };
 
@@ -90,6 +91,9 @@ export default function App() {
   const [hydrated, setHydrated] = useState(false);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState('');
+  const [selectedSessionKey, setSelectedSessionKey] = useState('');
+  const chosenSessionKey = state.sessions.some((session) => session.sessionKey === selectedSessionKey)
+    ? selectedSessionKey : state.sessions.length === 1 ? state.sessions[0]?.sessionKey ?? 'default' : '';
 
   const refresh = async (): Promise<boolean> => {
     try {
@@ -199,7 +203,9 @@ export default function App() {
     setBusy(true);
     setNotice('');
     try {
-      const reply = (await browser.runtime.sendMessage({ kind: borrowed ? 'popup_borrow_active' : 'popup_return_active' })) as RuntimeReply;
+      const sessionKey = !borrowed ? state.active_tab?.session_key ?? chosenSessionKey : chosenSessionKey;
+      if (!sessionKey) throw new Error('Choose the intended browser session first.');
+      const reply = (await browser.runtime.sendMessage({ kind: borrowed ? 'popup_borrow_active' : 'popup_return_active', session_key: sessionKey })) as RuntimeReply;
       const failure = runtimeReplyError(reply, 'The active tab could not be updated.');
       if (failure) throw failure;
       await refresh();
@@ -265,7 +271,14 @@ export default function App() {
           <span className={`tag ${activeTab?.borrowed || activeTab?.owned ? 'tag-on' : ''}`}>{activeTab?.borrowed ? 'BORROWED' : activeTab?.owned ? 'SESSION-OWNED' : 'UNCONTROLLED'}</span>
         </div>
         <p className="muted">{activeTab?.url ?? 'Select a browser tab to borrow it for automation.'}</p>
-        <button className="button secondary" type="button" onClick={() => void setActiveBorrowed(!activeTab?.borrowed)} disabled={busy || !activeTab || activeTab.owned}>
+        <label className="muted" htmlFor="session-target">Browser session ({state.sessions.length} active)</label>
+        <select id="session-target" className="button secondary" value={chosenSessionKey} onChange={(event) => setSelectedSessionKey(event.target.value)} disabled={busy || !state.sessions.length}>
+          <option value="">Choose a session</option>
+          {state.sessions.map((session) => (
+            <option key={session.sessionId} value={session.sessionKey ?? 'default'}>{session.name ?? session.sessionKey ?? 'Legacy session'} · window {session.agentWindowId}</option>
+          ))}
+        </select>
+        <button className="button secondary" type="button" onClick={() => void setActiveBorrowed(!activeTab?.borrowed)} disabled={busy || !activeTab || activeTab.owned || (!activeTab.borrowed && !chosenSessionKey)}>
           {activeTab?.borrowed ? 'Return active tab' : 'Borrow active tab'}
         </button>
       </section>

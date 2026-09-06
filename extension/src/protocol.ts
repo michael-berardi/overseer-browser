@@ -23,6 +23,7 @@ export interface NativeRequest {
   version: 1;
   kind: 'request';
   request_id: string;
+  session_key?: string;
   command: string;
   params?: Record<string, unknown>;
 }
@@ -115,9 +116,10 @@ export function parseNativeRequest(value: unknown): { ok: true; request: NativeR
   if (value.version !== PROTOCOL_VERSION || value.kind !== 'request') return invalid('unsupported_version', 'Request protocol version or kind is unsupported.');
   if (typeof value.request_id !== 'string' || value.request_id.length < 1 || value.request_id.length > 128) return invalid('invalid_request_id', 'request_id must be 1–128 characters.');
   if (typeof value.command !== 'string' || value.command.length < 1 || value.command.length > 96) return invalid('invalid_command', 'command must be 1–96 characters.');
+  if (value.session_key !== undefined && (typeof value.session_key !== 'string' || !/^[A-Za-z0-9_.:-]{1,128}$/.test(value.session_key))) return invalid('invalid_session_key', 'session_key must contain 1–128 safe ASCII characters.');
   if (value.params !== undefined && !isPlainObject(value.params)) return invalid('invalid_params', 'params must be an object when supplied.');
   if (serializedFrameBytes(value) > MAX_REQUEST_BYTES) return invalid('request_too_large', 'Request exceeds the bounded native message size.');
-  return { ok: true, request: { version: 1, kind: 'request', request_id: value.request_id, command: value.command, params: value.params as Record<string, unknown> | undefined } };
+  return { ok: true, request: { version: 1, kind: 'request', request_id: value.request_id, ...(value.session_key === undefined ? {} : { session_key: value.session_key as string }), command: value.command, params: value.params as Record<string, unknown> | undefined } };
 }
 
 export function serializedFrameBytes(value: unknown): number {

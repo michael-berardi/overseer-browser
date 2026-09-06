@@ -98,10 +98,14 @@ def validate_request(message: object, token: str | None = None) -> dict[str, Any
         raise ProtocolError("invalid command")
     if not isinstance(params, dict):
         raise ProtocolError("params must be an object")
+    if "session_key" in message and (not isinstance(message["session_key"], str) or not _REQUEST_ID_RE.fullmatch(message["session_key"])):
+        raise ProtocolError("invalid session_key")
     supplied = message.get("token")
     if token is not None and (not isinstance(supplied, str) or not hmac.compare_digest(supplied, token)):
         raise ProtocolError("authentication failed")
     clean = {"version": 1, "kind": "request", "request_id": request_id, "command": command, "params": params}
+    if "session_key" in message:
+        clean["session_key"] = message["session_key"]
     return clean
 
 

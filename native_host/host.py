@@ -74,6 +74,7 @@ class Pending:
     client: Client
     created_at: float
     deadline_at: float
+    session_key: str | None = None
 
 
 class NativeHost:
@@ -106,6 +107,7 @@ class NativeHost:
         self._stop = threading.Event()
         self._native_write_lock = threading.Lock()
         self._pending: dict[str, Pending] = {}
+        self._multi_session = False
         self._abandoned_request_ids: OrderedDict[str, None] = OrderedDict()
         self._pending_lock = threading.Lock()
         self._pending_condition = threading.Condition(self._pending_lock)
@@ -206,6 +208,9 @@ class NativeHost:
             self._send_response(client, request_id, False, error=error(_error_code(str(exc)), str(exc)))
             return
         request_id = request["request_id"]
+        if "session_key" in request and request["command"] != "health.status" and not self._multi_session:
+            self._send_response(client, request_id, False, error=error("extension_upgrade_required", "Reload OverSeer Browser 0.3.0+ before using scoped browser control"))
+            return
         with self._pending_condition:
             if request_id in self._abandoned_request_ids:
                 self._send_response(client, request_id, False, error=error("duplicate_request", "request_id was abandoned on a previous connection"))
@@ -230,6 +235,7 @@ class NativeHost:
                 client,
                 created_at,
                 created_at + self.request_timeout,
+                request.get("session_key"),
             )
             self._ensure_expiry_worker_locked()
             self._pending_condition.notify()
@@ -307,13 +313,15 @@ class NativeHost:
                 continue
             kind = message["kind"]
             if kind in {"handshake", "hello"}:
+                capabilities = message.get("capabilities")
+                self._multi_session = isinstance(capabilities, list) and "multi_session" in capabilities
                 self._write_native_safely(
                     {
                         "version": 1,
                         "kind": "handshake_ack",
                         "ok": True,
                         "extension_id": EXTENSION_ID,
-                        "capabilities": ["local_control", "meeting_detection"],
+                        "capabilities": ["local_control", "meeting_detection", "multi_session"],
                     }
                 )
             elif kind == "response":
@@ -368,7 +376,7 @@ class NativeHost:
         if pending is not None:
             self._send_response(pending.client, request_id, False, error=error("timeout", "request timed out"))
             if not self._stop.is_set():
-                self._cancel_extension_request(request_id)
+                self._cancel_extension_request(request_id, pending.session_key)
 
     def _remember_abandoned_request_id(self, request_id: str) -> None:
         """Retain recent abandoned IDs while deterministically evicting old ones."""
@@ -378,19 +386,19 @@ class NativeHost:
             self._abandoned_request_ids.popitem(last=False)
 
     def _drop_client_pending(self, client: Client) -> None:
-        abandoned: list[str] = []
+        abandoned: list[Pending] = []
         with self._pending_condition:
             stale = [item for item in self._pending.values() if item.client is client]
             for item in stale:
                 self._pending.pop(item.request_id, None)
                 self._remember_abandoned_request_id(item.request_id)
-                abandoned.append(item.request_id)
+                abandoned.append(item)
             self._pending_condition.notify_all()
         if not self._stop.is_set():
-            for request_id in abandoned:
-                self._cancel_extension_request(request_id)
+            for item in abandoned:
+                self._cancel_extension_request(item.request_id, item.session_key)
 
-    def _cancel_extension_request(self, request_id: str) -> None:
+    def _cancel_extension_request(self, request_id: str, session_key: str | None = None) -> None:
         """Best-effort cancellation using a unique internal request ID."""
         cancel_id = f"cancel-{uuid.uuid4().hex}"
         try:
@@ -399,6 +407,7 @@ class NativeHost:
                     "version": 1,
                     "kind": "request",
                     "request_id": cancel_id,
+                    **({"session_key": session_key} if session_key is not None else {}),
                     "command": "cancel",
                     "params": {"request_id": request_id},
                 }

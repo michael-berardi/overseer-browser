@@ -13,7 +13,7 @@ function event() {
 
 function storageArea(store: Record<string, unknown>) {
   return {
-    get: async (keys: string[]) => Object.fromEntries(keys.filter((key) => key in store).map((key) => [key, store[key]])),
+    get: async (keys: string[] | null) => Object.fromEntries((keys ?? Object.keys(store)).filter((key) => key in store).map((key) => [key, store[key]])),
     set: async (values: Record<string, unknown>) => Object.assign(store, values),
     remove: async (key: string) => delete store[key],
   };
@@ -190,8 +190,9 @@ describe('background navigation waits', () => {
     expect(browserStub.runtime.connectNative).not.toHaveBeenCalled();
   });
 
-  it('resumes through the local CLI only after persisted takeover state clears', async () => {
+  it('resumes only its session after persisted takeover state clears', async () => {
     const { background } = await loadBackground();
+    await background.dispatch({ version: 1, kind: 'request', request_id: 'start-pause', command: 'sessions.start' }, { cancelled: false });
 
     await expect(background.dispatch({
       version: 1,
@@ -200,14 +201,14 @@ describe('background navigation waits', () => {
       command: 'takeover.prompt',
     }, { cancelled: false })).resolves.toMatchObject({ requested: true });
 
-    const remove = vi.spyOn(browser.storage.session, 'remove').mockRejectedValueOnce(new Error('storage unavailable'));
+    const persist = vi.spyOn(browser.storage.session, 'set').mockRejectedValueOnce(new Error('storage unavailable'));
     await expect(background.dispatch({
       version: 1,
       kind: 'request',
       request_id: 'failed-resume',
       command: 'takeover.resume',
     }, { cancelled: false })).rejects.toMatchObject({ code: 'takeover_resume_failed' });
-    remove.mockRestore();
+    persist.mockRestore();
 
     await expect(background.dispatch({
       version: 1,
@@ -237,7 +238,8 @@ describe('background request cancellation', () => {
     }, state);
     const timedOut = background.withTimeout(batch, 100, () => { state.cancelled = true; });
 
-    await Promise.resolve();
+    for (let tick = 0; tick < 100 && query.mock.calls.length === 0; tick += 1) await Promise.resolve();
+    expect(query).toHaveBeenCalledTimes(1);
     vi.advanceTimersByTime(100);
     await expect(timedOut).rejects.toMatchObject({ code: 'timeout' });
     releaseFirstAction();

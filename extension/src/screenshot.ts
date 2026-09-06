@@ -4,6 +4,21 @@ import { isBoundedNativeFrame } from './protocol';
 export const MAX_SCREENSHOT_FRAME_BYTES = 850 * 1024;
 const JPEG_QUALITIES = [0.78, 0.62, 0.48, 0.34, 0.24];
 const SCALE_FACTORS = [1, 0.8, 0.64, 0.5, 0.4];
+let captureTail: Promise<unknown> = Promise.resolve();
+let nextCaptureAt = 0;
+
+/** Chrome limits captureVisibleTab per extension, not per Agent Window. */
+function queueCapture<T>(work: () => Promise<T>): Promise<T> {
+  const run = async (): Promise<T> => {
+    const delay = Math.max(0, nextCaptureAt - Date.now());
+    if (delay) await new Promise<void>((resolve) => setTimeout(resolve, delay));
+    nextCaptureAt = Date.now() + 550;
+    return work();
+  };
+  const result = captureTail.then(run, run);
+  captureTail = result.then(() => undefined, () => undefined);
+  return result;
+}
 
 export type ScreenshotFormat = 'jpeg' | 'png';
 
@@ -28,6 +43,7 @@ export async function captureScreenshot(
   windowId: number,
   rect?: RectResult,
   format: ScreenshotFormat = 'jpeg',
+  checkCancelled: () => void = () => undefined,
 ): Promise<ScreenshotResult> {
   if (format !== 'jpeg' && format !== 'png') {
     throw new ScreenshotError('screenshot_format', 'Screenshot format must be jpeg or png.');
@@ -36,7 +52,14 @@ export async function captureScreenshot(
   const captureOptions = format === 'jpeg' ? { format: 'jpeg' as const, quality: 82 } : { format: 'png' as const };
   let dataUrl: string;
   try {
-    dataUrl = await chrome.tabs.captureVisibleTab(windowId, captureOptions);
+    dataUrl = await queueCapture(async () => {
+      checkCancelled();
+      await requireActiveScreenshotTarget(tabId, windowId);
+      const captured = await chrome.tabs.captureVisibleTab(windowId, captureOptions);
+      await requireActiveScreenshotTarget(tabId, windowId);
+      checkCancelled();
+      return captured;
+    });
   } catch (error) {
     // Chrome accepts only '<all_urls>' (or an activeTab gesture) for
     // captureVisibleTab; scoped per-origin and legacy wildcard grants do not
