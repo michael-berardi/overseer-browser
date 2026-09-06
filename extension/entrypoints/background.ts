@@ -1079,13 +1079,21 @@ export async function borrowExistingTab(tabId: number, sessionKey?: string): Pro
 }
 
 async function targetTab(params: Record<string, unknown>, state: InflightRequest): Promise<number> {
-  const tabId = await ownedTab(params, state);
+  const sessions = await sessionRegistry.get(state.sessionKey);
+  const requested = optionalTabId(params);
+  const tabId = requested ?? (await sessions.getSelectedTabId());
+  if (!(await sessions.ownsTab(tabId))) throw new DispatchError('tab_not_owned', 'Target tab is not owned or borrowed by the active session.');
   const tab = await browser.tabs.get(tabId);
   if (params.frame_id !== undefined) throw new DispatchError('unsupported_frame', 'Only the top frame is supported by this extension.', 'Use a top-frame ref or a browser fallback for nested frames.');
   if (!tab.url || !isNavigableUrl(tab.url)) throw new DispatchError('unsupported_page', 'This page cannot receive isolated automation.', 'Navigate to an http or https page.');
-  const permissions = await getPermissionState(tab.url);
-  if (!permissions.currentOriginAccess) {
-    throw new DispatchError('site_access_required', 'This site has not been granted to OverSeer Browser.', 'Open the popup and grant the current site or enable unlimited access.');
+  // Tabs inside the session's own agent window (the dedicated isolated browser)
+  // are agent-sovereign: no operator site-access grant is required. Only
+  // borrowed tabs from the operator's browser pass through the consent gate.
+  if (tab.windowId !== (await sessions.requireState()).agentWindowId) {
+    const permissions = await getPermissionState(tab.url);
+    if (!permissions.currentOriginAccess) {
+      throw new DispatchError('site_access_required', 'This site has not been granted to OverSeer Browser.', 'Open the popup and grant the current site or enable unlimited access. [v2]');
+    }
   }
   return tabId;
 }

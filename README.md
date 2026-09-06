@@ -212,3 +212,29 @@ Load the generated development directory with **Load unpacked**. Do not commit g
 ## License
 
 This repository is released under the [MIT License](LICENSE).
+### Dedicated agent Chrome (0.4.0)
+
+CLI automation no longer connects to the daily-browser runtime. `sessions start`
+launches Chrome for Testing directly with a private `agent-v1/profile` user-data-dir
+under the OverSeer runtime, loads the built extension, and waits for its native
+connection. Native hosts without the inherited isolated-profile marker reject
+connections before opening a control socket. No personal Chrome windows/tabs are
+queried, focused, navigated, or closed; install/update no longer opens daily Chrome.
+
+Run `scripts/update-macos.sh` to build/stage the extension and update the native
+host, then `overseer-browser sessions start`. If CfT is not in `/Applications`, set
+`OVERSEER_BROWSER_CHROME` to its executable. The installed CLI discovers the staged
+extension via its source-root file; `OVERSEER_BROWSER_EXTENSION` can override it.
+In **the dedicated CfT instance only**, enable the extension's native connection,
+site access, and evaluation capability in the popup (Chrome's extension/user-script
+approval may also be required). Retry session start after first-use approval.
+Existing personal-profile permissions are deliberately not copied.
+
+Session keys and response payloads are unchanged. Multiple sessions share only the
+agent instance; stopping the last session terminates that owned child process.
+A supervisor holds its process handle; it never searches for Chrome processes or
+signals a PID discovered from disk. Launch failures leave the dedicated instance
+available for first-use approval. On supervisor crash, `agent-v1/supervisor.running`
+may need manual recovery after confirming the dedicated instance has exited;
+automatic PID-based recovery is intentionally avoided. Lifecycle currently supports
+macOS/Linux, not Windows. Linux requires CfT and its native manifest configured.
