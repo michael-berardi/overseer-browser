@@ -23,6 +23,7 @@ Every CLI request has this shape:
   "kind": "request",
   "request_id": "req_01J...",
   "command": "tabs.list",
+  "session_key": "agent-a",
   "params": {},
   "token": "<random local token>"
 }
@@ -34,7 +35,8 @@ Fields:
 - `kind` is exactly `request`.
 - `request_id` is a client-generated ID unique for the connection and echoed in the response.
 - `command` is a documented command string.
-- `params` is a command-specific JSON object.
+- `session_key` is optional, matching `^[A-Za-z0-9_.:-]{1,128}$`. It routes the **entire request**, including batches and cancellation, to one isolated session context. Omission means the legacy `default` context; it never selects a different active agent. This is a routing key, not an authentication credential. Same-user clients can deliberately address any key.
+- `params` is a command-specific JSON object. Batch actions cannot override the envelope session key.
 - `token` authenticates the CLI to the native host. It is stripped before forwarding and is never treated as browser content.
 
 ## Extension response
@@ -92,7 +94,7 @@ The required command families are:
 - `help` and `cancel`
 - `capture.start`, `capture.stop`
 
-Commands operate on the active session/tab or IDs supplied in `params`. Automation code is injected only into session-owned or explicitly borrowed tabs whose current HTTP(S) origin has been granted, or while unlimited HTTP(S) access is enabled. Traversal covers the top document, open shadow roots, and visible same-origin nested frames; cross-origin frame DOM remains opaque. There is no passive general-browsing collection.
+Commands operate on the request's session and its selected tab, or a tab ID supplied in `params` and verified against that session. `sessions.start` is idempotent within a key, with up to 32 concurrent session windows. `sessions.list` and health expose all session summaries with `sessionKey`; page data and tab operations remain scoped. Named scopes persist separately across service-worker restarts, with legacy session state retained in the default scope. Missing scopes fail closed. Distinct keys cannot select, close, automate, or borrow each other's tabs; popup borrowing requires an explicit session selection when ambiguous. Automation code is injected only into session-owned or explicitly borrowed tabs whose current HTTP(S) origin has been granted, or while unlimited HTTP(S) access is enabled. Traversal covers the top document, open shadow roots, and visible same-origin nested frames; cross-origin frame DOM remains opaque. There is no passive general-browsing collection.
 
 A session owns a dedicated Agent Window by default. A normal tab is read-only until `tabs.borrow` succeeds. `tabs.return` restores ownership, and stopping a session returns borrowed tabs before releasing session state.
 
@@ -104,11 +106,15 @@ A session owns a dedicated Agent Window by default. A normal tab is read-only un
 
 `observe` with `changes: true` returns `{ changes, baseline, added, changed, removed, unchanged, total_nodes }` relative to the same tab and document. Node identity is the stable `osr-*` reference. State is bounded and dropped on navigation, tab removal/return, session stop, and disconnect.
 
-Uploads accept 1–16 files, 8 MiB aggregate, and at most 32 chunks of 256 KiB. The extension retains at most eight incomplete transactions and 32 MiB of incomplete bytes, expires abandoned transactions after 60 seconds, and clears retained data on disconnect or session stop. Local filesystem paths and the token never enter extension payloads.
+Uploads accept 1–16 files, 8 MiB aggregate, and at most 32 chunks of 256 KiB. The extension retains at most eight incomplete transactions and 32 MiB of incomplete bytes, expires abandoned transactions after 60 seconds, and clears retained data on disconnect or for the stopped session's tabs. Upload IDs are namespaced by session; another session cannot overwrite or erase an identically named upload transaction. Local filesystem paths and the token never enter extension payloads.
 
 Batches are sequential unless `stop_on_error: false` and `max_parallel` is between 2 and 8. Parallel mode accepts only read-only actions with distinct explicit tab IDs. The extension validates the complete batch before execution, preserves result order, and rejects mutation or same-tab parallelism.
 
-Across concurrent CLI clients, page mutations are serialized per tab. A queued mutation that outlives its deadline or cancellation never executes. Reads, waits, and mutations on distinct tabs may run concurrently.
+Across concurrent CLI clients, page mutations are serialized per tab. A queued mutation that outlives its deadline or cancellation never executes. Reads, waits, and mutations on distinct tabs may run concurrently. Request cancellation, session stop, CLI takeover, and cleanup are scoped; stopping one agent does not reset another agent's observe baselines or console capture. An operator-wide popup takeover pauses all agents and cannot be cleared by a scoped CLI resume. Meeting capture controls are operator-wide and restricted to the explicit default scope.
+
+Chrome's visible-tab screenshot API has an extension-wide rate limit. Captures queue at least 550 ms apart, preserve the target window, and recheck tab selection and request cancellation before capture. Other commands do not share this capture queue.
+
+Multi-session extensions advertise `multi_session` in the native handshake and return `multi_session: true` plus the echoed `session_key` in health status. A new host rejects scoped commands against an older extension. The CLI also verifies capability and scope echo on the same socket before sending scoped actions, preventing an older host from silently dropping the key. Host-generated timeout/disconnect cancellation retains the originating session key. Request IDs remain globally unique while pending; the CLI generates UUID-based IDs automatically.
 
 ## Unsupported capabilities
 

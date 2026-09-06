@@ -49,7 +49,7 @@ For CSP-safe page evaluation, open the extension details and enable Chrome’s
 off until the popup grants the current site or explicitly enables unlimited
 HTTP(S) access.
 
-To update an installation, stop active sessions, update the checkout, rebuild, and reload the unpacked extension:
+To update an installation, coordinate with other agents, stop only the sessions you own, update the checkout, rebuild, and reload the unpacked extension. Chrome requires the operator to confirm the reload; do not close another agent's windows or weaken browser security. Site grants remain in local storage. Session bindings survive service-worker suspension, but extension reload/browser restart can clear Chrome session storage; start fresh owned sessions after an upgrade rather than silently adopting old windows:
 
 ```sh
 git pull --ff-only
@@ -96,13 +96,41 @@ Re-run the installer after `git pull --ff-only` to update. Then load the unpacke
 5. To automate a normal browsing tab, open it and choose **Borrow active tab** in the extension popup. Return it explicitly or stop the session before closing the browser.
 6. End work with `overseer-browser sessions stop`. Confirm that borrowed tabs were returned.
 
+## Parallel agents (0.3.0)
+
+Each session key owns a separate Agent Window, selected tab, borrowed-tab claims, pause state, uploads, and cleanup. Up to 32 sessions may run at once. Commands never fall back to another active agent's session. Session keys are routing identifiers inside the same authenticated OS-user trust domain, **not credentials or hostile-process isolation**; windows still share the browser profile's cookies and site permissions.
+
+Use a unique key per agent or independent delegated task:
+
+```sh
+# Agent A
+export OVERSEER_BROWSER_SESSION=agent-a
+overseer-browser sessions start research
+overseer-browser tabs create https://example.com
+
+# Agent B, concurrently in another agent's environment
+export OVERSEER_BROWSER_SESSION=agent-b
+overseer-browser sessions start qa
+overseer-browser tabs create https://example.org
+
+# Explicit flags override the environment; stop only your own session.
+overseer-browser --session agent-a sessions stop
+```
+
+`--session KEY` overrides `OVERSEER_BROWSER_SESSION`. Otherwise the CLI derives an opaque stable key from an available agent-session identity (`PI_SESSION_ID`, `CODEX_THREAD_ID`, or `CLAUDE_SESSION_ID`; combined UltraTerm tmux-session/slot identity is a fallback). Delegates inheriting the parent's environment **must supply their own explicit key**. Clients without an identity use the isolated legacy `default` scope, not an inferred active session. Generic protocol clients must provide `session_key` themselves.
+
+`sessions list` and `status` show all session summaries, including `sessionKey`; tab lists and actions remain scoped. The popup requires an explicit recipient when borrowing a normal tab with multiple sessions active. One tab cannot be borrowed by two sessions. CLI takeover pauses/resumes only its own session; the popup's operator-wide pause remains authoritative. Meeting capture controls remain operator-wide and require explicit `--session default` when automatic agent scoping is active.
+
+The CLI and host fail closed against older extensions: upgrade both parts and confirm `status --raw-json` reports extension `0.3.0` or newer and `multi_session: true` before concurrent work. `overseer-browser --version` reports the installed CLI version. Screenshots are paced to Chrome's extension-wide capture limit; other agents' page operations remain concurrent.
+
 ## CLI surface
 
 From a checkout, use `./cli/overseer-browser ...`; the examples below use an installed `overseer-browser` on `PATH`.
 
 ```sh
-overseer-browser health
-overseer-browser status [--json]
+overseer-browser --version
+overseer-browser [--session KEY] health
+overseer-browser [--session KEY] status [--json]
 overseer-browser sessions start [name]
 overseer-browser sessions stop
 overseer-browser sessions list

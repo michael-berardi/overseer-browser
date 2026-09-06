@@ -8,7 +8,7 @@ describe('manifest privacy invariants', () => {
     expect(config).toContain('key: publicKey');
     expect(config).toContain('MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8A');
     expect(config).toContain('IDAQAB');
-    expect(config).toContain("version: '0.2.0'");
+    expect(config).toContain("version: '0.3.0'");
     expect(config).toContain("permissions: ['alarms', 'nativeMessaging', 'storage', 'scripting', 'tabs', 'userScripts', 'windows']");
     expect(config).toContain("host_permissions: ['https://meet.google.com/*', 'https://zoom.us/*', 'https://*.zoom.us/*']");
     expect(config).toContain("optional_host_permissions: ['<all_urls>', 'http://*/*', 'https://*/*']");

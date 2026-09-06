@@ -1,14 +1,17 @@
 import { isNavigableUrl } from './permissions';
 
-const SESSION_STORAGE_KEY = 'overseer.session.v1';
+export const SESSION_STORAGE_KEY = 'overseer.session.v1';
+export const SESSION_STORAGE_PREFIX = 'overseer.session.v2.';
 
 export interface SessionState {
   sessionId: string;
+  sessionKey?: string;
   agentWindowId: number;
   ownedTabIds: number[];
   borrowedTabIds: number[];
   name?: string;
   selectedTabId?: number;
+  paused?: boolean;
   startedAtMs: number;
 }
 
@@ -24,7 +27,15 @@ export class SessionManager {
   private lifecycle: Promise<void> = Promise.resolve();
   private refreshPromise: Promise<Browser.tabs.Tab[]> | null = null;
 
-  constructor(private readonly releaseHook?: SessionReleaseHook) {}
+  private readonly storageKey: string;
+
+  constructor(
+    private readonly releaseHook?: SessionReleaseHook,
+    readonly sessionKey = 'default',
+    private readonly assertTabAvailable?: (tabId: number) => Promise<void>,
+  ) {
+    this.storageKey = sessionKey === 'default' ? SESSION_STORAGE_KEY : `${SESSION_STORAGE_PREFIX}${sessionKey}`;
+  }
 
   private load(): Promise<void> {
     this.loadPromise ??= this.loadStoredState();
@@ -32,14 +43,14 @@ export class SessionManager {
   }
 
   private async loadStoredState(): Promise<void> {
-    const stored = (await browser.storage.session.get([SESSION_STORAGE_KEY]))[SESSION_STORAGE_KEY];
+    const stored = (await browser.storage.session.get([this.storageKey]))[this.storageKey];
     if (!isSessionState(stored)) return;
     try {
       await browser.windows.get(stored.agentWindowId);
-      this.state = stored;
+      this.state = { ...stored, sessionKey: this.sessionKey };
       await this.refreshAgentTabs();
     } catch {
-      await browser.storage.session.remove(SESSION_STORAGE_KEY);
+      await browser.storage.session.remove(this.storageKey);
     }
   }
 
@@ -62,8 +73,8 @@ export class SessionManager {
   }
 
   private async persist(): Promise<void> {
-    if (this.state) await browser.storage.session.set({ [SESSION_STORAGE_KEY]: this.state });
-    else await browser.storage.session.remove(SESSION_STORAGE_KEY);
+    if (this.state) await browser.storage.session.set({ [this.storageKey]: this.state });
+    else await browser.storage.session.remove(this.storageKey);
   }
   private async releaseTabBestEffort(tabId: number): Promise<void> {
     if (!this.releaseHook) return;
@@ -127,6 +138,7 @@ export class SessionManager {
       const tabIds = (agentWindow.tabs ?? []).map((tab) => tab.id).filter((id): id is number => id !== undefined);
       this.state = {
         sessionId: crypto.randomUUID(),
+        sessionKey: this.sessionKey,
         ...(requestedName === undefined ? {} : { name: requestedName }),
         agentWindowId: agentWindow.id,
         ownedTabIds: tabIds,
@@ -144,7 +156,7 @@ export class SessionManager {
       await this.load();
       if (!this.state) return { stopped: false, returnedTabIds: [] };
       const previous = this.state;
-      for (const tabId of previous.borrowedTabIds) await this.releaseTabBestEffort(tabId);
+      for (const tabId of new Set([...previous.ownedTabIds, ...previous.borrowedTabIds])) await this.releaseTabBestEffort(tabId);
       this.state = null;
       await this.persist();
       try {
@@ -153,6 +165,20 @@ export class SessionManager {
         // The operator may have already closed the dedicated window.
       }
       return { stopped: true, returnedTabIds: previous.borrowedTabIds };
+    });
+  }
+
+  async setPaused(paused: boolean): Promise<void> {
+    return this.serializeLifecycle(async () => {
+      const state = await this.requireState();
+      const previous = state.paused;
+      state.paused = paused;
+      try {
+        await this.persist();
+      } catch (error) {
+        state.paused = paused || previous;
+        throw error;
+      }
     });
   }
 
@@ -259,6 +285,7 @@ export class SessionManager {
   async borrowTab(tabId: number): Promise<Browser.tabs.Tab> {
     return this.serializeLifecycle(async () => {
       const state = await this.requireState();
+      await this.assertTabAvailable?.(tabId);
       const tab = await browser.tabs.get(tabId);
       if (tab.windowId === state.agentWindowId || state.ownedTabIds.includes(tabId) || state.borrowedTabIds.includes(tabId)) {
         if (tab.windowId === state.agentWindowId && !state.ownedTabIds.includes(tabId)) state.ownedTabIds.push(tabId);
@@ -305,6 +332,7 @@ export class SessionManager {
 
   async ownsTab(tabId: number): Promise<boolean> {
     const state = await this.requireState();
+    await this.assertTabAvailable?.(tabId);
     let tab: Browser.tabs.Tab;
     try {
       tab = await browser.tabs.get(tabId);
@@ -378,5 +406,6 @@ function isSessionState(value: unknown): value is SessionState {
     Number.isInteger(candidate.agentWindowId) &&
     Array.isArray(candidate.ownedTabIds) && candidate.ownedTabIds.every((id) => Number.isInteger(id)) &&
     Array.isArray(candidate.borrowedTabIds) && candidate.borrowedTabIds.every((id) => Number.isInteger(id)) &&
-    (candidate.selectedTabId === undefined || Number.isInteger(candidate.selectedTabId)) && Number.isFinite(candidate.startedAtMs);
+    (candidate.selectedTabId === undefined || Number.isInteger(candidate.selectedTabId)) &&
+    (candidate.paused === undefined || typeof candidate.paused === 'boolean') && Number.isFinite(candidate.startedAtMs);
 }

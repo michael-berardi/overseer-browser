@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import base64
 import binascii
+import hashlib
 import json
 import math
 import mimetypes
@@ -27,6 +28,7 @@ except ImportError:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from native_host.protocol import MAX_FRAME_BYTES, ProtocolError, encode_frame, read_frame
     from native_host.runtime import RuntimePaths, is_private_file
+CLI_VERSION = "0.3.0"
 MAX_UPLOAD_BYTES = 8 * 1024 * 1024
 MAX_UPLOAD_CHUNKS = 32
 MAX_UPLOAD_FILES = 16
@@ -42,6 +44,7 @@ _EMPTY_BATCH_REQUEST = {
     "kind": "request",
     "request_id": _MAX_REQUEST_ID_FOR_BOUND,
     "command": "batch",
+    "session_key": "s" * 128,
     "params": {},
 }
 _BATCH_REQUEST_OVERHEAD = len(
@@ -59,7 +62,7 @@ _SCREENSHOT_MAGIC = {
 
 REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
 CLI_COMMANDS = (
-    "health", "status", "install", "update", "uninstall", "help", "sessions", "windows", "tabs",
+    "health", "status", "version", "install", "update", "uninstall", "help", "sessions", "windows", "tabs",
     "open", "close", "navigate", "back", "forward", "reload", "snapshot", "observe", "click", "hover", "fill", "type", "select", "press",
     "scroll", "evaluate", "eval", "console", "network", "batch", "capture", "screenshot",
     "screenshot-element", "element-screenshot", "upload", "takeover", "cancel", "wait",
@@ -139,6 +142,27 @@ class CLIError(RuntimeError):
         super().__init__(message)
         self.code = code
         self.message = message
+def checked_session_key(value: str) -> str:
+    if not isinstance(value, str) or not REQUEST_ID_RE.fullmatch(value):
+        raise CLIError("usage", "session keys must be 1-128 ASCII letters, digits, dots, colons, underscores or hyphens")
+    return value
+
+
+def resolve_session_key(explicit: str | None = None, environ: dict[str, str] | None = None) -> str | None:
+    env = os.environ if environ is None else environ
+    if explicit is not None:
+        return checked_session_key(explicit)
+    if "OVERSEER_BROWSER_SESSION" in env:
+        return checked_session_key(env["OVERSEER_BROWSER_SESSION"])
+    for name in ("PI_SESSION_ID", "CODEX_THREAD_ID", "CLAUDE_SESSION_ID"):
+        if env.get(name):
+            return "agent-" + hashlib.sha256(f"{name}:{env[name]}".encode()).hexdigest()[:32]
+    if env.get("ULTRATERM_TMUX_SESSION") and env.get("ULTRATERM_SLOT"):
+        identity = json.dumps([env["ULTRATERM_TMUX_SESSION"], env["ULTRATERM_SLOT"]])
+        return "agent-" + hashlib.sha256(identity.encode()).hexdigest()[:32]
+    return None
+
+
 def _checked_timeout(timeout: float) -> float:
     if isinstance(timeout, bool):
         raise CLIError("usage", "timeout must be a finite positive number")
@@ -185,6 +209,7 @@ def _serialized_batch_request_bytes(payload: dict[str, Any]) -> int:
         "kind": "request",
         "request_id": _MAX_REQUEST_ID_FOR_BOUND,
         "command": "batch",
+        "session_key": "s" * 128,
         "params": payload,
     }
     return len(json.dumps(request, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
@@ -241,7 +266,10 @@ def request_once(
     timeout: float,
     paths: RuntimePaths | None = None,
     request_id: str | None = None,
+    session_key: str | None = None,
 ) -> dict[str, Any]:
+    if session_key is not None:
+        session_key = checked_session_key(session_key)
     timeout_value = _checked_timeout(timeout)
     paths = paths or RuntimePaths.discover()
     if not paths.token.exists() or not is_private_file(paths.token):
@@ -256,6 +284,8 @@ def request_once(
         raise CLIError("host_unavailable", "native host is not running; open the extension or run status")
     request_id = _checked_request_id(request_id) if request_id is not None else f"cli-{uuid.uuid4().hex}"
     request = {"version": 1, "kind": "request", "request_id": request_id, "command": command, "params": params, "token": token}
+    if session_key is not None:
+        request["session_key"] = session_key
     deadline = time.monotonic() + timeout_value
     connection: socket.socket | None = None
     last_refused: ConnectionRefusedError | None = None
@@ -284,6 +314,17 @@ def request_once(
         if connection is None:
             raise last_refused or ConnectionRefusedError("native host is not accepting connections")
         with connection:
+            if session_key is not None and command != "health.status":
+                # Probe on THIS connection. Old hosts/extensions silently drop
+                # unknown envelope fields: never let them route a scoped mutation.
+                probe_id = f"scope-{uuid.uuid4().hex}"
+                probe = {**request, "request_id": probe_id, "command": "health.status", "params": {"capabilities_only": True}}
+                connection.settimeout(max(0.001, deadline - time.monotonic()))
+                connection.sendall(encode_frame(probe, byteorder="big"))
+                capability = _validate_response(read_frame(connection, byteorder="big"), probe_id)
+                result = capability.get("result")
+                if capability.get("ok") is not True or not isinstance(result, dict) or result.get("multi_session") is not True or result.get("session_key") != session_key:
+                    raise CLIError("extension_upgrade_required", "Scoped browser control requires the updated native host and OverSeer Browser 0.3.0+ extension; reload the extension before retrying")
             connection.settimeout(max(0.001, deadline - time.monotonic()))
             connection.sendall(encode_frame(request, byteorder="big"))
             response = read_frame(connection, byteorder="big")
@@ -882,6 +923,24 @@ def main(argv: list[str] | None = None) -> int:
     raw_json = "--raw-json" in raw
     json_output = "--json" in raw or raw_json
     raw = [arg for arg in raw if arg not in ("--json", "--raw-json")]
+    if raw in (["--version"], ["version"]):
+        _render({"ok": True, "result": {"cli_version": CLI_VERSION}}, json_output, raw_json)
+        return 0
+    explicit_session: str | None = None
+    try:
+        if "--session" in raw:
+            if raw.count("--session") != 1:
+                raise CLIError("usage", "--session must be supplied only once")
+            index = raw.index("--session")
+            if index + 1 >= len(raw):
+                raise CLIError("usage", "--session requires a key")
+            explicit_session = checked_session_key(raw[index + 1])
+            del raw[index:index + 2]
+        session_key = resolve_session_key(explicit_session)
+    except CLIError as exc:
+        _render({"ok": False, "error": {"code": exc.code, "message": exc.message}}, json_output, raw_json)
+        return 2
+    request_options = {"session_key": session_key} if session_key is not None else {}
     timeout = 30.0
     if "--timeout" in raw:
         index = raw.index("--timeout")
@@ -964,7 +1023,7 @@ def main(argv: list[str] | None = None) -> int:
             payload["mode"] = "local-native"
             if payload.get("ok"):
                 try:
-                    extension_response = request_once("health.status", {}, timeout=timeout, request_id=request_id)
+                    extension_response = request_once("health.status", {}, timeout=timeout, request_id=request_id, **request_options)
                 except CLIError as exc:
                     payload["ok"] = False
                     payload["extension"] = {"ok": False, "error": {"code": exc.code, "message": exc.message}}
@@ -990,7 +1049,7 @@ def main(argv: list[str] | None = None) -> int:
             for chunk in iter_upload_file_chunks(paths, ref):
                 if tab_id is not None:
                     chunk["tab_id"] = tab_id
-                payload = request_once("upload", chunk, timeout=timeout, request_id=request_id)
+                payload = request_once("upload", chunk, timeout=timeout, request_id=request_id, **request_options)
                 if not payload.get("ok"):
                     break
             if payload is None:
@@ -1007,7 +1066,7 @@ def main(argv: list[str] | None = None) -> int:
             if output_path is not None:
                 params["format"] = _screenshot_output_format(output_path)
             params = _apply_targeting(extension_command, params, tab_id, max_nodes, wait_until)
-            payload = request_once(extension_command, params, timeout=timeout, request_id=request_id)
+            payload = request_once(extension_command, params, timeout=timeout, request_id=request_id, **request_options)
             payload = _materialize_screenshot(payload, output_path)
         elif command == "help":
             _exact(args, 0, "help")
@@ -1020,7 +1079,7 @@ def main(argv: list[str] | None = None) -> int:
         else:
             extension_command, params = _command_request(command, args)
             params = _apply_targeting(extension_command, params, tab_id, max_nodes, wait_until)
-            payload = request_once(extension_command, params, timeout=timeout, request_id=request_id)
+            payload = request_once(extension_command, params, timeout=timeout, request_id=request_id, **request_options)
     except CLIError as exc:
         payload = {"ok": False, "error": {"code": exc.code, "message": exc.message}}
     except ProtocolError as exc:

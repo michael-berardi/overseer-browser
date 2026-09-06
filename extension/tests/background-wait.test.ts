@@ -13,7 +13,7 @@ function event() {
 
 function storageArea(store: Record<string, unknown>) {
   return {
-    get: async (keys: string[]) => Object.fromEntries(keys.filter((key) => key in store).map((key) => [key, store[key]])),
+    get: async (keys: string[] | null) => Object.fromEntries((keys ?? Object.keys(store)).filter((key) => key in store).map((key) => [key, store[key]])),
     set: async (values: Record<string, unknown>) => Object.assign(store, values),
     remove: async (key: string) => delete store[key],
   };

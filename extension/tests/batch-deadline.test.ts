@@ -13,7 +13,7 @@ function event() {
 
 function storageArea(store: Record<string, unknown>) {
   return {
-    get: async (keys: string[]) => Object.fromEntries(keys.filter((key) => key in store).map((key) => [key, store[key]])),
+    get: async (keys: string[] | null) => Object.fromEntries((keys ?? Object.keys(store)).filter((key) => key in store).map((key) => [key, store[key]])),
     set: async (values: Record<string, unknown>) => Object.assign(store, values),
     remove: async (key: string) => delete store[key],
   };
@@ -75,7 +75,8 @@ describe('batch request deadlines', () => {
     const state = { cancelled: false, deadlineAt: Date.now() + 100 };
     const batch = background.dispatch(batchRequest, state);
 
-    await Promise.resolve();
+    for (let tick = 0; tick < 100 && query.mock.calls.length === 0; tick += 1) await Promise.resolve();
+    expect(query).toHaveBeenCalledTimes(1);
     vi.advanceTimersByTime(100);
     await expect(batch).rejects.toMatchObject({ code: 'timeout' });
 
@@ -95,7 +96,8 @@ describe('batch request deadlines', () => {
     const state = { cancelled: false, deadlineAt: Date.now() + 45_000 };
     const batch = background.dispatch(batchRequest, state);
 
-    await Promise.resolve();
+    for (let tick = 0; tick < 100 && query.mock.calls.length === 0; tick += 1) await Promise.resolve();
+    expect(query).toHaveBeenCalledTimes(1);
     state.cancelled = true;
     releaseFirstAction();
     await expect(batch).rejects.toMatchObject({ code: 'cancelled' });

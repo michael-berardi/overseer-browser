@@ -20,7 +20,8 @@ import { ObserveDeltaStore, computeObserveDelta } from '../src/observe_delta';
 import { WaitError, parseWaitTarget } from '../src/wait';
 import { getPermissionState, isNavigableUrl, normalizeSiteAccess } from '../src/permissions';
 import { MeetingDeduper, PendingMeetingQueue } from '../src/meeting';
-import { SessionError, SessionManager } from '../src/session';
+import { SessionError } from '../src/session';
+import { SessionRegistry, normalizeSessionKey } from '../src/session_registry';
 import { captureScreenshot, requireActiveScreenshotTarget, ScreenshotError } from '../src/screenshot';
 import { browserTelemetry, type BrowserUsageCounter } from '../src/telemetry';
 
@@ -55,6 +56,7 @@ type TimerHandle = number | NodeJS.Timeout;
 
 interface InflightRequest {
   cancelled: boolean;
+  sessionKey?: string;
   deadlineAt?: number;
   timedOut?: boolean;
   cancelSignal?: Promise<never>;
@@ -114,13 +116,18 @@ export class UploadAssembler {
     return this.uploads.size;
   }
 
+  dropTab(tabId: number): void {
+    for (const [key, state] of this.uploads) if (state.tabId === tabId) this.deleteUpload(key);
+    this.schedulePrune();
+  }
+
   get retainedBytes(): number {
     return this.retainedByteCount;
   }
-  addChunk(params: Record<string, unknown>, tabId = -1, ref = typeof params.ref === 'string' ? params.ref : ''):
+  addChunk(params: Record<string, unknown>, tabId = -1, ref = typeof params.ref === 'string' ? params.ref : '', sessionKey = 'default'):
     | { complete: false; received: number; total: number; filesReceived: number; fileTotal: number }
     | { complete: true; files: UploadFilePayload[] } {
-    const uploadId = readString(params, 'upload_id', 128);
+    const uploadId = JSON.stringify([sessionKey, readString(params, 'upload_id', 128)]);
     const fileIndex = optionalInteger(params, 'file_index') ?? 0;
     const fileTotal = optionalInteger(params, 'file_total') ?? 1;
     if (fileIndex < 0 || fileIndex >= fileTotal || fileTotal < 1 || fileTotal > MAX_UPLOAD_FILES) {
@@ -288,7 +295,9 @@ function encodeBase64(bytes: Uint8Array): string {
 // or navigation may leave a stale entry, which costs one harmless no-op
 // cleanup call and is then removed.
 const consoleCaptureTabs = new Set<number>();
-const sessions = new SessionManager(async (tabId) => {
+const sessionRegistry = new SessionRegistry(async (tabId) => {
+  uploads.dropTab(tabId);
+  observeDeltas.drop(tabId);
   if (!consoleCaptureTabs.delete(tabId)) return;
   await restorePageConsole(tabId);
 });
@@ -335,7 +344,7 @@ let meetingPersistChain: Promise<void> = Promise.resolve();
 let backgroundStateReady: Promise<void> = Promise.resolve();
 
 const COMMAND_PARAM_KEYS: Record<Command, readonly string[]> = {
-  'health.status': [],
+  'health.status': ['capabilities_only'],
   'sessions.start': ['name'],
   'sessions.stop': [],
   'sessions.list': [],
@@ -512,11 +521,11 @@ function startBackground(): void {
       return true;
     }
     if (value.kind === 'popup_borrow_active') {
-      void popupBorrowActive().then(sendResponse);
+      void popupBorrowActive(value.session_key).then(sendResponse);
       return true;
     }
     if (value.kind === 'popup_return_active') {
-      void popupReturnActive().then(sendResponse);
+      void popupReturnActive(value.session_key).then(sendResponse);
       return true;
     }
     if (value.kind === 'set_takeover' && typeof value.enabled === 'boolean') {
@@ -649,7 +658,7 @@ function connectNative(): void {
       }
       scheduleReconnect();
     });
-    const hello: NativeOutbound = { version: 1, kind: 'handshake', extension_id: EXTENSION_ID, capabilities: [...COMMANDS] };
+    const hello: NativeOutbound = { version: 1, kind: 'handshake', extension_id: EXTENSION_ID, capabilities: [...COMMANDS, 'multi_session'] };
     if (!isBoundedNativeFrame(hello)) throw new Error('Native handshake exceeds the frame limit.');
     port.postMessage(hello);
     nativeHandshakeTimer = setTimeout(() => {
@@ -774,8 +783,8 @@ function scheduleMeetingRetry(): void {
   }, MEETING_RETRY_MS);
 }
 
-async function handleRequest(request: NativeRequest): Promise<void> {
-  const state: InflightRequest = { cancelled: false, deadlineAt: Date.now() + COMMAND_TIMEOUT_MS };
+export async function handleRequest(request: NativeRequest): Promise<void> {
+  const state: InflightRequest = { cancelled: false, sessionKey: normalizeSessionKey(request.session_key), deadlineAt: Date.now() + COMMAND_TIMEOUT_MS };
   inflight.set(request.request_id, state);
   try {
     const result = await dispatchWithinDeadline(request, state);
@@ -824,17 +833,25 @@ async function dispatchCommand(request: NativeRequest, state: InflightRequest): 
   if (!COMMANDS.includes(request.command as Command)) throw new DispatchError('unsupported_command', `Unsupported command: ${request.command}`, 'Use health.status or help from the CLI.');
   const command = request.command as Command;
   const params = request.params ?? {};
+  const sessionKey = normalizeSessionKey(request.session_key);
+  if (state.sessionKey !== undefined && state.sessionKey !== sessionKey) throw new DispatchError('session_context_mismatch', 'A request cannot change its session context.');
+  state.sessionKey = sessionKey;
+  const sessions = await sessionRegistry.get(sessionKey);
   assertKnownCommandParams(command, params);
   if (command === 'cancel') {
     const target = readString(params, 'request_id', 128);
     const targetState = inflight.get(target);
-    if (!targetState) return { cancelled: false, request_id: target };
+    if (!targetState || targetState.sessionKey !== sessionKey) return { cancelled: false, request_id: target };
     markCancelled(targetState);
     return { cancelled: true, request_id: target };
   }
   assertNotCancelled(state);
-  if (takeoverRequested && isPausedCommand(command)) throw new DispatchError('human_takeover_active', 'Automation is paused for human takeover.', 'Run overseer-browser takeover resume to return control to the agent.');
+  if (isPausedCommand(command) && (takeoverRequested || (await sessions.requireState()).paused)) throw new DispatchError('human_takeover_active', 'Automation is paused for human takeover.', 'Resume this session with takeover resume; an operator-wide pause must be resumed in the popup.');
   if (command === 'health.status') {
+    if (params.capabilities_only !== undefined) {
+      if (params.capabilities_only !== true) throw new DispatchError('invalid_params', 'capabilities_only must be true when supplied.');
+      return { multi_session: true, session_key: sessionKey, extension_version: browser.runtime.getManifest().version };
+    }
     const currentUrl = async (): Promise<string | undefined> => {
       try {
         const selectedTabId = await sessions.getSelectedTabId();
@@ -846,7 +863,7 @@ async function dispatchCommand(request: NativeRequest, state: InflightRequest): 
     const [permissions, scriptsAvailable, sessionsState] = await Promise.all([
       currentUrl().then((url) => getPermissionState(url)),
       userScriptsAvailable(),
-      sessions.list(),
+      sessionRegistry.list(),
     ]);
     return {
       version: 1,
@@ -858,6 +875,9 @@ async function dispatchCommand(request: NativeRequest, state: InflightRequest): 
       permissions,
       user_scripts_available: scriptsAvailable,
       sessions: sessionsState,
+      session_key: sessionKey,
+      multi_session: true,
+      session_takeover_requested: sessionsState.find((session) => session.sessionKey === sessionKey)?.paused === true,
       runtime: {
         inflight_requests: Math.max(0, inflight.size - 1),
         incomplete_uploads: uploads.size,
@@ -865,14 +885,12 @@ async function dispatchCommand(request: NativeRequest, state: InflightRequest): 
       },
     };
   }
-  if (command === 'sessions.start') return sessions.start(optionalString(params, 'name'));
+  if (command === 'sessions.start') return sessionRegistry.start(sessionKey, optionalString(params, 'name'));
   if (command === 'sessions.stop') {
-    const result = await sessions.stop();
-    uploads.clear();
-    observeDeltas.clear();
-    return result;
+    for (const other of inflight.values()) if (other !== state && other.sessionKey === sessionKey) markCancelled(other);
+    return sessionRegistry.stop(sessionKey);
   }
-  if (command === 'sessions.list') return sessions.list();
+  if (command === 'sessions.list') return sessionRegistry.list();
   if (command === 'windows.resize') return sessions.resize({ width: optionalInteger(params, 'width'), height: optionalInteger(params, 'height'), left: optionalInteger(params, 'left'), top: optionalInteger(params, 'top') });
   if (command === 'tabs.list') return sessions.listTabs();
   if (command === 'tabs.create') {
@@ -892,15 +910,15 @@ async function dispatchCommand(request: NativeRequest, state: InflightRequest): 
   }
   if (command === 'tabs.select') return sessions.selectTab(readInteger(params, 'tab_id', 1));
   if (command === 'tabs.close') return sessions.closeTab(readInteger(params, 'tab_id', 1));
-  if (command === 'tabs.borrow') return borrowExistingTab(readInteger(params, 'tab_id', 1));
+  if (command === 'tabs.borrow') return borrowExistingTab(readInteger(params, 'tab_id', 1), sessionKey);
   if (command === 'tabs.return') {
     const tabId = readInteger(params, 'tab_id', 1);
     const result = await sessions.returnTab(tabId);
-    observeDeltas.drop(tabId);
+    if (result.returned) observeDeltas.drop(tabId);
     return result;
   }
   if (command === 'navigate') {
-    const tabId = await ownedTab(params);
+    const tabId = await ownedTab(params, state);
     const url = readString(params, 'url', 4_096);
     if (!isNavigableUrl(url)) throw new DispatchError('invalid_url', 'Only http and https navigation is allowed.');
     return enqueueTabMutation(tabId, async () => {
@@ -917,7 +935,7 @@ async function dispatchCommand(request: NativeRequest, state: InflightRequest): 
     });
   }
   if (command === 'back' || command === 'forward' || command === 'reload') {
-    const tabId = await targetTab(params);
+    const tabId = await targetTab(params, state);
     return enqueueTabMutation(tabId, async () => {
       assertNotCancelled(state);
       await sessions.cleanupTab(tabId);
@@ -939,7 +957,7 @@ async function dispatchCommand(request: NativeRequest, state: InflightRequest): 
   if (command === 'snapshot' || command === 'observe') {
     if (params.changes !== undefined && params.changes !== true) throw new DispatchError('invalid_params', 'changes must be true when supplied.');
     if (command === 'observe' && params.changes === true) {
-      const tabId = await targetTab(params);
+      const tabId = await targetTab(params, state);
       const nodes = await runAction(params, { kind: 'observe', maxNodes: optionalInteger(params, 'max_nodes') }, state) as SnapshotNode[];
       const { delta, next } = computeObserveDelta(observeDeltas.read(tabId), nodes);
       observeDeltas.write(tabId, next);
@@ -948,7 +966,7 @@ async function dispatchCommand(request: NativeRequest, state: InflightRequest): 
     return runAction(params, { kind: command, maxNodes: optionalInteger(params, 'max_nodes') }, state);
   }
   if (command === 'wait.for') {
-    const tabId = await targetTab(params);
+    const tabId = await targetTab(params, state);
     const target = parseWaitTarget(params);
     assertNotCancelled(state);
     const remainingMs = state.deadlineAt === undefined ? target.timeoutMs : state.deadlineAt - Date.now();
@@ -969,25 +987,25 @@ async function dispatchCommand(request: NativeRequest, state: InflightRequest): 
   if (command === 'scroll') return runAction(params, { kind: 'scroll', ref: optionalString(params, 'ref'), x: optionalInteger(params, 'x'), y: optionalInteger(params, 'y') }, state);
   if (command === 'evaluate') {
     if (!evaluateEnabled) throw new DispatchError('capability_required', 'Evaluate is disabled. Grant this site or enable unlimited access in the popup.', 'Open the popup and choose the intended access scope.');
-    const tabId = await targetTab(params);
+    const tabId = await targetTab(params, state);
     return enqueueTabMutation(tabId, () => {
       assertNotCancelled(state);
       return runPageEvaluation(tabId, readString(params, 'source', 32_000));
     });
   }
   if (command === 'console.start' || command === 'console.read' || command === 'console.stop') {
-    const tabId = await targetTab(params);
+    const tabId = await targetTab(params, state);
     const result = await runConsoleCommand(tabId, command, params.clear === true);
     if (command === 'console.start') consoleCaptureTabs.add(tabId);
     if (command === 'console.stop') consoleCaptureTabs.delete(tabId);
     return result;
   }
   if (command === 'network.read') {
-    const tabId = await targetTab(params);
+    const tabId = await targetTab(params, state);
     return readNetworkMetadata(tabId, optionalInteger(params, 'limit') ?? 100);
   }
   if (command === 'screenshot.visible' || command === 'screenshot.element') {
-    const tabId = await targetTab(params);
+    const tabId = await targetTab(params, state);
     const tab = await browser.tabs.get(tabId);
     if (tab.windowId === undefined) throw new DispatchError('window_required', 'Target tab is not attached to a window.');
     const requestedFormat = params.format === undefined ? 'jpeg' : readString(params, 'format', 16);
@@ -1000,18 +1018,22 @@ async function dispatchCommand(request: NativeRequest, state: InflightRequest): 
       await requireActiveScreenshotTarget(tabId, tab.windowId);
     }
     const rect = command === 'screenshot.element' ? (await runAction(params, { kind: 'element_rect', ref: readString(params, 'ref', 128) }, state) as { left: number; top: number; width: number; height: number }) : undefined;
-    return captureScreenshot(tabId, tab.windowId, rect, requestedFormat);
+    return captureScreenshot(tabId, tab.windowId, rect, requestedFormat, () => assertNotCancelled(state));
   }
   if (command === 'upload') return runUpload(params, state);
   if (command === 'batch') return runBatch(params, state);
   if (command === 'takeover.prompt') {
-    await setTakeoverRequested(true);
-    return { requested: true, state: 'human_takeover_required', message: 'Human takeover requested. Automation is paused until the operator returns control.' };
+    await sessions.setPaused(true);
+    for (const other of inflight.values()) if (other !== state && other.sessionKey === sessionKey) markCancelled(other);
+    return { requested: true, session_key: sessionKey, state: 'human_takeover_required', message: 'This session is paused until control is returned.' };
   }
   if (command === 'takeover.resume') {
-    await setTakeoverRequested(false);
-    if (takeoverRequested) throw new DispatchError('takeover_resume_failed', 'Automation remains paused because takeover state could not be cleared.', 'Retry takeover resume after extension storage is available.');
-    return { resumed: true, takeover_requested: false, message: 'Automation resumed by the local operator CLI.' };
+    try { await sessions.setPaused(false); }
+    catch { throw new DispatchError('takeover_resume_failed', 'The session remains paused because its state could not be persisted.'); }
+    return { resumed: !takeoverRequested, session_key: sessionKey, takeover_requested: takeoverRequested, message: takeoverRequested ? 'Operator-wide pause remains active; resume it in the popup.' : 'This browser session has resumed.' };
+  }
+  if ((command === 'capture.start' || command === 'capture.stop') && sessionKey !== 'default') {
+    throw new DispatchError('operator_scope_required', 'Meeting capture controls are operator-wide; use the explicit default session only for authorized capture changes.');
   }
   if (command === 'capture.start') {
     await meetingStateReady;
@@ -1037,25 +1059,27 @@ function isPausedCommand(command: Command): boolean {
     command === 'batch' || command === 'wait.for';
 }
 
-async function ownedTab(params: Record<string, unknown>): Promise<number> {
+async function ownedTab(params: Record<string, unknown>, state: InflightRequest): Promise<number> {
+  const sessions = await sessionRegistry.get(state.sessionKey);
   const requested = optionalTabId(params);
   const tabId = requested ?? (await sessions.getSelectedTabId());
   if (!(await sessions.ownsTab(tabId))) throw new DispatchError('tab_not_owned', 'Target tab is not owned or borrowed by the active session.');
   return tabId;
 }
 
-export async function borrowExistingTab(tabId: number): Promise<chrome.tabs.Tab> {
+export async function borrowExistingTab(tabId: number, sessionKey?: string): Promise<chrome.tabs.Tab> {
+  const sessions = await sessionRegistry.get(sessionKey);
   const session = await sessions.requireState();
   const tab = await browser.tabs.get(tabId);
   const existing = session.ownedTabIds.includes(tabId) || session.borrowedTabIds.includes(tabId) || tab.windowId === session.agentWindowId;
   if (!existing) {
     throw new DispatchError('operator_approval_required', 'Borrowing a normal browser tab requires confirmation in the extension popup.', 'Use the popup to borrow the active tab.');
   }
-  return sessions.borrowTab(tabId);
+  return sessionRegistry.borrow(sessionKey, tabId);
 }
 
-async function targetTab(params: Record<string, unknown>): Promise<number> {
-  const tabId = await ownedTab(params);
+async function targetTab(params: Record<string, unknown>, state: InflightRequest): Promise<number> {
+  const tabId = await ownedTab(params, state);
   const tab = await browser.tabs.get(tabId);
   if (params.frame_id !== undefined) throw new DispatchError('unsupported_frame', 'Only the top frame is supported by this extension.', 'Use a top-frame ref or a browser fallback for nested frames.');
   if (!tab.url || !isNavigableUrl(tab.url)) throw new DispatchError('unsupported_page', 'This page cannot receive isolated automation.', 'Navigate to an http or https page.');
@@ -1067,7 +1091,7 @@ async function targetTab(params: Record<string, unknown>): Promise<number> {
 }
 
 async function runAction(params: Record<string, unknown>, action: AutomationAction, state: InflightRequest): Promise<unknown> {
-  const tabId = await targetTab(params);
+  const tabId = await targetTab(params, state);
   assertNotCancelled(state);
   if (!MUTATING_ACTION_KINDS.has(action.kind)) return runInIsolatedWorld(tabId, action);
   return enqueueTabMutation(tabId, async () => {
@@ -1079,10 +1103,10 @@ async function runAction(params: Record<string, unknown>, action: AutomationActi
 }
 
 async function runUpload(params: Record<string, unknown>, state: InflightRequest): Promise<unknown> {
-  const tabId = await targetTab(params);
+  const tabId = await targetTab(params, state);
   assertNotCancelled(state);
   const ref = readString(params, 'ref', 128);
-  const assembled = uploads.addChunk(params, tabId, ref);
+  const assembled = uploads.addChunk(params, tabId, ref, state.sessionKey);
   if (!assembled.complete) return assembled;
   return runAction(params, { kind: 'upload', ref, files: assembled.files }, state);
 }
@@ -1474,9 +1498,7 @@ async function restorePageConsole(tabId: number): Promise<void> {
 
 async function cleanupSessionConsoles(): Promise<void> {
   try {
-    const [session] = await sessions.list();
-    if (!session) return;
-    await Promise.all([...new Set([...session.ownedTabIds, ...session.borrowedTabIds])].map((tabId) => sessions.cleanupTab(tabId)));
+    await sessionRegistry.cleanupConsoles();
   } catch {
     // Console restoration is best effort during connection or takeover changes.
   }
@@ -1537,6 +1559,7 @@ async function runBatch(params: Record<string, unknown>, state: InflightRequest)
       throw new DispatchError('invalid_batch', `Batch action ${index} must be an object.`);
     }
     const value = rawAction as Record<string, unknown>;
+    if (Object.keys(value).some((key) => key !== 'command' && key !== 'params')) throw new DispatchError('invalid_batch', 'Batch actions may contain only command and params; session scope is inherited.');
     if (typeof value.command !== 'string' || !COMMANDS.includes(value.command as Command) || !BATCHABLE_COMMANDS.has(value.command as Command)) {
       throw new DispatchError('invalid_batch_command', `Batch action ${index} uses an unsupported command.`);
     }
@@ -1574,6 +1597,7 @@ async function runBatch(params: Record<string, unknown>, state: InflightRequest)
         version: 1,
         kind: 'request',
         request_id: `batch-${index}`,
+        session_key: state.sessionKey,
         command: action.command,
         params: action.params,
       }, state);
@@ -1619,11 +1643,12 @@ async function runBatch(params: Record<string, unknown>, state: InflightRequest)
   return batchResult;
 }
 
-function popupTabDetails(tab: chrome.tabs.Tab, session?: { ownedTabIds: number[]; borrowedTabIds: number[] }): Record<string, unknown> {
+function popupTabDetails(tab: chrome.tabs.Tab, session?: { sessionKey?: string; ownedTabIds: number[]; borrowedTabIds: number[] }): Record<string, unknown> {
   const tabId = tab.id;
   return {
     id: tabId,
     window_id: tab.windowId,
+    session_key: session?.sessionKey,
     url: tab.url,
     title: tab.title,
     owned: tabId !== undefined && session?.ownedTabIds.includes(tabId) === true,
@@ -1642,8 +1667,8 @@ async function userScriptsAvailable(): Promise<boolean> {
 
 async function popupState(): Promise<unknown> {
   const [activeTab] = await browser.tabs.query({ active: true, lastFocusedWindow: true });
-  const sessionsState = await sessions.list();
-  const session = sessionsState[0];
+  const sessionsState = await sessionRegistry.list();
+  const session = sessionsState.find((candidate) => activeTab?.id !== undefined && (candidate.ownedTabIds.includes(activeTab.id) || candidate.borrowedTabIds.includes(activeTab.id)));
   return {
     connected,
     native_enabled: nativeEnabled,
@@ -1658,19 +1683,21 @@ async function popupState(): Promise<unknown> {
   };
 }
 
-export async function popupBorrowActive(): Promise<unknown> {
+export async function popupBorrowActive(sessionKey?: unknown): Promise<unknown> {
   try {
+    const sessions = await sessionRegistry.popupTarget(sessionKey === undefined ? undefined : normalizeSessionKey(sessionKey));
     const [activeTab] = await browser.tabs.query({ active: true, lastFocusedWindow: true });
     if (activeTab?.id === undefined) throw new DispatchError('tab_required', 'The active browser tab could not be identified.');
-    await sessions.borrowTab(activeTab.id);
+    await sessionRegistry.borrow(sessions.sessionKey, activeTab.id);
     return { ok: true, state: await popupState() };
   } catch (error) {
     return { ok: false, error: normalizeError(error) };
   }
 }
 
-async function popupReturnActive(): Promise<unknown> {
+async function popupReturnActive(sessionKey?: unknown): Promise<unknown> {
   try {
+    const sessions = await sessionRegistry.popupTarget(sessionKey === undefined ? undefined : normalizeSessionKey(sessionKey));
     const session = await sessions.requireState();
     const [activeTab] = await browser.tabs.query({ active: true, lastFocusedWindow: true });
     if (activeTab?.id === undefined) throw new DispatchError('tab_required', 'The active browser tab could not be identified.');
