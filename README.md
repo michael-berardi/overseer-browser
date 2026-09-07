@@ -214,7 +214,7 @@ Load the generated development directory with **Load unpacked**. Do not commit g
 This repository is released under the [MIT License](LICENSE).
 ### Dedicated agent Chrome (0.4.0)
 
-CLI automation no longer connects to the daily-browser runtime. `sessions start`
+By default, CLI automation does not connect to the daily-browser runtime. `sessions start`
 launches Chrome for Testing directly with a private `agent-v1/profile` user-data-dir
 under the OverSeer runtime, loads the built extension, and waits for its native
 connection. Native hosts without the inherited isolated-profile marker reject
@@ -238,3 +238,33 @@ available for first-use approval. On supervisor crash, `agent-v1/supervisor.runn
 may need manual recovery after confirming the dedicated instance has exited;
 automatic PID-based recovery is intentionally avoided. Lifecycle currently supports
 macOS/Linux, not Windows. Linux requires CfT and its native manifest configured.
+
+### Explicit existing-relay connection (0.4.1)
+
+When an operator authorizes an already-running compatible relay, select that
+connection explicitly rather than changing its host or guessing from sockets:
+
+```sh
+python3 scripts/select-relay.py /absolute/path/to/private/relay-runtime
+overseer-browser status --raw-json
+overseer-browser --session my-own-task sessions start
+```
+
+Selection authenticates a health request and requires multi-session support. It
+atomically writes a private `~/.config/overseer-browser/active-connection.json`
+descriptor binding the runtime to its token fingerprint (not the token itself).
+`status`, health, and commands use the same selected transport and report
+`connection_mode: operator-relay`. Session keys, site grants, and tab ownership
+remain enforced; selecting a connection does not borrow another agent's session.
+The CLI never launches or stops a selected relay's host, even after the last
+session ends. A stale, insecure, or changed-token descriptor fails closed with
+`active_connection_unavailable`; it never silently starts another browser.
+
+`OVERSEER_BROWSER_CONNECTION=managed` explicitly retains the managed isolated
+browser. `OVERSEER_BROWSER_CONNECTION=/path/to/descriptor.json` selects an alternate
+private descriptor. An explicit `OVERSEER_BROWSER_RUNTIME` takes precedence over
+all descriptors and preserves the existing managed `agent-v1` semantics. Without
+a descriptor or override, managed isolation remains the default. Re-run the
+selection helper after an authorized relay runtime/token change; it keeps a
+private timestamped backup of the previous descriptor. Do not copy tokens or
+change native-host registrations to resolve a connection mismatch.

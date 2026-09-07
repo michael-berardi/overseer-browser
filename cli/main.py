@@ -25,11 +25,13 @@ from typing import Any, Iterable
 try:
     from native_host.protocol import MAX_FRAME_BYTES, ProtocolError, encode_frame, read_frame
     from native_host.runtime import RuntimePaths, is_private_file
+    from cli.runtime_discovery import find_active_runtime
 except ImportError:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from native_host.protocol import MAX_FRAME_BYTES, ProtocolError, encode_frame, read_frame
     from native_host.runtime import RuntimePaths, is_private_file
-CLI_VERSION = "0.4.0"
+    from cli.runtime_discovery import find_active_runtime
+CLI_VERSION = "0.4.1"
 MAX_UPLOAD_BYTES = 8 * 1024 * 1024
 MAX_UPLOAD_CHUNKS = 32
 MAX_UPLOAD_FILES = 16
@@ -272,6 +274,15 @@ def request_once(command: str, params: dict[str, Any], *, timeout: float,
         return _request_once(command, params, timeout=timeout, paths=paths,
                              request_id=request_id, session_key=session_key)
     from native_host.isolation import isolated_paths, lifecycle_lock, ensure_instance, stop_instance
+    try:
+        active = find_active_runtime(session_key=session_key)
+    except ValueError as exc:
+        raise CLIError("active_connection_unavailable", str(exc)) from exc
+    if active is not None:
+        # Relay lifecycle belongs to its owner: never launch or stop its host.
+        return _request_once(command, params, timeout=timeout, paths=active.paths,
+                             request_id=request_id, session_key=session_key,
+                             auth_token=active.auth_token)
     isolated = isolated_paths(RuntimePaths.discover())
     try:
         with lifecycle_lock(isolated) if command in {"sessions.start", "sessions.stop"} else contextlib.nullcontext():
@@ -296,17 +307,20 @@ def _request_once(
     paths: RuntimePaths | None = None,
     request_id: str | None = None,
     session_key: str | None = None,
+    auth_token: str | None = None,
 ) -> dict[str, Any]:
     if session_key is not None:
         session_key = checked_session_key(session_key)
     timeout_value = _checked_timeout(timeout)
     paths = paths or RuntimePaths.discover()
-    if not paths.token.exists() or not is_private_file(paths.token):
-        raise CLIError("not_installed", "native host token is missing; run overseer-browser install")
-    try:
-        token = paths.token.read_text(encoding="utf-8").strip()
-    except OSError as exc:
-        raise CLIError("native_io_error", "native host token could not be read") from exc
+    token = auth_token
+    if token is None:
+        if not paths.token.exists() or not is_private_file(paths.token):
+            raise CLIError("not_installed", "native host token is missing; run overseer-browser install")
+        try:
+            token = paths.token.read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            raise CLIError("native_io_error", "native host token could not be read") from exc
     if not token:
         raise CLIError("not_installed", "native host token is empty; run overseer-browser install")
     request_id = _checked_request_id(request_id) if request_id is not None else f"cli-{uuid.uuid4().hex}"
@@ -372,8 +386,15 @@ def _request_once(
 
 def local_health(paths: RuntimePaths | None = None) -> dict[str, Any]:
     from native_host.isolation import isolated_paths
-    paths = paths or isolated_paths(RuntimePaths.discover())
+    active = None
+    if paths is None:
+        try:
+            active = find_active_runtime()
+        except ValueError as exc:
+            raise CLIError("active_connection_unavailable", str(exc)) from exc
+        paths = active.paths if active is not None else isolated_paths(RuntimePaths.discover())
     checks: dict[str, Any] = {
+        "connection_mode": "operator-relay" if active is not None else "managed",
         "runtime_directory": {"path": str(paths.root), "ok": paths.root.is_dir() and _private_dir(paths.root)},
         "token": {"ok": paths.token.is_file() and is_private_file(paths.token)},
         "socket": {"path": str(paths.socket), "ok": not paths.socket.is_symlink() and (paths.socket.exists() if os.name == "nt" else paths.socket.is_socket()) and _private_socket(paths.socket)},
