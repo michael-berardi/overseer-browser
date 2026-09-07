@@ -8,7 +8,13 @@ describe('manifest privacy invariants', () => {
     expect(config).toContain('key: publicKey');
     expect(config).toContain('MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8A');
     expect(config).toContain('IDAQAB');
-    expect(config).toContain("version: '0.4.0'");
+    const { version } = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+    const lock = JSON.parse(readFileSync(new URL('../package-lock.json', import.meta.url), 'utf8'));
+    expect(config).toContain(`version: '${version}'`);
+    expect(lock.version).toBe(version);
+    expect(lock.packages[''].version).toBe(version);
+    expect(readFileSync(new URL('../../cli/main.py', import.meta.url), 'utf8')).toContain(`CLI_VERSION = "${version}"`);
+    expect(readFileSync(new URL('../../native_host/host.py', import.meta.url), 'utf8')).toContain(`HOST_VERSION = "${version}"`);
     expect(config).toContain("permissions: ['alarms', 'nativeMessaging', 'storage', 'scripting', 'tabs', 'userScripts', 'windows']");
     expect(config).toContain("host_permissions: ['<all_urls>', 'https://meet.google.com/*', 'https://zoom.us/*', 'https://*.zoom.us/*']");
     expect(config).toContain("optional_host_permissions: ['<all_urls>', 'http://*/*', 'https://*/*']");
