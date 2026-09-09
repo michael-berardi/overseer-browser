@@ -28,22 +28,69 @@ function Resolve-Python {
 }
 
 function Write-Utf8NoBom([string]$Path, [string]$Content) {
-  [System.IO.File]::WriteAllText($Path, $Content, (New-Object System.Text.UTF8Encoding($false)))
+  $temporary = Join-Path (Split-Path -Parent $Path) ('.publish-' + [guid]::NewGuid().ToString('N'))
+  try {
+    [System.IO.File]::WriteAllText($temporary, $Content, (New-Object System.Text.UTF8Encoding($false)))
+    if ([System.IO.File]::Exists($Path)) {
+      [System.IO.File]::Replace($temporary, $Path, $null)
+    } else {
+      [System.IO.File]::Move($temporary, $Path)
+    }
+  } finally {
+    if (Test-Path $temporary) { Remove-Item $temporary -Force }
+  }
 }
 
 $Python = Resolve-Python
 
-New-Item -ItemType Directory -Force -Path $HostDir, $CliDir | Out-Null
-Copy-Item -Force (Join-Path $RepoRoot 'native_host\*.py') $HostDir
-Copy-Item -Force (Join-Path $RepoRoot 'cli\*.py') $CliDir
+$Versions = Join-Path $RuntimeRoot 'runtimes'
+New-Item -ItemType Directory -Force -Path $Versions | Out-Null
+$Version = [guid]::NewGuid().ToString('N')
+$Stage = Join-Path $Versions ('.stage-' + $Version)
+$Runtime = Join-Path $Versions ('runtime-' + $Version)
+try {
+  $HostDir = Join-Path $Stage 'native_host'
+  $CliDir = Join-Path $Stage 'cli'
+  New-Item -ItemType Directory -Path $Stage, $HostDir, $CliDir | Out-Null
+  foreach ($Module in @('__init__', 'host', 'protocol', 'runtime', 'isolation')) {
+    Copy-Item (Join-Path $RepoRoot "native_host\$Module.py") $HostDir
+  }
+  foreach ($Module in @('__init__', 'main', 'runtime_discovery', 'evidence', 'recording', 'dom_query', 'temp_outputs')) {
+    Copy-Item (Join-Path $RepoRoot "cli\$Module.py") $CliDir
+  }
+  $ExtensionSource = Join-Path $RepoRoot 'extension\.output\chrome-mv3'
+  if (-not (Test-Path (Join-Path $ExtensionSource 'manifest.json'))) { $ExtensionSource = $ExtensionDir }
+  if (-not (Test-Path (Join-Path $ExtensionSource 'manifest.json'))) { throw 'Build the extension before installing.' }
+  Copy-Item -Recurse $ExtensionSource (Join-Path $Stage 'extension')
+  $Validate = @'
+import importlib, json, sys
+from pathlib import Path
+root = Path(sys.argv[1])
+sys.path.insert(0, str(root))
+for package in ('native_host', 'cli'):
+    for path in (root / package).glob('*.py'):
+        compile(path.read_bytes(), str(path), 'exec')
+        importlib.import_module(package + '.' + path.stem)
+assert json.loads((root / 'extension/manifest.json').read_text()).get('manifest_version') == 3
+'@
+  & $Python -I -B -c $Validate $Stage
+  if ($LASTEXITCODE -ne 0) { throw 'Staged Python import/compile validation failed; prior launchers preserved.' }
+  [System.IO.Directory]::Move($Stage, $Runtime)
+} finally {
+  if (Test-Path $Stage) { Remove-Item -Recurse -Force $Stage }
+}
+$HostDir = Join-Path $Runtime 'native_host'
+$CliDir = Join-Path $Runtime 'cli'
+$ExtensionDir = Join-Path $Runtime 'extension'
 
 Write-Utf8NoBom $HostLauncher @"
 @echo off
-"$Python" "$HostDir\host.py" %*
+set "PYTHONPATH=$Runtime"
+"$Python" -B "$HostDir\host.py" %*
 "@
 Write-Utf8NoBom $CliLauncher @"
 @echo off
-"$Python" "$CliDir\main.py" %*
+"$Python" -B "$CliDir\main.py" %*
 "@
 
 # Build via ConvertTo-Json so Windows backslashes in the launcher path are
@@ -80,3 +127,6 @@ Write-Host "The extension is loaded and reloaded manually: open your browser's e
 Write-Host "(e.g. chrome://extensions), enable Developer mode, and load/unload the unpacked"
 Write-Host "directory above yourself."
 Write-Host "Note: the native host uses an AF_UNIX socket, which requires Windows 10 1803 or later."
+
+Write-Host "Coordinate this NEW Load unpacked path with session owners; reconfirm connection/site permissions."
+Write-Host "Chrome does not follow path changes automatically. Old runtime trees and running hosts are retained."

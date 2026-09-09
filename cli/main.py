@@ -31,7 +31,9 @@ except ImportError:
     from native_host.protocol import MAX_FRAME_BYTES, ProtocolError, encode_frame, read_frame
     from native_host.runtime import RuntimePaths, is_private_file
     from cli.runtime_discovery import find_active_runtime
-CLI_VERSION = "0.4.1"
+from cli import evidence, recording, dom_query, temp_outputs
+
+CLI_VERSION = "0.6.0"
 MAX_UPLOAD_BYTES = 8 * 1024 * 1024
 MAX_UPLOAD_CHUNKS = 32
 MAX_UPLOAD_FILES = 16
@@ -66,13 +68,14 @@ _SCREENSHOT_MAGIC = {
 
 REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
 CLI_COMMANDS = (
-    "health", "status", "version", "install", "update", "uninstall", "help", "sessions", "windows", "tabs",
+    "health", "status", "doctor", "qa", "timelapse", "record", "dom", "version", "install", "update", "uninstall", "help", "sessions", "windows", "tabs",
     "open", "close", "navigate", "back", "forward", "reload", "snapshot", "observe", "click", "hover", "fill", "type", "select", "press",
     "scroll", "evaluate", "eval", "console", "network", "batch", "capture", "screenshot",
     "screenshot-element", "element-screenshot", "upload", "takeover", "cancel", "wait",
 )
 
 _TAB_TARGETED_COMMANDS = {
+    "dom.query",
     "navigate", "back", "forward", "reload", "snapshot", "observe", "wait.for",
     "click", "hover", "fill", "type", "select", "press", "scroll", "evaluate",
     "screenshot.visible", "screenshot.element", "upload",
@@ -803,7 +806,7 @@ def _screenshot_payload_format(result: dict[str, Any], data: bytes, expected: st
         raise CLIError("screenshot_format", f"screenshot response bytes are not valid {expected} data")
 
 
-def _materialize_screenshot(payload: dict[str, Any], output: Path | None) -> dict[str, Any]:
+def _materialize_screenshot(payload: dict[str, Any], output: Path | None, writer=None) -> dict[str, Any]:
     if not payload.get("ok") or not isinstance(payload.get("result"), dict):
         return payload
     result = payload["result"]
@@ -822,6 +825,10 @@ def _materialize_screenshot(payload: dict[str, Any], output: Path | None) -> dic
         path = output.expanduser()
         expected_format = _screenshot_output_format(path)
         _screenshot_payload_format(result, data, expected_format)
+        if writer is not None:
+            writer(path, data)
+            metadata['path'] = str(path)
+            return {**payload, 'result':metadata}
         path.parent.mkdir(parents=True, exist_ok=True)
         descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
         try:
@@ -838,137 +845,16 @@ def _materialize_screenshot(payload: dict[str, Any], output: Path | None) -> dic
         metadata["path"] = str(path)
     return {**payload, "result": metadata}
 
-def _uc_bin() -> str:
-    """UC binary location: UC_BIN override, then PATH."""
-    override = os.environ.get("UC_BIN", "").strip()
-    if override:
-        return override
-    return shutil.which("uc") or "uc"
-
-
-# Only env-override and conventional install locations: a released tool never
-# loads a native library from an unversioned developer-checkout path.
-_UC_LIB_CANDIDATES = (
-    "~/.local/lib/ultracompact/libultracompact.dylib",
-    "~/.local/lib/ultracompact/libultracompact.so",
-)
-_UC_ENCODE_TIMEOUT = 30
-_uc_library_handle: Any = None
-_uc_library_unavailable = False
-
-
-def _uc_library() -> Any:
-    """Load the UltraCompact shared library once; UC_LIB overrides the path.
-
-    In-process encoding avoids a subprocess spawn and tokenizer re-init per
-    CLI call (~150 ms saved per rendered response). The ctypes import itself
-    is deferred so commands that never render stay on the fast path.
-    """
-    global _uc_library_handle, _uc_library_unavailable
-    if _uc_library_handle is not None or _uc_library_unavailable:
-        return _uc_library_handle
-    import ctypes
-
-    candidates: list[Path] = []
-    override = os.environ.get("UC_LIB", "").strip()
-    if override:
-        candidates.append(Path(override).expanduser())
-    candidates.extend(Path(candidate).expanduser() for candidate in _UC_LIB_CANDIDATES)
-    for path in candidates:
-        try:
-            library = ctypes.CDLL(str(path))
-            # A stale or incompatible library at a candidate path must not
-            # break the fallback chain: require both symbols before adopting.
-            encode_json = library.uc_encode_json
-            free_string = library.uc_free_string
-        except (OSError, AttributeError):
-            continue
-        encode_json.argtypes = (ctypes.c_char_p, ctypes.c_char_p)
-        encode_json.restype = ctypes.c_void_p
-        free_string.argtypes = (ctypes.c_void_p,)
-        free_string.restype = None
-        _uc_library_handle = library
-        return library
-    _uc_library_unavailable = True
-    return None
-
-
-def _uc_encode_ffi(source: str) -> str | None:
-    """Encode via the shared library; None when the library or call fails."""
-    library = _uc_library()
-    if library is None:
-        return None
-    import ctypes
-
-    pointer = library.uc_encode_json(source.encode("utf-8"), None)
-    if not pointer:
-        return None
-    try:
-        return ctypes.string_at(pointer).decode("utf-8")
-    finally:
-        library.uc_free_string(pointer)
-
-
-def _uc_encode(payload: dict[str, Any]) -> str:
-    """Encode `payload` as an UltraCompact packet (token-minimizing).
-
-    Prefers the in-process shared library; falls back to the `uc` binary
-    (emitting its token report on stderr), then to canonical JSON — never
-    lose data."""
-    source = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-    # Tag telemetry for the in-process FFI path too — the engine reads the
-    # process environment, and only the subprocess fallback set it before.
-    os.environ.setdefault("UC_TELEMETRY_SOURCE", "overseer-browser")
-    encoded = _uc_encode_ffi(source)
-    if encoded is not None:
-        return encoded
-    try:
-        proc = subprocess.run(
-            [_uc_bin(), "encode", "--readable", "--stats"],
-            input=source,
-            capture_output=True,
-            text=True,
-            timeout=_UC_ENCODE_TIMEOUT,
-            env={**os.environ, "UC_TELEMETRY_SOURCE": "overseer-browser"},
-        )
-        if proc.returncode != 0:
-            raise RuntimeError(proc.stderr.strip())
-        if proc.stderr.strip():
-            print(proc.stderr.strip(), file=sys.stderr)
-        return proc.stdout
-    except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
-        print(f"Warning: UC encoding failed ({exc}); emitting JSON", file=sys.stderr)
-        return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-
-
 def _render(payload: dict[str, Any], json_output: bool, raw_json: bool = False) -> None:
-    if json_output:
-        print(_uc_encode(payload) if not raw_json else json.dumps(payload, ensure_ascii=False, separators=(",", ":")), end="")
-        return
-    if payload.get("ok") is False:
-        err = payload.get("error") or {}
-        print(f"Error [{err.get('code', 'error')}]: {err.get('message', 'request failed')}", file=sys.stderr)
-        return
-    if "result" in payload:
-        value = payload["result"]
-        if isinstance(value, (dict, list)):
-            # Interactive terminals get pretty JSON for humans; piped output
-            # is consumed by agents, so serve the token-minimal UC packet
-            # (`uc decode` restores the exact JSON; --raw-json stays exact).
-            if sys.stdout.isatty():
-                print(json.dumps(value, ensure_ascii=False, indent=2))
-            else:
-                print(_uc_encode(value))
-        else:
-            print(value)
-    elif "hint" in payload:
-        print(payload["hint"])
-    else:
-        print("OK")
+    # --json / --raw-json remain compatibility aliases; all structured output
+    # is now plain minified JSON, independent of terminal detection.
+    print(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
 
 
 def main(argv: list[str] | None = None) -> int:
     raw = list(sys.argv[1:] if argv is None else argv)
+    keep_outputs = "--keep" in raw
+    raw = [arg for arg in raw if arg != "--keep"]
     raw_json = "--raw-json" in raw
     json_output = "--json" in raw or raw_json
     raw = [arg for arg in raw if arg not in ("--json", "--raw-json")]
@@ -1060,7 +946,92 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     command, args = raw[0], raw[1:]
     try:
-        if command in {"install", "update", "uninstall"}:
+        if command == 'dom':
+            if session_key is None:
+                raise CLIError('usage', 'dom requires an owned --session')
+            if max_nodes is not None or wait_until is not None:
+                raise CLIError('usage', 'dom has fixed bounds; --max-nodes and --wait-until do not apply')
+            def dom_request(cmd, params):
+                params = _apply_targeting(cmd, dict(params), tab_id, None)
+                return request_once(cmd, params, timeout=timeout, request_id=request_id, **request_options)
+            payload = dom_query.run('dom', args, dom_request)
+            _render(payload, json_output, raw_json)
+            return 0 if payload.get('ok') else 1
+        if command == "record":
+            if any(value is not None for value in (request_id, tab_id, max_nodes, wait_until)):
+                raise CLIError('usage', 'record targets the selected owned tab; composition targeting flags do not apply')
+            if session_key is None:
+                raise CLIError("usage", "record requires --session")
+            def record_request(cmd, params):
+                return request_once(cmd, params, timeout=timeout, **request_options)
+            try:
+                action = args[0] if args else "status"
+                if action in {"start", "restart"}:
+                    if len(args) not in {1, 4}:
+                        raise ValueError("record start|restart [FPS SECONDS MAX_BYTES]")
+                    params = dict(zip(("fps", "seconds", "max_bytes"), map(int, args[1:])))
+                    payload = record_request("record." + action, params)
+                elif action == "stop" and len(args) == 2:
+                    with temp_outputs.reservation(args[1], keep=keep_outputs, byte_limit=64 * 1024 * 1024, count=1) as created:
+                        payload = recording.export(record_request, args[1], publisher=created.publish if created is not None else None)
+                    payload['result'].update(temp_outputs.metadata(args[1], keep_outputs))
+                elif action in {"status", "stop", "clear"} and len(args) <= 1:
+                    payload = record_request("record." + action, {})
+                else:
+                    raise ValueError("record start|restart [FPS SECONDS MAX_BYTES] | status | stop [FILE.webm|FILE.mp4] | clear")
+            except (ValueError, OSError, subprocess.SubprocessError) as exc:
+                raise CLIError("recording_error", str(exc)) from exc
+            _render(payload, json_output, raw_json)
+            return 0 if payload.get("ok") else 1
+        if command in {"qa", "doctor", "timelapse"}:
+            if request_id is not None or max_nodes is not None or wait_until is not None:
+                raise CLIError("usage", "composition commands do not accept --request-id, --max-nodes or --wait-until")
+            def evidence_request(cmd, params):
+                return request_once(cmd, params, timeout=timeout, **request_options)
+            if command == "doctor":
+                _exact(args, 0, "doctor")
+                if tab_id is not None:
+                    raise CLIError("usage", "--tab-id does not apply to doctor")
+                payload = evidence.doctor(evidence_request, CLI_VERSION)
+            else:
+                if session_key is None:
+                    raise CLIError("usage", "evidence capture requires --session or automatic session identity")
+                frames, interval = None, 2.0
+                if command == "qa":
+                    _exact(args, 2, "qa pack DIR")
+                    if args[0] != "pack":
+                        raise CLIError("usage", "usage: qa pack DIR")
+                    directory = args[1]
+                else:
+                    _exact(args, 3, "timelapse DIR FRAMES INTERVAL_SECONDS")
+                    directory = args[0]
+                    frames = _integer(args[1], maximum=120)
+                    try:
+                        interval = float(args[2])
+                    except ValueError:
+                        raise CLIError("usage", "interval must be 2-30 seconds")
+                    if not math.isfinite(interval) or not 2 <= interval <= 30:
+                        raise CLIError("usage", "interval must be 2-30 seconds (at most 0.5 FPS)")
+                byte_budget = (128 if frames else 12) * 1024 * 1024
+                count_budget = 2 * frames + 2 if frames else 7
+                with temp_outputs.reservation(directory, keep=keep_outputs, byte_limit=byte_budget, count=count_budget) as created:
+                    budget = 0
+                    deadline = time.monotonic() + temp_outputs.ACTIVE_TTL - 310
+                    def bounded_request(cmd, params):
+                        nonlocal budget
+                        if time.monotonic() >= deadline:
+                            raise ValueError('Evidence capture time budget exhausted')
+                        response = evidence_request(cmd, params)
+                        budget += len(json.dumps(response).encode('utf-8')) * 2 + 8192
+                        if budget > byte_budget - 64 * 1024:
+                            raise ValueError('Evidence output byte budget exhausted')
+                        return response
+                    materialize = lambda response, path: _materialize_screenshot(response, path, created.write_bytes if created is not None else None)
+                    payload = evidence.collect(directory, bounded_request, materialize,
+                                               CLI_VERSION, session_key, tab_id=tab_id,
+                                               frames=frames, interval=interval, tracked=created)
+                payload['result']['expires_unix'] = temp_outputs.metadata(directory, keep_outputs)['expires_unix']
+        elif command in {"install", "update", "uninstall"}:
             _exact(args, 0, command)
             payload = _run_script(command)
         elif command == "health":
@@ -1111,12 +1082,15 @@ def main(argv: list[str] | None = None) -> int:
             mapping_args = [] if command == "screenshot" else args[:1]
             extension_command, params = _command_request(command, mapping_args)
             output_arg = args[0] if command == "screenshot" and args else args[1] if len(args) > 1 else None
-            output_path = Path(output_arg).expanduser() if output_arg else None
+            output_path = Path(output_arg).expanduser() if output_arg else temp_outputs.default_screenshot()
             if output_path is not None:
                 params["format"] = _screenshot_output_format(output_path)
             params = _apply_targeting(extension_command, params, tab_id, max_nodes, wait_until)
             payload = request_once(extension_command, params, timeout=timeout, request_id=request_id, **request_options)
-            payload = _materialize_screenshot(payload, output_path)
+            with temp_outputs.reservation(output_path, keep=keep_outputs, byte_limit=850 * 1024, count=len(output_path.absolute().parents) + 1) as created:
+                payload = _materialize_screenshot(payload, output_path, created.write_bytes if created is not None else None)
+                if payload.get('ok') and isinstance(payload.get('result'), dict):
+                    payload['result'].update(temp_outputs.metadata(output_path, keep_outputs))
         elif command == "help":
             _exact(args, 0, "help")
             payload = {

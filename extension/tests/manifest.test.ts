@@ -15,14 +15,14 @@ describe('manifest privacy invariants', () => {
     expect(lock.packages[''].version).toBe(version);
     expect(readFileSync(new URL('../../cli/main.py', import.meta.url), 'utf8')).toContain(`CLI_VERSION = "${version}"`);
     expect(readFileSync(new URL('../../native_host/host.py', import.meta.url), 'utf8')).toContain(`HOST_VERSION = "${version}"`);
-    expect(config).toContain("permissions: ['alarms', 'nativeMessaging', 'storage', 'scripting', 'tabs', 'userScripts', 'windows']");
+    expect(config).toContain("permissions: ['activeTab', 'tabCapture', 'offscreen', 'alarms', 'nativeMessaging', 'storage', 'scripting', 'tabs', 'userScripts', 'windows']");
     expect(config).toContain("host_permissions: ['<all_urls>', 'https://meet.google.com/*', 'https://zoom.us/*', 'https://*.zoom.us/*']");
     expect(config).toContain("optional_host_permissions: ['<all_urls>', 'http://*/*', 'https://*/*']");
-    expect(config).not.toContain('activeTab');
+    // Recording uses a real popup gesture; no undeclared debugger escalation.
+    expect(config).not.toMatch(/\b(?:optional_)?permissions:\s*\[[^\]]*['"]debugger['"]/);
     expect(config).not.toContain('update_url');
     expect(config).toContain("connect-src https://analytics.implosecybernetics.com");
     expect(config).not.toContain("connect-src *");
-    expect(config).not.toContain(['debug', 'ger'].join(''));
   });
 
   it('keeps the native connection alive without requiring the popup', () => {

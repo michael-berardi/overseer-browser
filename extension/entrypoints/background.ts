@@ -1,3 +1,6 @@
+import { DebuggerBridge, trustedDebuggerPopup } from '../src/debugger_bridge';
+import { queryDom, validateDomQuery } from '../src/dom_query';
+import { recordCommand, recordingPopup, recordingCleanup } from '../src/recording_bridge';
 import {
   COMMANDS,
   EXTENSION_ID,
@@ -296,11 +299,14 @@ function encodeBase64(bytes: Uint8Array): string {
 // cleanup call and is then removed.
 const consoleCaptureTabs = new Set<number>();
 const sessionRegistry = new SessionRegistry(async (tabId) => {
+  await debuggerBridge.revoke(tabId);
   uploads.dropTab(tabId);
   observeDeltas.drop(tabId);
   if (!consoleCaptureTabs.delete(tabId)) return;
   await restorePageConsole(tabId);
 });
+// Disabled until the operator approves Chrome's required installation permission.
+const debuggerBridge = new DebuggerBridge(async (session, tabId) => (await sessionRegistry.get(session)).ownsTab(tabId));
 const deduper = new MeetingDeduper();
 const pendingMeetings = new PendingMeetingQueue();
 const uploads = new UploadAssembler();
@@ -343,7 +349,10 @@ let meetingStateReady: Promise<void> = Promise.resolve();
 let meetingPersistChain: Promise<void> = Promise.resolve();
 let backgroundStateReady: Promise<void> = Promise.resolve();
 
-const COMMAND_PARAM_KEYS: Record<Command, readonly string[]> = {
+const COMMAND_PARAM_KEYS: Record<Command | 'debugger.input' | 'debugger.network' | 'debugger.status', readonly string[]> = {
+  'debugger.input': ['tab_id', 'op', 'x', 'y', 'key', 'text'],
+  'debugger.network': ['tab_id', 'action'],
+  'debugger.status': ['tab_id'],
   'health.status': ['capabilities_only'],
   'sessions.start': ['name'],
   'sessions.stop': [],
@@ -370,6 +379,7 @@ const COMMAND_PARAM_KEYS: Record<Command, readonly string[]> = {
   press: ['tab_id', 'ref', 'key', 'code'],
   scroll: ['tab_id', 'ref', 'x', 'y'],
   evaluate: ['tab_id', 'source'],
+  'dom.query': ['tab_id', 'query'],
   'screenshot.visible': ['tab_id', 'format'],
   'screenshot.element': ['tab_id', 'ref', 'format'],
   upload: ['tab_id', 'ref', 'upload_id', 'index', 'total', 'chunk', 'filename', 'mime_type', 'file_index', 'file_total'],
@@ -381,6 +391,9 @@ const COMMAND_PARAM_KEYS: Record<Command, readonly string[]> = {
   'takeover.prompt': [],
   'takeover.resume': [],
   cancel: ['request_id'],
+  'record.start': ['fps', 'seconds', 'max_bytes'],
+  'record.restart': ['fps', 'seconds', 'max_bytes'],
+  'record.status': [], 'record.stop': [], 'record.chunk': ['index'], 'record.clear': [],
   'capture.start': [],
   'capture.stop': [],
 };
@@ -461,16 +474,45 @@ function startBackground(): void {
   void loadCapability();
   // Observation deltas are per document: a navigation or tab removal
   // invalidates the stored baseline without retaining any page data.
+  debuggerBridge.listen();
   chrome.tabs.onUpdated.addListener((updatedTabId, changeInfo) => {
     if (changeInfo.url !== undefined || changeInfo.status === 'loading') observeDeltas.drop(updatedTabId);
   });
   chrome.tabs.onRemoved.addListener((removedTabId) => {
     observeDeltas.drop(removedTabId);
+    void recordingCleanup(removedTabId).catch(() => {});
     consoleCaptureTabs.delete(removedTabId);
   });
   chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) => {
     if (!message || typeof message !== 'object') return false;
     const value = message as Record<string, unknown>;
+    if (typeof value.kind === 'string' && value.kind.startsWith('debugger_')) {
+      if (!trustedDebuggerPopup(_sender)) return false;
+      void (async () => {
+        if (value.kind === 'debugger_remove') { await debuggerBridge.revokeAll(); return { ok: true }; }
+        const session = normalizeSessionKey(value.session_key);
+        const tabId = readInteger(value, 'tab_id', 1);
+        const owner = await sessionRegistry.get(session);
+        if (!await owner.ownsTab(tabId)) throw new Error('Tab is not session-owned.');
+        if (value.kind === 'debugger_revoke') { await debuggerBridge.revoke(tabId); return { ok: true }; }
+        if (value.kind === 'debugger_authorize') {
+          const [active] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+          if (active?.id !== tabId || await owner.getSelectedTabId() !== tabId) throw new Error('Activate the session-selected tab and review consent again.');
+          await debuggerBridge.authorize(session, tabId, readString(value, 'origin', 4096));
+        } else if (value.kind !== 'debugger_status') throw new Error('Unknown debugger popup action.');
+        return { ok: true, ...await debuggerBridge.status(session, tabId) };
+      })().then(sendResponse, e => sendResponse({ ok: false, error: String(e) }));
+      return true;
+    }
+    if (typeof value.kind === 'string' && ['record_pending', 'record_approve', 'record_deny'].includes(value.kind)) {
+      if (_sender.id !== chrome.runtime.id || _sender.url !== chrome.runtime.getURL('popup.html')) return false;
+      void recordingPopup(value, async p => {
+        const owner = await sessionRegistry.get(p.session);
+        const [active] = await chrome.tabs.query({active: true, lastFocusedWindow: true});
+        return await owner.ownsTab(p.tabId) && active?.id === p.tabId && await owner.getSelectedTabId() === p.tabId;
+      }).then(sendResponse, e => sendResponse({error: String(e)}));
+      return true;
+    }
     if (value.kind === 'meeting_detected_local') {
       const candidate = value.payload;
       const payload = candidate && typeof candidate === 'object'
@@ -648,6 +690,7 @@ function connectNative(): void {
       nativePort = null;
       connected = false;
       uploads.clear();
+      void recordingCleanup().catch(() => {});
       observeDeltas.clear();
       if (runtimeError?.message) {
         lastNativeError = {
@@ -695,6 +738,7 @@ function failNativeConnection(
   lastNativeError = error;
   connected = false;
   uploads.clear();
+  void recordingCleanup().catch(() => {});
   observeDeltas.clear();
   if (nativePort === port) nativePort = null;
   try {
@@ -830,6 +874,17 @@ export async function dispatch(request: NativeRequest, state: InflightRequest): 
 
 async function dispatchCommand(request: NativeRequest, state: InflightRequest): Promise<unknown> {
   if (state.deadlineAt === undefined) state.deadlineAt = Date.now() + COMMAND_TIMEOUT_MS;
+  if (['debugger.input', 'debugger.network', 'debugger.status'].includes(request.command)) {
+    const session = normalizeSessionKey(request.session_key);
+    if (state.sessionKey !== undefined && state.sessionKey !== session) throw new DispatchError('session_context_mismatch', 'Session mismatch.');
+    state.sessionKey = session;
+    const params = request.params ?? {};
+    const tabId = await ownedTab(params, state);
+    const owner = await sessionRegistry.get(session);
+    const guard = () => { assertNotCancelled(state); if (takeoverRequested) throw new Error('Operator takeover active.'); };
+    if (request.command !== 'debugger.status' && (await owner.requireState()).paused) throw new Error('Session takeover active.');
+    return enqueueTabMutation(tabId, () => debuggerBridge.command(session, tabId, request.command, params, guard));
+  }
   if (!COMMANDS.includes(request.command as Command)) throw new DispatchError('unsupported_command', `Unsupported command: ${request.command}`, 'Use health.status or help from the CLI.');
   const command = request.command as Command;
   const params = request.params ?? {};
@@ -885,9 +940,19 @@ async function dispatchCommand(request: NativeRequest, state: InflightRequest): 
       },
     };
   }
+  if (command.startsWith('record.')) {
+    const action = command.slice(7);
+    const tabId = ['start', 'restart'].includes(action) ? await sessions.getSelectedTabId() : -1;
+    if (tabId !== -1) {
+      const tab = await chrome.tabs.get(tabId);
+      await requireActiveScreenshotTarget(tabId, tab.windowId);
+    }
+    return recordCommand(action, sessionKey, tabId, params);
+  }
   if (command === 'sessions.start') return sessionRegistry.start(sessionKey, optionalString(params, 'name'));
   if (command === 'sessions.stop') {
     for (const other of inflight.values()) if (other !== state && other.sessionKey === sessionKey) markCancelled(other);
+    try { await recordCommand('clear', sessionKey, -1, {}); } catch { /* peer recorder must not be touched */ }
     return sessionRegistry.stop(sessionKey);
   }
   if (command === 'sessions.list') return sessionRegistry.list();
@@ -985,6 +1050,18 @@ async function dispatchCommand(request: NativeRequest, state: InflightRequest): 
   if (command === 'select') return runAction(params, { kind: 'select', ref: readString(params, 'ref', 128), value: readString(params, 'value', 2_000) }, state);
   if (command === 'press') return runAction(params, { kind: 'press', ref: optionalString(params, 'ref'), key: readString(params, 'key', 64), code: optionalString(params, 'code') }, state);
   if (command === 'scroll') return runAction(params, { kind: 'scroll', ref: optionalString(params, 'ref'), x: optionalInteger(params, 'x'), y: optionalInteger(params, 'y') }, state);
+  if (command === 'dom.query') {
+    if (request.session_key === undefined) throw new DispatchError('invalid_params', 'dom.query requires an explicit session_key.');
+    let query;
+    try { query = validateDomQuery(params.query); }
+    catch { throw new DispatchError('invalid_params', 'Invalid bounded DOM query data.'); }
+    const tabId = await targetTab(params, state);
+    assertNotCancelled(state);
+    const results = await browser.scripting.executeScript({target: {tabId, frameIds: [0]}, world: 'ISOLATED', func: queryDom, args: [query]});
+    assertNotCancelled(state);
+    if (!results[0]?.result) throw new DispatchError('query_failed', 'DOM inspection returned no result.');
+    return results[0].result;
+  }
   if (command === 'evaluate') {
     if (!evaluateEnabled) throw new DispatchError('capability_required', 'Evaluate is disabled. Grant this site or enable unlimited access in the popup.', 'Open the popup and choose the intended access scope.');
     const tabId = await targetTab(params, state);
@@ -1053,7 +1130,7 @@ function isPausedCommand(command: Command): boolean {
   return command === 'navigate' || command === 'back' || command === 'forward' || command === 'reload' ||
     command === 'snapshot' || command === 'observe' || command === 'click' || command === 'hover' ||
     command === 'fill' || command === 'type' || command === 'select' || command === 'press' ||
-    command === 'scroll' || command === 'evaluate' || command === 'console.start' ||
+    command === 'scroll' || command === 'dom.query' || command === 'evaluate' || command === 'console.start' ||
     command === 'console.read' || command === 'console.stop' || command === 'network.read' ||
     command === 'screenshot.visible' || command === 'screenshot.element' || command === 'upload' ||
     command === 'batch' || command === 'wait.for';

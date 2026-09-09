@@ -15,6 +15,8 @@ CLI_DIR="$APP_SUPPORT/cli"
 HOST_PATH="$APP_SUPPORT/overseer-browser-native-host"
 CLI_LAUNCHER="${OVERSEER_BROWSER_BIN_DIR:-$HOME/.local/bin}/overseer-browser"
 EXTENSION_DIR="$ROOT/chrome-extension"
+EXTENSION_SOURCE="$ROOT/extension/.output/chrome-mv3"
+[ -f "$EXTENSION_SOURCE/manifest.json" ] || EXTENSION_SOURCE="$EXTENSION_DIR"
 GENERATE_MANIFEST="$ROOT/scripts/generate_manifest.py"
 
 say() { printf '%s\n' "$*"; }
@@ -30,25 +32,70 @@ private_setup() {
   chmod 700 "$APP_SUPPORT" "$HOST_DIR" "$CLI_DIR"
 }
 
+# Publish individual files by same-directory rename; readers never see partial bytes.
+atomic_write() {
+  "$PYTHON" -c 'import os,sys,tempfile
+from pathlib import Path
+p=Path(sys.argv[1]); p.parent.mkdir(parents=True,exist_ok=True)
+fd,t=tempfile.mkstemp(prefix=".publish-",dir=p.parent)
+try:
+ with os.fdopen(fd,"wb") as f: f.write(sys.stdin.buffer.read()); f.flush(); os.fsync(f.fileno())
+ os.chmod(t,int(sys.argv[2],8)); os.replace(t,p)
+finally:
+ if os.path.exists(t): os.unlink(t)' "$1" "${2:-600}"
+}
+
+stage_runtime() {
+  mkdir -p "$APP_SUPPORT/runtimes"
+  STAGE="$(mktemp -d "$APP_SUPPORT/runtimes/.stage-XXXXXXXX")"
+  trap 'if [ -n "${STAGE:-}" ]; then rm -rf "$STAGE"; fi' EXIT
+  mkdir "$STAGE/native_host" "$STAGE/cli" "$STAGE/extension"
+  for module in __init__ host protocol runtime isolation; do
+    install -m 600 "$ROOT/native_host/$module.py" "$STAGE/native_host/$module.py"
+  done
+  for module in __init__ main runtime_discovery evidence recording dom_query temp_outputs; do
+    install -m 600 "$ROOT/cli/$module.py" "$STAGE/cli/$module.py"
+  done
+  [ -f "$EXTENSION_SOURCE/manifest.json" ] || fail "Build the extension first: missing $EXTENSION_SOURCE/manifest.json"
+  cp -R "$EXTENSION_SOURCE/." "$STAGE/extension/"
+  # Isolated interpreter excludes checkout/PYTHONPATH; compile without leaving caches.
+  "$PYTHON" -I -B - "$STAGE" "$HOST_PATH" <<'PYVALIDATE'
+import importlib, json, sys
+from pathlib import Path
+root = Path(sys.argv[1])
+sys.path.insert(0, str(root))
+for package in ('native_host', 'cli'):
+    for path in (root / package).glob('*.py'):
+        compile(path.read_bytes(), str(path), 'exec')
+        importlib.import_module(package + '.' + path.stem)
+manifest = json.loads((root / 'extension/manifest.json').read_text())
+assert manifest.get('manifest_version') == 3, 'expected MV3 extension'
+from native_host.runtime import native_manifest
+(root / 'native-manifest.json').write_text(json.dumps(native_manifest(sys.argv[2]), indent=2))
+PYVALIDATE
+  RUNTIME="$APP_SUPPORT/runtimes/runtime-${STAGE##*.stage-}"
+  mv "$STAGE" "$RUNTIME"
+  STAGE=""
+  HOST_DIR="$RUNTIME/native_host"
+  CLI_MAIN="$RUNTIME/cli/main.py"
+  EXTENSION_DIR="$RUNTIME/extension"
+}
+
+publish_manifest() {
+  atomic_write "$1" <"$RUNTIME/native-manifest.json"
+}
+
 install_host() {
-  install -m 600 "$ROOT/native_host/protocol.py" "$HOST_DIR/protocol.py"
-  install -m 600 "$ROOT/native_host/runtime.py" "$HOST_DIR/runtime.py"
-  install -m 600 "$ROOT/native_host/__init__.py" "$HOST_DIR/__init__.py"
-  install -m 700 "$ROOT/native_host/host.py" "$HOST_DIR/host.py"
-  install -m 600 "$ROOT/cli/__init__.py" "$CLI_DIR/__init__.py"
-  install -m 700 "$ROOT/cli/main.py" "$CLI_DIR/main.py"
-  cat >"$HOST_PATH" <<EOF
+  stage_runtime
+  atomic_write "$HOST_PATH" 700 <<EOF
 #!/bin/sh
-exec "$PYTHON" "$HOST_DIR/host.py" "\$@"
+exec "$PYTHON" -I -B -c 'import runpy,sys; sys.path.insert(0, sys.argv.pop(1)); runpy.run_module("native_host.host", run_name="__main__")' "$RUNTIME" "\$@"
 EOF
-  chmod 700 "$HOST_PATH"
-  cli_bin="$(dirname "$CLI_LAUNCHER")"
-  mkdir -p "$cli_bin"
-  cat >"$CLI_LAUNCHER" <<EOF
+  atomic_write "$CLI_LAUNCHER" 700 <<EOF
 #!/bin/sh
-exec "$PYTHON" "$CLI_DIR/main.py" "\$@"
+# OverSeer Browser managed launcher
+exec "$PYTHON" -I -B -c 'import runpy,sys; sys.path.insert(0, sys.argv.pop(1)); runpy.run_module("cli.main", run_name="__main__")' "$RUNTIME" "\$@"
 EOF
-  chmod 700 "$CLI_LAUNCHER"
 }
 
 install_manifests() {
@@ -60,8 +107,7 @@ install_manifests() {
   do
     mkdir -p "$browser_dir/NativeMessagingHosts"
     chmod 700 "$browser_dir/NativeMessagingHosts"
-    "$PYTHON" "$GENERATE_MANIFEST" \
-      "$browser_dir/NativeMessagingHosts/com.imploselabs.overseer_browser.json" "$HOST_PATH"
+    publish_manifest "$browser_dir/NativeMessagingHosts/com.imploselabs.overseer_browser.json"
   done
 }
 
@@ -75,3 +121,6 @@ say "CLI launcher: $CLI_LAUNCHER"
 say "The extension is loaded and reloaded manually: open your browser's extensions page"
 say "(e.g. chrome://extensions), enable Developer mode, and load/unload the unpacked"
 say "directory above yourself."
+
+say "Coordinate the NEW Load unpacked path with session owners and reconfirm connection/site permissions."
+say "Old runtime/extension trees are retained; no running host is restarted or extension reloaded."

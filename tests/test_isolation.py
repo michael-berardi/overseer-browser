@@ -11,6 +11,10 @@ from cli.main import request_once
 
 class IsolationTests(unittest.TestCase):
     def setUp(self):
+        # Managed-instance tests must not inherit the operator's installed relay.
+        discovery = patch('cli.main.find_active_runtime', return_value=None)
+        discovery.start()
+        self.addCleanup(discovery.stop)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         root = Path(self.tmp.name)

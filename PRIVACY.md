@@ -15,6 +15,10 @@ The extension and native host do not independently upload these values. A callin
 
 Runtime state is bounded and local. Session state and pending meeting delivery are cleared when the browser restarts or the connection/session ends. Uninstalling removes the native host registration and this application's local runtime files; it does not delete shared browser data.
 
+## Explicit QA evidence (0.5.0)
+
+`qa pack` writes requested snapshots, screenshots, existing console entries and Resource Timing metadata into a new private local directory. `timelapse` explicitly samples up to 120 visible screenshots in the foreground, no faster than one every two seconds. It is not audio/video recording and never starts automatically. Both require a resolved agent session, preserve the existing tab-access boundary, and make no external upload. Manifests contain the task session key and timestamps; page artifacts can contain sensitive content. The caller must choose appropriate retention and delete the evidence when no longer needed; stopping a browser session does not delete these exported files.
+
 ## Optional anonymous usage sharing
 
 Usage sharing is **off by default** and requires an affirmative choice in the extension popup. Before consent, the extension creates no telemetry identifier, stores no usage counters, and makes no telemetry request. Declining is silent.
@@ -41,10 +45,10 @@ Telemetry never contains URLs, titles, page data, screenshots, form values, comm
 - **User Scripts:** CSP-safe page evaluation uses Chrome’s `userScripts` API after Chrome’s one-time **Allow User Scripts** setting is enabled. Dedicated Agent Window tabs use the installed host permission; borrowed tabs additionally require a popup site-access grant.
 - **Native Messaging:** connects the extension to the local native host and is not a network permission.
 - **Storage, scripting, tabs, and windows:** support the visible popup, session ownership, content traversal, and browser actions.
-- **No debugger permission:** the extension does not invoke `chrome.debugger` or request debugger access.
+- **Debugger access:** not enabled or requested by this release. Debugger-dependent operations are unsupported; there is no automatic attachment, raw CDP passthrough, or passive debugger collection.
 - **Meeting detection:** local reminder detection uses the supported Meet and Zoom hosts. No persistent general-site content script is registered; the broader installed permission supports explicit automation.
 
-The manifest must not add history, bookmarks, `webRequest`, `activeTab`, or debugger access. Its required `<all_urls>` host permission is intentional for the isolated Agent Window and screenshot implementation. Uninstalling or disabling the extension revokes its browser access.
+The manifest must not add history, bookmarks, `webRequest`, or required debugger access. `activeTab`, `tabCapture`, and `offscreen` support only the explicit, popup-consented recording workflow. Do not add debugger permission until the installation-permission decision above is explicitly approved. Its required `<all_urls>` host permission is intentional for the isolated Agent Window and screenshot implementation. Uninstalling or disabling the extension revokes its browser access.
 
 ## Session and tab ownership
 
@@ -56,7 +60,7 @@ This is an access boundary, not a claim that a webpage is trustworthy. A page ca
 
 Meeting reminders support only the hosts documented by the current build. A detector emits a versioned event containing a detection ID, provider, timestamp, and a 64-character lowercase hexadecimal opaque salted SHA-256 `meeting_key`.
 
-The raw URL, query string, meeting ID, title, page content, participant list, credentials, cookies, and recording data are not included. The native host may deliver the same minimized event over same-user local IPC to an optional adapter. Adapters must preserve the schema, keep the opaque key, bound retention, and never add page data. The extension never records audio or video and never starts recording; any recording action must be a separate visible user choice.
+The raw URL, query string, meeting ID, title, page content, participant list, credentials, cookies, and recording data are not included. The native host may deliver the same minimized event over same-user local IPC to an optional adapter. Adapters must preserve the schema, keep the opaque key, bound retention, and never add page data. Meeting detection never starts recording; explicit video recording requires separate visible popup consent.
 
 ## Threat boundaries
 
@@ -72,4 +76,39 @@ No browser extension can protect against a compromised browser, operating system
 
 ## Security invariants
 
-A release or local build must fail review if it adds debugger access, passive browsing collection, broad external control, required all-site access, unbounded frames, or raw meeting data to a host/adapter message. Optional current-origin and unlimited HTTP(S) grants must remain visible, user-initiated, and revocable. Debugger-only capabilities must return an explicit `unsupported_capability` result rather than silently using a weaker substitute. See [SECURITY.md](SECURITY.md) for the vulnerability-reporting process and release checklist.
+A release or local build must fail review if it adds required or non-consensual debugger access, passive browsing collection, broad external control, required all-site access, unbounded frames, or raw meeting data to a host/adapter message. Optional current-origin and unlimited HTTP(S) grants must remain visible, user-initiated, and revocable. Debugger-only capabilities must fail explicitly when permission or tab consent is missing; never silently substitute weaker input. See [SECURITY.md](SECURITY.md) for the vulnerability-reporting process and release checklist.
+
+## User-approved video (0.6.0)
+
+The explicit `record` command can capture video of one owned, active selected
+tab only after a real toolbar-popup approval. It captures no audio, never starts
+passively, and never uses debugger/CDP. Consent expires in 60 seconds; restart
+needs fresh approval. Media is capped at 64 MiB and five minutes. In-memory
+artifacts expire five minutes after stop, with an additional request-lifetime
+cap; session stop, tab closure, clear and native disconnect discard them.
+Temporary export directories are private and cleaned on success or failure;
+source WebM is at most 64 MiB and MP4 conversion has a separate 64 MiB cap
+(near-cap output is rejected conservatively). Published exports are private and never overwritten. OS-temp outputs are
+registered for automatic expiry, including explicitly named temp destinations.
+Outside-temp exports and explicit `--keep` outputs require operator deletion;
+no global quota or automatic deletion of these intentionally kept files is claimed. No media is uploaded.
+
+### Disposable staging versus kept exports
+
+Recording conversion uses a private `overseer-media-v1-<uid>` temporary
+namespace, with four concurrent 128 MiB reservations. Active leases are locked;
+completed leases are deleted eagerly. Failed deletions are retried every 30
+seconds while a CLI process remains alive; expired unlocked leftovers (15
+minutes) are also reaped at startup. The native host calls
+`cli.recording.reap_staging()` and the output reaper at startup and while idle.
+When the host is not running, recovery waits for the next host/CLI startup;
+the CLI daemon thread alone does not provide continuous wall-clock expiry. Unrelated temporary
+files and legacy staging directories are not swept. Recording publication uses
+an atomic no-clobber hard link and fails safely across filesystems.
+
+Explicit OS-temp `record export`, QA and timelapse destinations remain disposable
+unless marked `--keep`. Outside-temp exports are intentionally kept. Cleanup
+must preserve replaced files, unrelated additions, and explicitly kept outputs. Recorder memory
+has a 1,200-chunk cap in addition to its byte/time caps and releases media on
+clear, expiry and setup failure. No indefinite-use claim applies to accumulating
+explicitly kept exports or to unavailable cleanup services.

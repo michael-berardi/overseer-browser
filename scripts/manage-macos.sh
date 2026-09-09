@@ -78,39 +78,81 @@ build_extension() {
   PATH="$npm_path" "$npm_bin" run build --prefix "$ROOT/extension"
   [ -f "$ROOT/extension/.output/chrome-mv3/manifest.json" ] ||
     fail "extension build did not produce .output/chrome-mv3/manifest.json"
-  rm -rf "$EXTENSION_DIR"
-  mkdir -p "$EXTENSION_DIR"
-  cp -R "$ROOT/extension/.output/chrome-mv3/." "$EXTENSION_DIR/"
-  [ -f "$EXTENSION_DIR/manifest.json" ] ||
-    fail "extension staging did not produce chrome-extension/manifest.json"
-  say "Load unpacked extension directory: $EXTENSION_DIR"
+  EXTENSION_SOURCE="$ROOT/extension/.output/chrome-mv3"
+
 }
 
 
+# Publish individual files by same-directory rename; readers never see partial bytes.
+atomic_write() {
+  "$PYTHON" -c 'import os,sys,tempfile
+from pathlib import Path
+p=Path(sys.argv[1]); p.parent.mkdir(parents=True,exist_ok=True)
+fd,t=tempfile.mkstemp(prefix=".publish-",dir=p.parent)
+try:
+ with os.fdopen(fd,"wb") as f: f.write(sys.stdin.buffer.read()); f.flush(); os.fsync(f.fileno())
+ os.chmod(t,int(sys.argv[2],8)); os.replace(t,p)
+finally:
+ if os.path.exists(t): os.unlink(t)' "$1" "${2:-600}"
+}
+
+stage_runtime() {
+  mkdir -p "$APP_SUPPORT/runtimes"
+  STAGE="$(mktemp -d "$APP_SUPPORT/runtimes/.stage-XXXXXXXX")"
+  trap 'if [ -n "${STAGE:-}" ]; then rm -rf "$STAGE"; fi' EXIT
+  mkdir "$STAGE/native_host" "$STAGE/cli" "$STAGE/extension"
+  for module in __init__ host protocol runtime isolation; do
+    install -m 600 "$ROOT/native_host/$module.py" "$STAGE/native_host/$module.py"
+  done
+  for module in __init__ main runtime_discovery evidence recording dom_query temp_outputs; do
+    install -m 600 "$ROOT/cli/$module.py" "$STAGE/cli/$module.py"
+  done
+  [ -f "$EXTENSION_SOURCE/manifest.json" ] || fail "Build the extension first: missing $EXTENSION_SOURCE/manifest.json"
+  cp -R "$EXTENSION_SOURCE/." "$STAGE/extension/"
+  # Isolated interpreter excludes checkout/PYTHONPATH; compile without leaving caches.
+  "$PYTHON" -I -B - "$STAGE" "$HOST_PATH" <<'PYVALIDATE'
+import importlib, json, sys
+from pathlib import Path
+root = Path(sys.argv[1])
+sys.path.insert(0, str(root))
+for package in ('native_host', 'cli'):
+    for path in (root / package).glob('*.py'):
+        compile(path.read_bytes(), str(path), 'exec')
+        importlib.import_module(package + '.' + path.stem)
+manifest = json.loads((root / 'extension/manifest.json').read_text())
+assert manifest.get('manifest_version') == 3, 'expected MV3 extension'
+from native_host.runtime import native_manifest
+(root / 'native-manifest.json').write_text(json.dumps(native_manifest(sys.argv[2]), indent=2))
+PYVALIDATE
+  RUNTIME="$APP_SUPPORT/runtimes/runtime-${STAGE##*.stage-}"
+  mv "$STAGE" "$RUNTIME"
+  STAGE=""
+  HOST_DIR="$RUNTIME/native_host"
+  CLI_MAIN="$RUNTIME/cli/main.py"
+  EXTENSION_DIR="$RUNTIME/extension"
+}
+
+publish_manifest() {
+  atomic_write "$1" <"$RUNTIME/native-manifest.json"
+}
+
 install_host() {
-  install -m 600 "$ROOT/native_host/protocol.py" "$HOST_DIR/protocol.py"
-  install -m 600 "$ROOT/native_host/runtime.py" "$HOST_DIR/runtime.py"
-  install -m 600 "$ROOT/native_host/isolation.py" "$HOST_DIR/isolation.py"
-  install -m 700 "$ROOT/native_host/host.py" "$HOST_DIR/host.py"
-  install -m 600 "$ROOT/cli/__init__.py" "$CLI_DIR/__init__.py"
-  install -m 600 "$ROOT/cli/main.py" "$CLI_MAIN"
-  install -m 700 "$ROOT/native_host/__init__.py" "$HOST_DIR/__init__.py"
-  cat >"$HOST_PATH" <<EOF
+  stage_runtime
+  atomic_write "$HOST_PATH" 700 <<EOF
 #!/bin/sh
-exec "$PYTHON" "$HOST_DIR/host.py" "\$@"
+exec "$PYTHON" -I -B -c 'import runpy,sys; sys.path.insert(0, sys.argv.pop(1)); runpy.run_module("native_host.host", run_name="__main__")' "$RUNTIME" "\$@"
 EOF
-  chmod 700 "$HOST_PATH"
   install_manager
   install_cli_launcher
-  "$PYTHON" "$ROOT/scripts/generate_manifest.py" "$MANIFEST" "$HOST_PATH"
-  "$PYTHON" "$ROOT/scripts/generate_manifest.py" "$TESTING_MANIFEST" "$HOST_PATH"
+  publish_manifest "$MANIFEST"
+  publish_manifest "$TESTING_MANIFEST"
 }
 
 
 install_manager() {
-  printf '%s\n' "$ROOT" >"$SOURCE_ROOT_PATH"
+  printf '%s\n' "$ROOT" | atomic_write "$SOURCE_ROOT_PATH"
   chmod 600 "$SOURCE_ROOT_PATH"
-  cat >"$MANAGER_PATH" <<'EOF'
+  atomic_write "$MANAGER_PATH" 700 <<'EOF'
 #!/bin/sh
 set -eu
 action="${1:-status}"
@@ -173,13 +215,13 @@ EOF
 }
 
 install_cli_launcher() {
-  cat >"$CLI_FALLBACK" <<EOF
+  atomic_write "$CLI_FALLBACK" 700 <<EOF
 #!/bin/sh
 # OverSeer Browser managed launcher
-exec "$PYTHON" "$CLI_MAIN" "\$@"
+exec "$PYTHON" -I -B -c 'import runpy,sys; sys.path.insert(0, sys.argv.pop(1)); runpy.run_module("cli.main", run_name="__main__")' "$RUNTIME" "\$@"
 EOF
   chmod 700 "$CLI_FALLBACK"
-  printf '%s\n' "$CLI_LAUNCHER" >"$CLI_LAUNCHER_PATH"
+  printf '%s\n' "$CLI_LAUNCHER" | atomic_write "$CLI_LAUNCHER_PATH"
   chmod 600 "$CLI_LAUNCHER_PATH"
   say "Executable fallback CLI: $CLI_FALLBACK"
   if ! mkdir -p "$(dirname "$CLI_LAUNCHER")" 2>/dev/null; then
@@ -191,10 +233,10 @@ EOF
     say "Use the executable fallback CLI: $CLI_FALLBACK"
     return
   fi
-  if ! cat >"$CLI_LAUNCHER" <<EOF
+  if ! atomic_write "$CLI_LAUNCHER" 700 <<EOF
 #!/bin/sh
 # OverSeer Browser managed launcher
-exec "$PYTHON" "$CLI_MAIN" "\$@"
+exec "$PYTHON" -I -B -c 'import runpy,sys; sys.path.insert(0, sys.argv.pop(1)); runpy.run_module("cli.main", run_name="__main__")' "$RUNTIME" "\$@"
 EOF
   then
     say "CLI launcher is unavailable; preserving preferred path: $CLI_LAUNCHER"
@@ -205,6 +247,9 @@ EOF
 
 reload_chrome() {
   say "Daily Chrome was not opened or reloaded. Start a dedicated instance with: overseer-browser sessions start"
+  say "Load unpacked the NEW directory explicitly in chrome://extensions: $EXTENSION_DIR"
+  say "Coordinate switching with session owners; existing loaded directories and running hosts are retained."
+  say "Reconfirm extension connection/site permissions; Chrome does not follow a changed path automatically."
   say "Set OVERSEER_BROWSER_EXTENSION=$EXTENSION_DIR for the installed CLI."
   say "In dedicated Chrome for Testing only, enable the extension connection, site access and evaluation as needed."
 }

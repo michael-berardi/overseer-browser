@@ -19,7 +19,7 @@ The project is designed for explicit, visible automation:
 - Browser control stays on the local machine. The repository does not require a remote browser or control service.
 - A session owns a dedicated Agent Window by default. A normal tab must be explicitly borrowed and is returned when the session ends.
 - The extension declares broad HTTP(S) host permission at installation for its dedicated Agent Window and screenshots; operator-browser tabs remain blocked until the popup explicitly grants the current origin or unlimited HTTP(S) access.
-- The extension does not request `chrome.debugger`, CDP, history, bookmarks, `webRequest`, or `activeTab`. Debugger-only capabilities return structured `unsupported_capability` errors.
+- The extension does not enable debugger access, history, bookmarks, or `webRequest`. Explicit video capture uses popup-consented `activeTab`/`tabCapture`/`offscreen` access. Debugger-dependent operations are not included in this release and no debugger permission is requested. Missing capabilities never silently switch transports.
 - Page observations, screenshots, uploads, and action results remain local unless the calling client deliberately forwards them under its own privacy policy.
 - Optional anonymous usage sharing is disabled until consent. It is not required for browser control; see [PRIVACY.md](PRIVACY.md) for the data boundary.
 
@@ -30,6 +30,7 @@ Read [PRIVACY.md](PRIVACY.md) and [SECURITY.md](SECURITY.md) before using the ex
 - A Chromium-family browser (Chrome, Edge, Brave, Chromium, and derivatives) with Chrome Native Messaging and User Scripts support.
 - Node.js and npm to build the extension.
 - Python 3.9 or newer to run the native host and CLI.
+- Automatic media cleanup and recording export require POSIX file locking (macOS/Linux). Those workflows are not supported on Windows in this release; they fail explicitly rather than silently retain temporary data. Windows existing-relay installation remains experimental.
 - macOS, Linux, or Windows 10 1803+ (the native host uses a per-user AF_UNIX socket; on Windows it registers through HKCU registry keys and mode-bit privacy checks yield to NTFS ACLs).
 
 ## Install from source on macOS
@@ -173,7 +174,13 @@ overseer-browser takeover resume
 overseer-browser cancel <request-id>
 ```
 
-Structured results are served as UltraCompact packets when stdout is not a terminal (and under `--json`), cutting agent token cost; `uc decode` restores the exact JSON and `--raw-json` always emits it directly. Interactive terminals keep pretty-printed JSON. UltraCompact encoding uses the UltraCompact encoder when available (`UC_BIN`/`UC_LIB` environment overrides, a `uc` binary on `PATH`, or `~/.local/lib/ultracompact/`); without it the CLI emits canonical JSON with a warning, so nothing breaks.
+Command results are plain minified JSON on stdout, including errors and terminal output. `--json` and `--raw-json` remain compatibility aliases. No compression codec, native encoding library, decoder, or encoding subprocess is needed.
+
+### Managed temporary outputs
+
+Screenshots without a filename use `/tmp/screenshots/` on POSIX. Explicit OS-temp screenshots, evidence packs, timelapses and recording exports remain temporary unless marked `--keep`. Completed outputs normally expire after 15 minutes and may be evicted earlier under the 512 MiB / 512-entry budget; active reservations are protected. Separate conversion staging has four 128 MiB slots. Journaling precedes file publication, so interrupted writes and publications can be reclaimed without adopting unrelated files. Replaced/edited files and unrelated directory additions are preserved.
+
+The native host reaps on startup and while idle. If the host is stopped, cleanup waits for the next host/CLI startup; no always-running OS cleanup guarantee is claimed. Outside-temp and `--keep` exports are deliberately persistent. Update the native host as well as the CLI to obtain idle cleanup.
 
 `evaluate` requires an explicit site-access scope and Chrome’s one-time **Allow User Scripts** setting. It runs in the CSP-exempt User Scripts world, so strict websites do not need `unsafe-eval`. Uploads, console capture, Resource Timing metadata, screenshots, and batches are bounded; see [PROTOCOL.md](PROTOCOL.md) for limits and response shapes. Commands return structured errors with stable codes. Unsupported debugger-only capabilities are never silently downgraded.
 
@@ -183,7 +190,7 @@ Ref-based actions work through the top document, open shadow roots, and visible 
 
 The extension has no user account and no cloud browser-control plane. Native host and CLI state is local and protected with per-user file and socket permissions where supported. The extension does not passively inventory arbitrary tabs or collect general browsing history.
 
-Meeting detection, when enabled by a build, is limited to its documented supported hosts and emits only a versioned opaque event for local delivery. It does not include raw URLs, meeting IDs, titles, page content, participants, credentials, or recording data. The extension never starts recording.
+Meeting detection, when enabled by a build, is limited to its documented supported hosts and emits only a versioned opaque event for local delivery. It does not include raw URLs, meeting IDs, titles, page content, participants, credentials, or recording data. Meeting detection never starts recording; explicit video recording requires separate popup consent.
 
 Optional telemetry is off until an affirmative popup choice. If enabled by a release, it sends only the coarse fields and counters documented in [PRIVACY.md](PRIVACY.md) to that release's configured telemetry service. Disable sharing in the popup to remove the local identifier and pending counters. Browser control does not depend on telemetry.
 
@@ -268,3 +275,90 @@ a descriptor or override, managed isolation remains the default. Re-run the
 selection helper after an authorized relay runtime/token change; it keeps a
 private timestamped backup of the previous descriptor. Do not copy tokens or
 change native-host registrations to resolve a connection mismatch.
+
+### Evidence composition (0.5.0)
+
+Source CLI commands (no install or extension build needed to inspect help):
+
+```bash
+python3 -m cli.main doctor --raw-json
+python3 -m cli.main --session fresh-qa sessions start qa --raw-json
+python3 -m cli.main --session fresh-qa navigate http://localhost:3000 --raw-json
+python3 -m cli.main --session fresh-qa console start --raw-json
+# Exercise the page after console start to collect console evidence.
+python3 -m cli.main --session fresh-qa qa pack /tmp/screenshots/fresh-qa-pack --raw-json
+python3 -m cli.main --session fresh-qa timelapse /tmp/screenshots/fresh-qa-frames 5 2 --raw-json
+python3 -m cli.main --session fresh-qa sessions stop --raw-json
+```
+
+Use a unique session key and new output directories each run. `qa pack DIR`
+collects snapshot JSON, visible screenshot PNG and its response metadata,
+console JSON, network JSON, and `manifest.json`. It does not start/stop console
+capture, navigate, or manage sessions. Console evidence requires `console start`
+before the activity of interest. Network evidence is redacted Resource Timing
+metadata, not response bodies or a HAR. Evidence is sequential, not atomic;
+a page may change between artifacts. Each failure is preserved separately in
+the manifest, remaining artifacts are attempted, and partial packs exit nonzero.
+Pack directories must not exist (including symlinks); files are atomically
+written private (0600) in a private (0700) directory on POSIX. Evidence can still
+contain sensitive page content; handle and delete it accordingly.
+
+`doctor` reports the CLI/source host versions and observed `health.status`
+including permissions, User Scripts availability, multi-session state and
+extension version. Version drift or a failed status exits nonzero. The current
+transport does not expose the loaded host version: its check is explicitly
+`unknown`, not inferred from source. Local composition capability descriptions
+are not a claim that a disconnected browser can capture.
+
+`timelapse DIR FRAMES INTERVAL_SECONDS` is explicit, bounded, foreground
+screenshot sampling, **not video recording**. It accepts 1–120 frames and 2–30
+seconds minimum between frame starts (at most 0.5 FPS, often slower with shared
+Chrome capture pacing). Actual monotonic frame-start offsets and total elapsed
+time are recorded; there is no catch-up burst, background process, encoder or
+new dependency. Ctrl-C preserves the manifest as incomplete. `--timeout` is per
+transport request, not a whole-pack deadline. `--session` (or resolved automatic
+session identity) is mandatory for capture; `--tab-id` targets every artifact.
+Composition rejects `--request-id`, `--max-nodes`, and `--wait-until` rather than
+silently misapplying them. Every request gets a fresh transport request ID.
+
+### Consented native video (0.6.0; Chrome 116+)
+
+`record start [FPS SECONDS MAX_BYTES]` requests recording of the session's
+selected, active owned tab. Defaults: 30 FPS, 60 seconds, 32 MiB; limits:
+60 FPS, 300 seconds, 64 MiB. This captures video only, without debugger/CDP,
+navigation, reload, or page-state reset. Requested FPS is not achieved FPS.
+Open the toolbar popup on that tab and click **Approve recording** within
+60 seconds. Denial, expiration, tab/selection changes and wrong sessions
+cannot authorize capture. `record restart` always requires a fresh popup click.
+
+Operator smoke sequence (only after installing/reloading is separately approved):
+
+```sh
+python3 -m cli.main --session video-smoke sessions start
+python3 -m cli.main --session video-smoke tabs create https://example.com
+python3 -m cli.main --session video-smoke record start 30 10 33554432
+# Focus the requested tab; open the real toolbar popup; click Approve recording.
+python3 -m cli.main --session video-smoke record status
+# Exercise the page without reloading it, then export to a NEW local path:
+python3 -m cli.main --session video-smoke record stop capture.webm
+python3 -m cli.main --session video-smoke record restart 30 10 33554432
+# Verify fresh consent is required; deny it in the popup.
+python3 -m cli.main --session video-smoke record clear
+python3 -m cli.main --session video-smoke sessions stop
+```
+
+WebM is native; MP4 export requires an installed ffmpeg with a successful local
+H.264 encode probe. `doctor` does not claim live browser verification. ffprobe,
+when installed, reports encoded frame evidence. Export is bounded, private
+(0600), atomic and refuses existing paths. Failed exports leave no published
+file and preserve browser bytes until expiration. Stop is idempotent. One
+recorder is allowed extension-wide. Retained browser bytes expire five minutes
+after stop (or earlier at the request lifetime cap), and clear/session stop/tab
+closure/native disconnect discard them. Service-worker suspension can lose
+request metadata; a new start clears orphaned bytes. The offscreen document
+independently enforces duration and retention. Exported files remain until the
+operator deletes them; there is no automatic deletion of user exports.
+
+Read-only [DOM queries](DOM_QUERIES.md) use fixed native `dom.query` with an explicit
+session and owned tab; no User Scripts permission or evaluate fallback. Requires
+the 0.6.0 (unreleased) extension source and operator-approved reload.
