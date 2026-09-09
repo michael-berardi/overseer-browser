@@ -13,6 +13,10 @@ The generated Native Messaging registration must list only the exact extension i
 
 Frames are bounded before allocation and parsed as one JSON value. Malformed, oversized, truncated, stale, or unauthorized frames receive a structured error or close the connection. Implementations must use request timeouts and cancellation rather than waiting forever.
 
+## CLI evidence composition (0.5.0)
+
+`qa pack DIR`, `timelapse DIR FRAMES INTERVAL_SECONDS`, and `doctor` are client-side compositions, not new wire commands. They reuse the existing scoped requests with fresh request IDs; protocol version remains 1. Capture requires a resolved session key and does not create, navigate or stop sessions. Packs retain per-command success/error metadata and exit nonzero when incomplete. Timelapse supports 1–120 visible screenshots at 2–30 second minimum intervals, with actual monotonic offsets; it is not a video stream. `doctor` reports observed extension-version drift and an unknown loaded-host version when the transport does not supply one. See README for the artifact schema and source invocation.
+
 ## CLI request
 
 Every CLI request has this shape:
@@ -193,3 +197,22 @@ Missing, malformed, mismatched, or unsuccessful adapter responses produce `deliv
 ## Versioning
 
 Version `1` is the current public contract. Additive fields require documented compatibility behavior. A breaking change requires a new protocol version and an explicit handshake or migration path. Unknown fields must be ignored when safe; unknown commands must return `invalid_request` rather than being guessed.
+## Explicit recording (0.6.0)
+
+Session-scoped `record.start` and `record.restart` accept integer `fps` (1–60),
+`seconds` (1–300), and `max_bytes` (1–67108864). They reserve the selected active
+owned tab, returning a consent request, not capture authorization. Only the
+extension popup recipient may approve; ownership, active tab and selection are
+rechecked before and after stream authorization. Consent expires after 60s;
+restart always replaces its token. `record.status`, `record.stop`, `record.clear`
+and `record.chunk` reject other session keys. Chunk accepts a zero-based integer
+`index` after stop and returns matching index and base64 data, at most 196608
+raw bytes. The CLI verifies total bytes, exact chunk sizes and bounded encoding.
+No bytes are exported from byte-limit or encoder-error captures. Stop is
+idempotent; clear discards memory. Native WebM MIME support is checked at actual
+capture, not inferred from installed ffmpeg. MP4 is a local conversion, not a
+native browser format. No debugger permission is used or implied approved.
+
+Read-only [DOM queries](DOM_QUERIES.md) use fixed native `dom.query` with an explicit
+session and owned tab; no User Scripts permission or evaluate fallback. Requires
+the 0.6.0 (unreleased) extension source and operator-approved reload.

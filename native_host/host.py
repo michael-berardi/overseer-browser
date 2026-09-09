@@ -22,6 +22,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, BinaryIO
 
+# Chrome launches this file directly; sibling CLI cleanup modules belong to
+# this same staged runtime, never an ambient installed package.
+if not __package__:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 try:
     from .protocol import (
         EXTENSION_ID,
@@ -54,7 +59,7 @@ except ImportError:
         validate_request,
     )
     from runtime import RuntimePaths, ensure_token, prepare_socket  # type: ignore[no-redef]
-HOST_VERSION = "0.4.1"
+HOST_VERSION = "0.6.0"
 DEFAULT_REQUEST_TIMEOUT = 30.0
 MAX_PENDING = 128
 MAX_CLIENT_REQUEST_IDS = 4_096
@@ -129,6 +134,8 @@ class NativeHost:
             server.listen(MAX_PENDING)
             accept_thread = threading.Thread(target=self._accept_loop, name="browser-host-cli", daemon=True)
             accept_thread.start()
+            self._cleanup_once()
+            threading.Thread(target=self._cleanup_loop, name="browser-host-cleanup", daemon=True).start()
             self._native_loop()
         finally:
             self._stop.set()
@@ -145,6 +152,18 @@ class NativeHost:
                 self._clients.clear()
             for client in clients:
                 client.connection.close()
+
+    def _cleanup_once(self) -> None:
+        from cli import recording, temp_outputs
+        for reap in (recording.reap_staging, temp_outputs.reap_outputs):
+            try:
+                reap()
+            except (OSError, ValueError):
+                pass  # Fail closed and retry on next idle tick.
+
+    def _cleanup_loop(self) -> None:
+        while not self._stop.wait(30):
+            self._cleanup_once()
 
     def _accept_loop(self) -> None:
         server = self._server
@@ -208,6 +227,18 @@ class NativeHost:
         except ProtocolError as exc:
             self._send_response(client, request_id, False, error=error(_error_code(str(exc)), str(exc)))
             return
+        if request["command"] == "dom.query":
+            try:
+                from cli.dom_query import validate_query
+                params = request["params"]
+                if "session_key" not in request or set(params) - {"tab_id", "query"}:
+                    raise ValueError("dom.query requires explicit session scope and only query/tab_id")
+                if "tab_id" in params and (type(params["tab_id"]) is not int or params["tab_id"] < 0):
+                    raise ValueError("invalid tab_id")
+                validate_query(params.get("query"))
+            except (ValueError, TypeError, UnicodeError, RecursionError) as exc:
+                self._send_response(client, request_id, False, error=error("invalid_params", str(exc)))
+                return
         request_id = request["request_id"]
         if "session_key" in request and request["command"] != "health.status" and not self._multi_session:
             self._send_response(client, request_id, False, error=error("extension_upgrade_required", "Reload OverSeer Browser 0.4.0+ before using scoped browser control"))

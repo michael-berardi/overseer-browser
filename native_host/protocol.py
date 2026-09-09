@@ -100,6 +100,18 @@ def validate_request(message: object, token: str | None = None) -> dict[str, Any
         raise ProtocolError("params must be an object")
     if "session_key" in message and (not isinstance(message["session_key"], str) or not _REQUEST_ID_RE.fullmatch(message["session_key"])):
         raise ProtocolError("invalid session_key")
+    if command == 'dom.query':
+        if not message.get('session_key'):
+            raise ProtocolError('dom.query requires an owned session_key')
+        if 'query' not in params or set(params) - {'query', 'tab_id'}:
+            raise ProtocolError('dom.query requires query and optional tab_id only')
+        if 'tab_id' in params and (type(params['tab_id']) is not int or params['tab_id'] < 0):
+            raise ProtocolError('invalid dom.query tab_id')
+        from cli.dom_query import validate_query
+        try:
+            validate_query(params['query'])
+        except (ValueError, TypeError) as exc:
+            raise ProtocolError('invalid dom.query payload') from exc
     supplied = message.get("token")
     if token is not None and (not isinstance(supplied, str) or not hmac.compare_digest(supplied, token)):
         raise ProtocolError("authentication failed")

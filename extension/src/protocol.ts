@@ -13,7 +13,8 @@ export const COMMANDS = [
   'type', 'select', 'press', 'scroll', 'evaluate', 'screenshot.visible', 'screenshot.element',
   'upload', 'batch', 'console.start', 'console.read', 'console.stop', 'network.read',
   'takeover.prompt', 'takeover.resume', 'cancel', 'capture.start', 'capture.stop',
-  'wait.for',
+  'record.start', 'record.restart', 'record.status', 'record.stop', 'record.chunk', 'record.clear',
+  'wait.for', 'dom.query',
 ] as const;
 
 export type Command = (typeof COMMANDS)[number];

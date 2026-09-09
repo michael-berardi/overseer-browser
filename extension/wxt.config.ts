@@ -9,9 +9,9 @@ export default defineConfig({
     name: 'OverSeer Browser',
     short_name: 'OverSeer',
     description: 'Local-first Chromium browser automation.',
-    version: '0.4.1',
+    version: '0.6.0',
     key: publicKey,
-    permissions: ['alarms', 'nativeMessaging', 'storage', 'scripting', 'tabs', 'userScripts', 'windows'],
+    permissions: ['activeTab', 'tabCapture', 'offscreen', 'alarms', 'nativeMessaging', 'storage', 'scripting', 'tabs', 'userScripts', 'windows'],
     // '<all_urls>' in host_permissions is required for the dedicated
     // isolated agent instance: userScripts.execute and captureVisibleTab
     // need the origin scope, and the isolated browser is agent-sovereign.
@@ -19,6 +19,8 @@ export default defineConfig({
     // '<all_urls>' is the only optional grant Chrome's captureVisibleTab
     // accepts for screenshots; the wildcard pair remains for scoped
     // per-origin grants and for legacy unlimited grants issued before 0.2.0.
+    // Chrome forbids optional debugger permission. Installation permission
+    // remains undeclared pending separate operator approval.
     optional_host_permissions: ['<all_urls>', 'http://*/*', 'https://*/*'],
     icons: {
       16: 'icon-16.png',

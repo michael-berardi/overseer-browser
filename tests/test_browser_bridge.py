@@ -933,11 +933,12 @@ class CLIMappingTests(unittest.TestCase):
 class InstallerContractTests(unittest.TestCase):
     def test_installer_installs_cli_and_preserves_unrelated_launcher(self) -> None:
         script = (Path(__file__).resolve().parents[1] / "scripts" / "manage-macos.sh").read_text(encoding="utf-8")
-        self.assertIn('install -m 600 "$ROOT/cli/main.py" "$CLI_MAIN"', script)
+        self.assertIn('install -m 600 "$ROOT/cli/$module.py" "$STAGE/cli/$module.py"', script)
+        self.assertIn('dom_query temp_outputs; do', script)
         self.assertIn("# OverSeer Browser managed launcher", script)
         self.assertIn('Preserved unrelated CLI launcher', script)
         self.assertIn('rm -rf "$HOST_DIR" "$CLI_DIR"', script)
-        self.assertIn('"$ROOT/scripts/generate_manifest.py" "$TESTING_MANIFEST" "$HOST_PATH"', script)
+        self.assertIn('publish_manifest "$TESTING_MANIFEST"', script)
 
     def test_installed_cli_has_private_native_host_import_fallback(self) -> None:
         source = (Path(__file__).resolve().parents[1] / "cli" / "main.py").read_text(encoding="utf-8")
