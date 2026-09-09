@@ -224,8 +224,10 @@ This repository is released under the [MIT License](LICENSE).
 By default, CLI automation does not connect to the daily-browser runtime. `sessions start`
 launches Chrome for Testing directly with a private `agent-v1/profile` user-data-dir
 under the OverSeer runtime, loads the built extension, and waits for its native
-connection. Native hosts without the inherited isolated-profile marker reject
-connections before opening a control socket. No personal Chrome windows/tabs are
+connection. Default native launchers reject connections without the inherited
+isolated-profile marker before opening a control socket. An explicitly authorized
+existing-browser launcher can instead use `--operator-relay`; it still validates
+the exact extension identity and preserves per-session ownership and site grants. No personal Chrome windows/tabs are
 queried, focused, navigated, or closed; install/update no longer opens daily Chrome.
 
 Run `scripts/update-macos.sh` to build/stage the extension and update the native
@@ -246,7 +248,15 @@ may need manual recovery after confirming the dedicated instance has exited;
 automatic PID-based recovery is intentionally avoided. Lifecycle currently supports
 macOS/Linux, not Windows. Linux requires CfT and its native manifest configured.
 
-### Explicit existing-relay connection (0.4.1)
+### Explicit existing-relay connection (0.4.1+)
+
+In 0.6.1+, an owner-configured native launcher may explicitly pass
+`--operator-relay` and set `OVERSEER_BROWSER_RUNTIME` to that relay's private
+runtime. Do not spoof the isolated-profile marker or silently enable this mode.
+Keep the regular-browser registration separate from the default isolated launcher.
+During updates, preserve this explicit configuration and coordinate reloading the
+extension actually installed in that browser; updating another profile is not a
+completed rollout.
 
 When an operator authorizes an already-running compatible relay, select that
 connection explicitly rather than changing its host or guessing from sockets:

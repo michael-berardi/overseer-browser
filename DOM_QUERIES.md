@@ -1,11 +1,11 @@
 # Local read-only DOM queries
 
-These use the fixed native `dom.query` command (0.6.0 unreleased), not evaluate.
+These use the fixed native `dom.query` command (0.6.0+), not evaluate.
 No Allow User Scripts permission is required. Existing owned-session/tab and
 borrowed-site access checks apply. Older extensions return
 `extension_upgrade_required`; operator reload is required, never an eval fallback.
 
-## Syntax (after parent CLI integration)
+## Syntax
 
 ```sh
 overseer-browser --session SESSION dom find '{"role":"button","name":"Save"}'

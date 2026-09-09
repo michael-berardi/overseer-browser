@@ -59,7 +59,7 @@ except ImportError:
         validate_request,
     )
     from runtime import RuntimePaths, ensure_token, prepare_socket  # type: ignore[no-redef]
-HOST_VERSION = "0.6.0"
+HOST_VERSION = "0.6.1"
 DEFAULT_REQUEST_TIMEOUT = 30.0
 MAX_PENDING = 128
 MAX_CLIENT_REQUEST_IDS = 4_096
@@ -608,11 +608,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("origin", nargs="?", help="Chrome caller origin")
     parser.add_argument("--parent-window", nargs="?", default=None, help="Chrome parent window handle")
     parser.add_argument("--timeout", type=float, default=DEFAULT_REQUEST_TIMEOUT)
+    parser.add_argument("--operator-relay", action="store_true", help="Explicitly authorized existing-browser relay; never enabled by the default launcher")
     args = parser.parse_args(argv)
     try:
         validate_caller_origin(args.origin)
         expected_profile = str(RuntimePaths.discover().root / "profile")
-        if os.environ.get("OVERSEER_BROWSER_ISOLATED_PROFILE") != expected_profile:
+        if not args.operator_relay and os.environ.get("OVERSEER_BROWSER_ISOLATED_PROFILE") != expected_profile:
             raise ValueError("native automation is restricted to the dedicated agent Chrome instance")
         NativeHost(request_timeout=args.timeout).serve()
     except (FileExistsError, PermissionError, ValueError) as exc:

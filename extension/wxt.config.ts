@@ -9,7 +9,7 @@ export default defineConfig({
     name: 'OverSeer Browser',
     short_name: 'OverSeer',
     description: 'Local-first Chromium browser automation.',
-    version: '0.6.0',
+    version: '0.6.1',
     key: publicKey,
     permissions: ['activeTab', 'tabCapture', 'offscreen', 'alarms', 'nativeMessaging', 'storage', 'scripting', 'tabs', 'userScripts', 'windows'],
     // '<all_urls>' in host_permissions is required for the dedicated
