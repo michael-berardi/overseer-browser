@@ -33,7 +33,7 @@ except ImportError:
     from cli.runtime_discovery import find_active_runtime
 from cli import evidence, recording, dom_query, temp_outputs
 
-CLI_VERSION = "0.6.0"
+CLI_VERSION = "0.6.1"
 MAX_UPLOAD_BYTES = 8 * 1024 * 1024
 MAX_UPLOAD_CHUNKS = 32
 MAX_UPLOAD_FILES = 16

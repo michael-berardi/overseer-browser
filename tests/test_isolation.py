@@ -20,6 +20,19 @@ class IsolationTests(unittest.TestCase):
         root = Path(self.tmp.name)
         self.base = RuntimePaths(root, root / 'overseer-browser.sock', root / 'token')
 
+    def test_default_bundle_discovery_prefers_immutable_runtime(self):
+        from native_host.isolation import default_extension
+        root = self.base.root
+        for relative in ('extension', 'extension/.output/chrome-mv3', 'chrome-extension'):
+            folder = root / relative
+            folder.mkdir(parents=True, exist_ok=True)
+            (folder / 'manifest.json').write_text('{}')
+        self.assertEqual(default_extension(root), root / 'extension')
+        (root / 'extension/manifest.json').unlink()
+        self.assertEqual(default_extension(root), root / 'extension/.output/chrome-mv3')
+        (root / 'extension/.output/chrome-mv3/manifest.json').unlink()
+        self.assertEqual(default_extension(root), root / 'chrome-extension')
+
     def test_separate_namespace(self):
         agent = isolated_paths(self.base)
         self.assertNotEqual(agent.socket, self.base.socket)
@@ -28,6 +41,14 @@ class IsolationTests(unittest.TestCase):
     def test_personal_native_host_rejected_before_serve(self):
         with patch.dict('os.environ', {}, clear=True), patch('native_host.host.NativeHost.serve') as serve:
             self.assertEqual(host_main(['chrome-extension://iabfdeokmilpklblkgccpjlekchfjcno/']), 1)
+            serve.assert_not_called()
+
+    def test_explicit_operator_relay_still_validates_extension_identity(self):
+        with patch.dict('os.environ', {}, clear=True), patch('native_host.host.NativeHost.serve') as serve:
+            self.assertEqual(host_main(['--operator-relay', 'chrome-extension://iabfdeokmilpklblkgccpjlekchfjcno/']), 0)
+            serve.assert_called_once()
+        with patch.dict('os.environ', {}, clear=True), patch('native_host.host.NativeHost.serve') as serve:
+            self.assertEqual(host_main(['--operator-relay', 'chrome-extension://wrong/']), 1)
             serve.assert_not_called()
 
     def test_attach_does_not_launch_another_chrome(self):

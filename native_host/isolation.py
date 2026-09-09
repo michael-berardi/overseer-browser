@@ -48,6 +48,19 @@ def connected(paths: RuntimePaths) -> bool:
             return False
 
 
+def default_extension(install_root: Path) -> Path:
+    """Prefer the bundle belonging to this immutable installed runtime."""
+    roots = [install_root]
+    source = install_root / 'source-root'
+    if source.is_file():
+        roots.append(Path(source.read_text().strip()))
+    for root in roots:
+        for candidate in (root / 'extension', root / 'extension/.output/chrome-mv3', root / 'chrome-extension'):
+            if (candidate / 'manifest.json').is_file():
+                return candidate
+    raise ValueError('No built extension found; run the platform installer')
+
+
 def ensure_instance(paths: RuntimePaths, timeout: float) -> None:
     ensure_token(paths)
     if connected(paths):
@@ -56,9 +69,8 @@ def ensure_instance(paths: RuntimePaths, timeout: float) -> None:
     if not running.exists():
         chrome = Path(os.environ.get('OVERSEER_BROWSER_CHROME', '/Applications/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing'))
         install_root = Path(__file__).resolve().parents[1]
-        source_root = install_root / 'source-root'
-        default_extension = (Path(source_root.read_text().strip()) if source_root.is_file() else install_root) / 'chrome-extension'
-        extension = Path(os.environ.get('OVERSEER_BROWSER_EXTENSION', str(default_extension))).resolve()
+        override = os.environ.get('OVERSEER_BROWSER_EXTENSION')
+        extension = (Path(override) if override else default_extension(install_root)).resolve()
         if not chrome.is_file() or not (extension / 'manifest.json').is_file():
             raise ValueError('Set OVERSEER_BROWSER_CHROME to Chrome for Testing and OVERSEER_BROWSER_EXTENSION to the built chrome-extension directory')
         (paths.root / 'quit').unlink(missing_ok=True)
