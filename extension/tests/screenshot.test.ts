@@ -38,7 +38,7 @@ describe('screenshot target selection', () => {
       expect(new Uint8Array(await blob.arrayBuffer())).toEqual(bytes);
       return { width: 2, height: 2, close: vi.fn() };
     }));
-    vi.stubGlobal('OffscreenCanvas', vi.fn(() => canvas));
+    vi.stubGlobal('OffscreenCanvas', vi.fn(function () { return canvas; }));
 
     const result = await captureScreenshot(21, 7, undefined, format);
 

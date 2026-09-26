@@ -5,7 +5,7 @@ Contributions are welcome when they preserve the local-first, controlled-automat
 ## Design rules
 
 - Keep browser control local. Do not add hidden network fallbacks, remote logging, or external control servers. Optional usage sharing must remain explicit and minimized.
-- Never use `chrome.debugger`, CDP, the `debugger` permission, history, bookmarks, `webRequest`, `activeTab`, or `optional_host_permissions` to make a feature easier. Required `<all_urls>` host access is intentional for autonomous HTTP(S) control.
+- Never use `chrome.debugger`, CDP, the `debugger` permission, history, bookmarks, or `webRequest` to make a feature easier. `activeTab`, `tabCapture` and `offscreen` exist only for popup-consented recording, and `optional_host_permissions` only for operator site grants; do not widen either use. Required `<all_urls>` host access is intentional for the dedicated agent browser.
 - Preserve exact supported meeting-host matches, no runtime site-permission prompts, and active-session plus tab-ownership command gating.
 - Keep the Agent Window as the default. Require an explicit borrow for normal tabs and return borrowed tabs on stop.
 - Never put raw meeting URLs, IDs, titles, page content, participants, credentials, cookies, or recording data into host or adapter messages.
@@ -30,6 +30,7 @@ For a reproducible extension build, keep the lockfile under review, start from a
 Run the focused checks relevant to the change:
 
 ```sh
+npm run check --prefix extension
 npm test --prefix extension
 npm run build --prefix extension
 python3 -m unittest tests.test_browser_bridge

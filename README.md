@@ -6,65 +6,107 @@
 
 <p align="center">
   <strong>Local-first, model-agnostic browser automation for Chromium.</strong><br />
-  <a href="#install-from-source-on-macos">Install</a> ·
-  <a href="#first-use">Quick start</a> ·
-  <a href="PRIVACY.md">Privacy</a> ·
-  <a href="PROTOCOL.md">Protocol</a>
+  Give any agent its own browser window. Your tabs stay yours until you lend one.
 </p>
 
-OverSeer Browser is an open-source, local-first browser automation bridge for Chromium. A command-line client connects to a per-user native host over a Unix socket; the host connects to the extension through Chrome Native Messaging. The browser contract is model-agnostic: any client or agent that speaks the documented protocol can use it without a model SDK or vendor-specific transport.
+<p align="center">
+  <a href="https://github.com/michael-berardi/overseer-browser/releases/latest"><img src="https://img.shields.io/github/v/release/michael-berardi/overseer-browser?label=release" alt="Latest release" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/michael-berardi/overseer-browser" alt="MIT License" /></a>
+  <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey" alt="macOS, Linux and Windows" />
+</p>
 
-The project is designed for explicit, visible automation:
+<p align="center">
+  <a href="#install">Install</a> ·
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#guides">Guides</a> ·
+  <a href="#cli-reference">CLI</a> ·
+  <a href="PROTOCOL.md">Protocol</a> ·
+  <a href="PRIVACY.md">Privacy</a>
+</p>
 
-- Browser control stays on the local machine. The repository does not require a remote browser or control service.
-- A session owns a dedicated Agent Window by default. A normal tab must be explicitly borrowed and is returned when the session ends.
-- The extension declares broad HTTP(S) host permission at installation for its dedicated Agent Window and screenshots; operator-browser tabs remain blocked until the popup explicitly grants the current origin or unlimited HTTP(S) access.
-- The extension does not enable debugger access, history, bookmarks, or `webRequest`. Explicit video capture uses popup-consented `activeTab`/`tabCapture`/`offscreen` access. Debugger-dependent operations are not included in this release and no debugger permission is requested. Missing capabilities never silently switch transports.
-- Page observations, screenshots, uploads, and action results remain local unless the calling client deliberately forwards them under its own privacy policy.
-- Optional anonymous usage sharing is disabled until consent. It is not required for browser control; see [PRIVACY.md](PRIVACY.md) for the data boundary.
+OverSeer Browser lets coding agents, scripts and any other local client drive a
+real Chromium browser through a small CLI and a documented JSON protocol. There
+is no cloud service, no model SDK and no remote browser: a command-line client
+talks to a per-user native host over a Unix socket, and the host talks to the
+extension through Chrome Native Messaging.
 
-Read [PRIVACY.md](PRIVACY.md) and [SECURITY.md](SECURITY.md) before using the extension with sensitive data.
+## Why OverSeer Browser
+
+- **Agents get their own browser.** By default each session runs in a dedicated
+  Chrome for Testing instance with a private profile. Your everyday browser is
+  never queried, focused or closed.
+- **Borrowing is explicit.** A normal tab is only automated after you lend it
+  from the extension popup, and it is returned when the session ends.
+- **Parallel agents stay apart.** Up to 32 sessions run at once, each with its
+  own window, tabs, uploads and cleanup.
+- **Works with any model.** Commands print plain JSON on stdout, so any agent
+  that can run a shell command can use it.
+- **Local by design.** Page content, screenshots, uploads and recordings stay on
+  your machine unless the calling client forwards them.
+- **Narrow permissions.** No `debugger`, CDP, history, bookmarks or
+  `webRequest`. Video capture needs a fresh click in the popup every time.
+
+## How it works
+
+```text
+agent or script ──► overseer-browser CLI ──► native host ──► extension ──► Chromium
+                    (JSON on stdout)       (Unix socket)   (Native Messaging)
+```
+
+`overseer-browser sessions start` launches Chrome for Testing with a private
+profile and the built extension, then waits for its native connection. Every
+command is scoped to a session key, so one agent can never act in another
+agent's window. See [PROTOCOL.md](PROTOCOL.md) for framing, limits and schemas.
 
 ## Requirements
 
-- A Chromium-family browser (Chrome, Edge, Brave, Chromium, and derivatives) with Chrome Native Messaging and User Scripts support.
+- macOS, Linux, or Windows 10 1803+.
+- [Chrome for Testing](https://googlechromelabs.github.io/chrome-for-testing/)
+  for the default isolated agent browser. On macOS the CLI looks for
+  `/Applications/Google Chrome for Testing.app`; set `OVERSEER_BROWSER_CHROME`
+  to use another location. The dedicated-browser lifecycle supports macOS and
+  Linux.
 - Node.js and npm to build the extension.
-- Python 3.9 or newer to run the native host and CLI.
-- Automatic media cleanup and recording export require POSIX file locking (macOS/Linux). Those workflows are not supported on Windows in this release; they fail explicitly rather than silently retain temporary data. Windows existing-relay installation remains experimental.
-- macOS, Linux, or Windows 10 1803+ (the native host uses a per-user AF_UNIX socket; on Windows it registers through HKCU registry keys and mode-bit privacy checks yield to NTFS ACLs).
+- Python 3.9 or newer for the native host and CLI.
+- Any Chromium-family browser (Chrome, Edge, Brave, Chromium) if you also want
+  to lend tabs from your everyday browser.
 
-## Install from source on macOS
+Automatic media cleanup and recording export need POSIX file locking, so they
+are available on macOS and Linux only. On Windows they fail with an explicit
+error rather than leaving temporary data behind.
 
-The macOS installer builds the extension, stages an unpacked `chrome-extension/` directory, and registers a per-user native host and CLI:
+## Install
+
+OverSeer Browser installs from source. Each
+[release](https://github.com/michael-berardi/overseer-browser/releases) also
+attaches the built extension as a ZIP with `SHA256SUMS`; the CLI and native
+host still come from the source checkout.
+
+### macOS
 
 ```sh
 git clone https://github.com/michael-berardi/overseer-browser.git
 cd overseer-browser
 ./scripts/manage-macos.sh install
-./scripts/manage-macos.sh status
-```
-
-In Chrome or another Chromium browser, open `chrome://extensions`, enable **Developer mode**, and choose **Load unpacked**. Select the generated `chrome-extension/` directory. The installer writes the matching Native Messaging registration; never weaken `allowed_origins` to work around an extension-ID mismatch.
-For CSP-safe page evaluation, open the extension details and enable Chrome’s
-**Allow User Scripts** setting once. OverSeer Browser still keeps agent access
-off for operator-browser tabs until the popup grants the current site or explicitly enables unlimited
-HTTP(S) access. The dedicated Agent Window is exempt from this operator gate.
-
-To update an installation, coordinate with other agents, stop only the sessions you own, update the checkout, rebuild, and reload the unpacked extension. Chrome requires the operator to confirm the reload; do not close another agent's windows or weaken browser security. Site grants remain in local storage. Session bindings survive service-worker suspension, but extension reload/browser restart can clear Chrome session storage; start fresh owned sessions after an upgrade rather than silently adopting old windows:
-
-```sh
-git pull --ff-only
-./scripts/manage-macos.sh update
 overseer-browser status
 ```
 
-The installed CLI also provides `install`, `status`, `update`, and `uninstall`. `install` and `update` rebuild from the source checkout recorded at installation; `status` and `uninstall` do not require the checkout. Remove the extension from `chrome://extensions` and run `overseer-browser uninstall` when you are finished.
+The installer builds the extension, stages it, and registers a per-user native
+host and the `overseer-browser` CLI. It never opens or reloads your everyday
+Chrome.
 
-The generated `.output/` and `chrome-extension/` directories are staging output and are ignored by Git. Source under `extension/` and its lockfile are authoritative.
+To update, pull and rerun the installer's update step, then reload the
+extension wherever you loaded it:
 
-## Install from source on Linux
+```sh
+git pull --ff-only
+overseer-browser update
+```
 
-The Linux installer registers the per-user native host and CLI for Chrome, Chromium, Brave, and Edge (it does not build the extension — build once with `npm ci && npm run build --prefix extension`):
+`overseer-browser uninstall` removes the native host and CLI; remove the
+extension from `chrome://extensions` yourself.
+
+### Linux
 
 ```sh
 git clone https://github.com/michael-berardi/overseer-browser.git
@@ -73,11 +115,10 @@ npm ci --prefix extension && npm run build --prefix extension
 ./scripts/install-linux.sh
 ```
 
-Re-run `./scripts/install-linux.sh` after `git pull --ff-only` to update. Then load the unpacked `chrome-extension/` directory from your browser's extensions page as described above.
+The script registers the native host and CLI for Chrome, Chromium, Brave and
+Edge. Rerun it after `git pull --ff-only` to update.
 
-## Install from source on Windows
-
-Build the extension first (Node.js required), then run the PowerShell installer, which copies the host and CLI into `%LOCALAPPDATA%\OverSeer\browser`, writes the native-host manifest, and registers it under HKCU for Chrome, Edge, and Brave:
+### Windows (experimental)
 
 ```powershell
 git clone https://github.com/michael-berardi/overseer-browser.git
@@ -86,22 +127,38 @@ npm ci --prefix extension; npm run build --prefix extension
 powershell -ExecutionPolicy Bypass -File .\scripts\install-windows.ps1
 ```
 
-Re-run the installer after `git pull --ff-only` to update. Then load the unpacked `chrome-extension\` directory from `chrome://extensions` (Developer mode → **Load unpacked**).
+The installer copies the host and CLI into `%LOCALAPPDATA%\OverSeer\browser`
+and registers the native host under HKCU for Chrome, Edge and Brave. Load the
+built `chrome-extension\` directory from `chrome://extensions` (Developer mode
+→ **Load unpacked**).
 
-## First use
+## Quick start
 
-1. Run `overseer-browser health` to check the local runtime, then `overseer-browser status --json` to inspect the extension connection.
-2. For borrowed operator tabs, open the popup on the intended page and choose **Allow this site**; **Enable unlimited** grants every HTTP(S) origin until disabled. Dedicated Agent Window tabs use the extension's installed broad host permission and do not require this operator grant.
-3. Start a session with `overseer-browser sessions start`.
-4. Create or select a tab, navigate, observe, and perform actions using the CLI.
-5. To automate a normal browsing tab, open it and choose **Borrow active tab** in the extension popup. Return it explicitly or stop the session before closing the browser.
-6. End work with `overseer-browser sessions stop`. Confirm that borrowed tabs were returned.
+```sh
+overseer-browser health                       # local runtime check
+overseer-browser sessions start research      # launches the dedicated browser
+overseer-browser tabs create https://example.com
+overseer-browser observe                      # page tree with stable osr-* element refs
+overseer-browser click osr-12                 # act on a ref from observe
+overseer-browser screenshot
+overseer-browser sessions stop
+```
 
-## Parallel agents (0.3.0)
+On first launch, open the extension popup **in the dedicated Chrome for
+Testing window** and enable its native connection, site access and evaluation
+as needed. Chrome may also ask you to approve the extension and its user
+scripts once. Retry `sessions start` after approving. Permissions from your
+personal profile are never copied.
 
-Each session key owns a separate Agent Window, selected tab, borrowed-tab claims, pause state, uploads, and cleanup. Up to 32 sessions may run at once. Commands never fall back to another active agent's session. Session keys are routing identifiers inside the same authenticated OS-user trust domain, **not credentials or hostile-process isolation**; windows still share the browser profile's cookies and site permissions.
+For CSP-safe `evaluate`, open the extension details and enable Chrome's
+**Allow User Scripts** setting once.
 
-Use a unique key per agent or independent delegated task:
+## Guides
+
+### Run agents in parallel
+
+Each session key owns its own window, selected tab, borrowed tabs, pause state,
+uploads and cleanup. Commands never fall back to another session.
 
 ```sh
 # Agent A
@@ -109,266 +166,210 @@ export OVERSEER_BROWSER_SESSION=agent-a
 overseer-browser sessions start research
 overseer-browser tabs create https://example.com
 
-# Agent B, concurrently in another agent's environment
+# Agent B, in its own environment
 export OVERSEER_BROWSER_SESSION=agent-b
 overseer-browser sessions start qa
 overseer-browser tabs create https://example.org
 
-# Explicit flags override the environment; stop only your own session.
+# Explicit flags override the environment
 overseer-browser --session agent-a sessions stop
 ```
 
-`--session KEY` overrides `OVERSEER_BROWSER_SESSION`. Otherwise the CLI derives an opaque stable key from an available agent-session identity (`PI_SESSION_ID`, `CODEX_THREAD_ID`, or `CLAUDE_SESSION_ID`; combined UltraTerm tmux-session/slot identity is a fallback). Delegates inheriting the parent's environment **must supply their own explicit key**. Clients without an identity use the isolated legacy `default` scope, not an inferred active session. Generic protocol clients must provide `session_key` themselves.
+`--session KEY` overrides `OVERSEER_BROWSER_SESSION`. Without either, the CLI
+derives a stable key from the agent's own session identity (`PI_SESSION_ID`,
+`CODEX_THREAD_ID` or `CLAUDE_SESSION_ID`). Subagents that inherit a parent's
+environment must pass their own key. Clients with no identity use an isolated
+`default` scope. Protocol clients must send `session_key` themselves.
 
-`sessions list` and `status` show all session summaries, including `sessionKey`; tab lists and actions remain scoped. The popup requires an explicit recipient when borrowing a normal tab with multiple sessions active. One tab cannot be borrowed by two sessions. CLI takeover pauses/resumes only its own session; the popup's operator-wide pause remains authoritative. Meeting capture controls remain operator-wide and require explicit `--session default` when automatic agent scoping is active.
+Session keys route requests inside one OS user's trust domain. They are not
+credentials and do not isolate hostile processes: sessions share the dedicated
+profile's cookies and site permissions. Screenshots are paced to Chrome's
+extension-wide capture limit; everything else runs concurrently.
 
-The CLI and host fail closed against older extensions: upgrade both parts and confirm `status --raw-json` reports extension `0.3.0` or newer and `multi_session: true` before concurrent work. `overseer-browser --version` reports the installed CLI version. Screenshots are paced to Chrome's extension-wide capture limit; other agents' page operations remain concurrent.
+### Lend a tab from your everyday browser
 
-## CLI surface
+To let an agent work in a normal tab, load the built extension in that browser
+(`chrome://extensions` → Developer mode → **Load unpacked** → the generated
+`chrome-extension/` directory), open the popup on the page, and choose **Allow
+this site** or **Borrow active tab**. **Enable unlimited** grants every HTTP(S)
+origin until you turn it off. With several sessions active, the popup asks
+which session receives the tab. A tab can be borrowed by only one session, and
+it is returned when that session stops.
 
-From a checkout, use `./cli/overseer-browser ...`; the examples below use an installed `overseer-browser` on `PATH`.
+### Connect to an existing browser
+
+A native launcher you configure can pass `--operator-relay` and set
+`OVERSEER_BROWSER_RUNTIME` to that relay's private runtime, so agents can use a
+browser that is already running. Select the relay explicitly:
+
+```sh
+python3 scripts/select-relay.py /absolute/path/to/private/relay-runtime
+overseer-browser status --raw-json
+overseer-browser --session my-task sessions start
+```
+
+Selection authenticates a health request, requires multi-session support, and
+writes a private `~/.config/overseer-browser/active-connection.json` that binds
+the runtime to its token fingerprint (never the token). `status`, health and
+commands then report `connection_mode: operator-relay`. The CLI never starts or
+stops a selected relay's host. A stale, insecure or changed-token descriptor
+fails with `active_connection_unavailable` instead of starting another browser.
+
+`OVERSEER_BROWSER_CONNECTION=managed` keeps the isolated browser;
+`OVERSEER_BROWSER_CONNECTION=/path/to/descriptor.json` selects another
+descriptor. An explicit `OVERSEER_BROWSER_RUNTIME` takes precedence over both.
+Rerun the selection helper after the relay's runtime or token changes.
+
+### Collect QA evidence
+
+```sh
+overseer-browser --session qa sessions start qa
+overseer-browser --session qa navigate http://localhost:3000
+overseer-browser --session qa console start
+# ...exercise the page...
+overseer-browser --session qa qa pack ./evidence/qa-pack
+overseer-browser --session qa timelapse ./evidence/frames 5 2
+overseer-browser --session qa sessions stop
+```
+
+`qa pack DIR` writes snapshot JSON, a screenshot with its metadata, console
+JSON, network JSON and `manifest.json` into a new private directory. Console
+evidence only covers activity after `console start`. Network evidence is
+redacted Resource Timing metadata, not response bodies. Artifacts are captured
+one after another, so the page can change between them; failures are recorded
+in the manifest and a partial pack exits nonzero.
+
+`timelapse DIR FRAMES INTERVAL_SECONDS` takes 1–120 screenshots at least 2–30
+seconds apart. It is foreground sampling, not video. Actual frame offsets are
+recorded, and Ctrl-C keeps the manifest marked incomplete.
+
+`overseer-browser doctor` reports CLI and host versions, permissions, User
+Scripts availability and the extension version, and exits nonzero on drift.
+
+### Record video with consent (Chrome 116+)
+
+```sh
+overseer-browser --session demo sessions start
+overseer-browser --session demo tabs create https://example.com
+overseer-browser --session demo record start 30 10 33554432   # FPS, seconds, max bytes
+# Focus the tab, open the extension popup and click "Approve recording".
+overseer-browser --session demo record status
+overseer-browser --session demo record stop capture.webm
+overseer-browser --session demo sessions stop
+```
+
+Recording captures the session's active owned tab, with no debugger, reload or
+page reset. Defaults are 30 FPS, 60 seconds and 32 MiB; limits are 60 FPS, 300
+seconds and 64 MiB. Approval expires after 60 seconds, and `record restart`
+always needs a fresh click. WebM is native; MP4 export needs a local `ffmpeg`
+with H.264. Exports are private (`0600`), atomic and never overwrite an existing
+file. Unexported browser bytes are discarded five minutes after stop, or
+immediately on clear, session stop, tab close or disconnect.
+
+### Query the DOM without scripts
+
+Read-only [DOM queries](DOM_QUERIES.md) run through the native `dom.query`
+command against an owned tab. They need no User Scripts permission and never
+fall back to `evaluate`.
+
+## CLI reference
+
+From a checkout, run `./cli/overseer-browser ...`; the installed command is
+`overseer-browser`.
 
 ```sh
 overseer-browser --version
 overseer-browser [--session KEY] health
 overseer-browser [--session KEY] status [--json]
-overseer-browser sessions start [name]
-overseer-browser sessions stop
-overseer-browser sessions list
+overseer-browser doctor
+overseer-browser sessions start [name] | stop | list
 overseer-browser windows resize <width> <height>
-overseer-browser tabs list
-overseer-browser tabs create [url] [--wait-until load|interactive]
-overseer-browser tabs select <tab-id>
-overseer-browser tabs close <tab-id>
-overseer-browser tabs borrow <tab-id>
-overseer-browser tabs return <tab-id>
+overseer-browser tabs list | create [url] | select <id> | close <id> | borrow <id> | return <id>
 overseer-browser navigate <url> [--wait-until load|interactive]
-overseer-browser back [--wait-until load|interactive]
-overseer-browser forward [--wait-until load|interactive]
-overseer-browser reload [--wait-until load|interactive]
+overseer-browser back | forward | reload [--wait-until load|interactive]
 overseer-browser snapshot [--max-nodes N]
 overseer-browser observe [--max-nodes N] [--changes]
-overseer-browser wait --ready [--timeout-ms N]
-overseer-browser wait --url TEXT [--timeout-ms N]
-overseer-browser wait --text TEXT [--absent] [--timeout-ms N]
-overseer-browser wait --selector CSS [--state visible|hidden|enabled] [--timeout-ms N]
-overseer-browser wait --stable MS [--timeout-ms N]
-overseer-browser click <ref>
-overseer-browser hover <ref>
-overseer-browser fill <ref> <text>
-overseer-browser type <ref> <text>
+overseer-browser wait --ready | --url TEXT | --text TEXT [--absent] | --selector CSS [--state visible|hidden|enabled] | --stable MS [--timeout-ms N]
+overseer-browser click | hover <ref>
+overseer-browser fill | type <ref> <text>
 overseer-browser select <ref> <value>
 overseer-browser press <key> [ref]
 overseer-browser scroll <y> | <x> <y> | <ref> [<x> <y>]
 overseer-browser evaluate <script>
-overseer-browser screenshot [path]            # dedicated Agent Window works without popup grant; borrowed tabs require site access
+overseer-browser screenshot [path]
 overseer-browser screenshot-element <ref> [path]
 overseer-browser upload <ref> <path> [path...]
-overseer-browser console start|read|stop
+overseer-browser dom find LOCATOR | get QUERY LOCATOR [NAMES...] | is STATE LOCATOR
+overseer-browser console start | read | stop
 overseer-browser network read [limit]
 overseer-browser batch '<json-actions>'
-overseer-browser capture start|stop
-overseer-browser help
-overseer-browser takeover
-overseer-browser takeover resume
+overseer-browser qa pack <dir>
+overseer-browser timelapse <dir> <frames> <interval-seconds>
+overseer-browser record start [fps seconds max-bytes] | status | stop <path> | restart | clear
+overseer-browser capture start | stop
+overseer-browser takeover [resume]
 overseer-browser cancel <request-id>
+overseer-browser help
 ```
 
-Command results are plain minified JSON on stdout, including errors and terminal output. `--json` and `--raw-json` remain compatibility aliases. No compression codec, native encoding library, decoder, or encoding subprocess is needed.
+Results are minified JSON on stdout, including errors, which carry stable
+codes. `--json` and `--raw-json` are accepted as aliases.
 
-### Managed temporary outputs
+Ref-based actions work through the top document, open shadow roots and
+visible same-origin frames; cross-origin frame DOM stays opaque. Mutations
+report a bounded `dom_mutations` count. Use explicit tab IDs for concurrent
+clients and serialize navigation per tab. `evaluate` needs a site grant and
+Chrome's **Allow User Scripts** setting, and runs in the CSP-exempt User Scripts
+world, so strict sites do not need `unsafe-eval`.
 
-Screenshots without a filename use `/tmp/screenshots/` on POSIX. Explicit OS-temp screenshots, evidence packs, timelapses and recording exports remain temporary unless marked `--keep`. Completed outputs normally expire after 15 minutes and may be evicted earlier under the 512 MiB / 512-entry budget; active reservations are protected. Separate conversion staging has four 128 MiB slots. Journaling precedes file publication, so interrupted writes and publications can be reclaimed without adopting unrelated files. Replaced/edited files and unrelated directory additions are preserved.
-
-The native host reaps on startup and while idle. If the host is stopped, cleanup waits for the next host/CLI startup; no always-running OS cleanup guarantee is claimed. Outside-temp and `--keep` exports are deliberately persistent. Update the native host as well as the CLI to obtain idle cleanup.
-
-`evaluate` requires an explicit site-access scope and Chrome’s one-time **Allow User Scripts** setting. It runs in the CSP-exempt User Scripts world, so strict websites do not need `unsafe-eval`. Uploads, console capture, Resource Timing metadata, screenshots, and batches are bounded; see [PROTOCOL.md](PROTOCOL.md) for limits and response shapes. Commands return structured errors with stable codes. Unsupported debugger-only capabilities are never silently downgraded.
-
-Ref-based actions work through the top document, open shadow roots, and visible same-origin nested frames. Cross-origin frame DOM remains opaque. Mutation actions report a bounded `dom_mutations` count. Use explicit tab IDs for concurrent clients and serialize navigation or other mutations per tab.
+**Temporary output.** Screenshots without a path go to `/tmp/screenshots/` on
+POSIX. Screenshots, evidence packs, timelapses and recordings written to the OS
+temp directory expire after about 15 minutes (sooner under a 512 MiB /
+512-entry budget) unless marked `--keep`. Files outside the temp directory are
+never deleted. Cleanup runs when the native host starts and while it is idle.
 
 ## Privacy and security
 
-The extension has no user account and no cloud browser-control plane. Native host and CLI state is local and protected with per-user file and socket permissions where supported. The extension does not passively inventory arbitrary tabs or collect general browsing history.
+The extension has no account and no cloud control plane. Host and CLI state is
+local and protected with per-user file and socket permissions. The extension
+does not inventory tabs or collect browsing history.
 
-Meeting detection, when enabled by a build, is limited to its documented supported hosts and emits only a versioned opaque event for local delivery. It does not include raw URLs, meeting IDs, titles, page content, participants, credentials, or recording data. Meeting detection never starts recording; explicit video recording requires separate popup consent.
+Meeting detection, when a build enables it, is limited to documented hosts and
+emits only an opaque event with no URL, meeting ID, title, participants or page
+content. It never starts a recording.
 
-Optional telemetry is off until an affirmative popup choice. If enabled by a release, it sends only the coarse fields and counters documented in [PRIVACY.md](PRIVACY.md) to that release's configured telemetry service. Disable sharing in the popup to remove the local identifier and pending counters. Browser control does not depend on telemetry.
+Optional anonymous usage sharing is off until you opt in from the popup, and
+browser control never depends on it. [PRIVACY.md](PRIVACY.md) lists exactly
+what is sent.
 
-No browser extension can protect against a compromised browser, operating system, malicious same-user process, or an unsafe page. Use a separate browser profile or OS account for sensitive work, and do not enter credentials unless that is the intended task.
+No extension can protect against a compromised browser, operating system,
+malicious same-user process or hostile page. Use a separate profile or OS
+account for sensitive work. Report vulnerabilities privately as described in
+[SECURITY.md](SECURITY.md).
 
 ## Development
 
 ```sh
 npm ci --prefix extension
-npm run dev --prefix extension
-npm run build --prefix extension
+npm run check --prefix extension     # WXT types + TypeScript
 npm test --prefix extension
+npm run build --prefix extension
 python3 -m unittest tests.test_browser_bridge
 ```
 
-Load the generated development directory with **Load unpacked**. Do not commit generated output, release archives, credentials, or personal configuration. See [CONTRIBUTING.md](CONTRIBUTING.md) for development and review guidelines.
+`npm run dev --prefix extension` builds a development extension to load with
+**Load unpacked**. Generated `.output/` and `chrome-extension/` directories are
+ignored by Git. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Documentation
 
-- [PROTOCOL.md](PROTOCOL.md) — local framing, commands, limits, and event schemas.
-- [PRIVACY.md](PRIVACY.md) — local data flow, permissions, retention, and threat boundaries.
-- [SECURITY.md](SECURITY.md) — vulnerability reporting and security invariants.
-- [CONTRIBUTING.md](CONTRIBUTING.md) — setup, testing, accessibility, and contribution guidance.
-- [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt) — dependency licenses and attribution.
+- [PROTOCOL.md](PROTOCOL.md): framing, commands, limits and event schemas.
+- [DOM_QUERIES.md](DOM_QUERIES.md): read-only DOM query contract.
+- [PRIVACY.md](PRIVACY.md): data flow, permissions, retention and threat boundaries.
+- [SECURITY.md](SECURITY.md): vulnerability reporting and security invariants.
+- [CONTRIBUTING.md](CONTRIBUTING.md): design rules, setup and review checklist.
+- [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt): dependency licenses.
 
 ## License
 
-This repository is released under the [MIT License](LICENSE).
-### Dedicated agent Chrome (0.4.0)
-
-By default, CLI automation does not connect to the daily-browser runtime. `sessions start`
-launches Chrome for Testing directly with a private `agent-v1/profile` user-data-dir
-under the OverSeer runtime, loads the built extension, and waits for its native
-connection. Default native launchers reject connections without the inherited
-isolated-profile marker before opening a control socket. An explicitly authorized
-existing-browser launcher can instead use `--operator-relay`; it still validates
-the exact extension identity and preserves per-session ownership and site grants. No personal Chrome windows/tabs are
-queried, focused, navigated, or closed; install/update no longer opens daily Chrome.
-
-Run `scripts/update-macos.sh` to build/stage the extension and update the native
-host, then `overseer-browser sessions start`. If CfT is not in `/Applications`, set
-`OVERSEER_BROWSER_CHROME` to its executable. The installed CLI discovers the staged
-extension via its source-root file; `OVERSEER_BROWSER_EXTENSION` can override it.
-In **the dedicated CfT instance only**, enable the extension's native connection,
-site access, and evaluation capability in the popup (Chrome's extension/user-script
-approval may also be required). Retry session start after first-use approval.
-Existing personal-profile permissions are deliberately not copied.
-
-Session keys and response payloads are unchanged. Multiple sessions share only the
-agent instance; stopping the last session terminates that owned child process.
-A supervisor holds its process handle; it never searches for Chrome processes or
-signals a PID discovered from disk. Launch failures leave the dedicated instance
-available for first-use approval. On supervisor crash, `agent-v1/supervisor.running`
-may need manual recovery after confirming the dedicated instance has exited;
-automatic PID-based recovery is intentionally avoided. Lifecycle currently supports
-macOS/Linux, not Windows. Linux requires CfT and its native manifest configured.
-
-### Explicit existing-relay connection (0.4.1+)
-
-In 0.6.1+, an owner-configured native launcher may explicitly pass
-`--operator-relay` and set `OVERSEER_BROWSER_RUNTIME` to that relay's private
-runtime. Do not spoof the isolated-profile marker or silently enable this mode.
-Keep the regular-browser registration separate from the default isolated launcher.
-During updates, preserve this explicit configuration and coordinate reloading the
-extension actually installed in that browser; updating another profile is not a
-completed rollout.
-
-When an operator authorizes an already-running compatible relay, select that
-connection explicitly rather than changing its host or guessing from sockets:
-
-```sh
-python3 scripts/select-relay.py /absolute/path/to/private/relay-runtime
-overseer-browser status --raw-json
-overseer-browser --session my-own-task sessions start
-```
-
-Selection authenticates a health request and requires multi-session support. It
-atomically writes a private `~/.config/overseer-browser/active-connection.json`
-descriptor binding the runtime to its token fingerprint (not the token itself).
-`status`, health, and commands use the same selected transport and report
-`connection_mode: operator-relay`. Session keys, site grants, and tab ownership
-remain enforced; selecting a connection does not borrow another agent's session.
-The CLI never launches or stops a selected relay's host, even after the last
-session ends. A stale, insecure, or changed-token descriptor fails closed with
-`active_connection_unavailable`; it never silently starts another browser.
-
-`OVERSEER_BROWSER_CONNECTION=managed` explicitly retains the managed isolated
-browser. `OVERSEER_BROWSER_CONNECTION=/path/to/descriptor.json` selects an alternate
-private descriptor. An explicit `OVERSEER_BROWSER_RUNTIME` takes precedence over
-all descriptors and preserves the existing managed `agent-v1` semantics. Without
-a descriptor or override, managed isolation remains the default. Re-run the
-selection helper after an authorized relay runtime/token change; it keeps a
-private timestamped backup of the previous descriptor. Do not copy tokens or
-change native-host registrations to resolve a connection mismatch.
-
-### Evidence composition (0.5.0)
-
-Source CLI commands (no install or extension build needed to inspect help):
-
-```bash
-python3 -m cli.main doctor --raw-json
-python3 -m cli.main --session fresh-qa sessions start qa --raw-json
-python3 -m cli.main --session fresh-qa navigate http://localhost:3000 --raw-json
-python3 -m cli.main --session fresh-qa console start --raw-json
-# Exercise the page after console start to collect console evidence.
-python3 -m cli.main --session fresh-qa qa pack /tmp/screenshots/fresh-qa-pack --raw-json
-python3 -m cli.main --session fresh-qa timelapse /tmp/screenshots/fresh-qa-frames 5 2 --raw-json
-python3 -m cli.main --session fresh-qa sessions stop --raw-json
-```
-
-Use a unique session key and new output directories each run. `qa pack DIR`
-collects snapshot JSON, visible screenshot PNG and its response metadata,
-console JSON, network JSON, and `manifest.json`. It does not start/stop console
-capture, navigate, or manage sessions. Console evidence requires `console start`
-before the activity of interest. Network evidence is redacted Resource Timing
-metadata, not response bodies or a HAR. Evidence is sequential, not atomic;
-a page may change between artifacts. Each failure is preserved separately in
-the manifest, remaining artifacts are attempted, and partial packs exit nonzero.
-Pack directories must not exist (including symlinks); files are atomically
-written private (0600) in a private (0700) directory on POSIX. Evidence can still
-contain sensitive page content; handle and delete it accordingly.
-
-`doctor` reports the CLI/source host versions and observed `health.status`
-including permissions, User Scripts availability, multi-session state and
-extension version. Version drift or a failed status exits nonzero. The current
-transport does not expose the loaded host version: its check is explicitly
-`unknown`, not inferred from source. Local composition capability descriptions
-are not a claim that a disconnected browser can capture.
-
-`timelapse DIR FRAMES INTERVAL_SECONDS` is explicit, bounded, foreground
-screenshot sampling, **not video recording**. It accepts 1–120 frames and 2–30
-seconds minimum between frame starts (at most 0.5 FPS, often slower with shared
-Chrome capture pacing). Actual monotonic frame-start offsets and total elapsed
-time are recorded; there is no catch-up burst, background process, encoder or
-new dependency. Ctrl-C preserves the manifest as incomplete. `--timeout` is per
-transport request, not a whole-pack deadline. `--session` (or resolved automatic
-session identity) is mandatory for capture; `--tab-id` targets every artifact.
-Composition rejects `--request-id`, `--max-nodes`, and `--wait-until` rather than
-silently misapplying them. Every request gets a fresh transport request ID.
-
-### Consented native video (0.6.0; Chrome 116+)
-
-`record start [FPS SECONDS MAX_BYTES]` requests recording of the session's
-selected, active owned tab. Defaults: 30 FPS, 60 seconds, 32 MiB; limits:
-60 FPS, 300 seconds, 64 MiB. This captures video only, without debugger/CDP,
-navigation, reload, or page-state reset. Requested FPS is not achieved FPS.
-Open the toolbar popup on that tab and click **Approve recording** within
-60 seconds. Denial, expiration, tab/selection changes and wrong sessions
-cannot authorize capture. `record restart` always requires a fresh popup click.
-
-Operator smoke sequence (only after installing/reloading is separately approved):
-
-```sh
-python3 -m cli.main --session video-smoke sessions start
-python3 -m cli.main --session video-smoke tabs create https://example.com
-python3 -m cli.main --session video-smoke record start 30 10 33554432
-# Focus the requested tab; open the real toolbar popup; click Approve recording.
-python3 -m cli.main --session video-smoke record status
-# Exercise the page without reloading it, then export to a NEW local path:
-python3 -m cli.main --session video-smoke record stop capture.webm
-python3 -m cli.main --session video-smoke record restart 30 10 33554432
-# Verify fresh consent is required; deny it in the popup.
-python3 -m cli.main --session video-smoke record clear
-python3 -m cli.main --session video-smoke sessions stop
-```
-
-WebM is native; MP4 export requires an installed ffmpeg with a successful local
-H.264 encode probe. `doctor` does not claim live browser verification. ffprobe,
-when installed, reports encoded frame evidence. Export is bounded, private
-(0600), atomic and refuses existing paths. Failed exports leave no published
-file and preserve browser bytes until expiration. Stop is idempotent. One
-recorder is allowed extension-wide. Retained browser bytes expire five minutes
-after stop (or earlier at the request lifetime cap), and clear/session stop/tab
-closure/native disconnect discard them. Service-worker suspension can lose
-request metadata; a new start clears orphaned bytes. The offscreen document
-independently enforces duration and retention. Exported files remain until the
-operator deletes them; there is no automatic deletion of user exports.
-
-Read-only [DOM queries](DOM_QUERIES.md) use fixed native `dom.query` with an explicit
-session and owned tab; no User Scripts permission or evaluate fallback. Requires
-the 0.6.0 (unreleased) extension source and operator-approved reload.
+[MIT](LICENSE)
