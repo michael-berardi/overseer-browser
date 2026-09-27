@@ -133,7 +133,10 @@ export class SessionManager {
         await this.refreshAgentTabs();
         return { ...this.state, connected: true, started: false };
       }
-      const agentWindow = await browser.windows.create({ focused: true, type: 'normal', url: 'about:blank', left: 0, top: 0 });
+      // Never raise or focus the Agent Window: it runs in the operator's own
+      // browser and must not take over their screen or keyboard. The titled
+      // placeholder page lets window managers route it at creation.
+      const agentWindow = await browser.windows.create({ focused: false, type: 'normal', url: browser.runtime.getURL('/agent-window.html'), left: 0, top: 0 });
       if (!agentWindow || agentWindow.id === undefined) throw new Error('Chrome did not return an Agent Window id.');
       const tabIds = (agentWindow.tabs ?? []).map((tab) => tab.id).filter((id): id is number => id !== undefined);
       this.state = {
@@ -246,7 +249,6 @@ export class SessionManager {
       const state = await this.requireState();
       if (!(await this.ownsTab(tabId))) throw new SessionError('tab_not_owned', 'Tab is not owned or borrowed by this session.');
       const tab = await browser.tabs.get(tabId);
-      if (tab.windowId !== undefined) await browser.windows.update(tab.windowId, { focused: true });
       await browser.tabs.update(tabId, { active: true });
       state.selectedTabId = tabId;
       await this.persist();

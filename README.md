@@ -215,6 +215,12 @@ commands then report `connection_mode: operator-relay`. The CLI never starts or
 stops a selected relay's host. A stale, insecure or changed-token descriptor
 fails with `active_connection_unavailable` instead of starting another browser.
 
+Agent Windows never take focus (0.6.2+). `sessions start` opens them unfocused
+and `tabs select` switches tabs without raising the window, so an agent working
+in your everyday browser does not interrupt you. A new Agent Window first shows
+a blank page titled `OverSeer Agent Window`, which window managers can match to
+keep it off your workspace.
+
 `OVERSEER_BROWSER_CONNECTION=managed` keeps the isolated browser;
 `OVERSEER_BROWSER_CONNECTION=/path/to/descriptor.json` selects another
 descriptor. An explicit `OVERSEER_BROWSER_RUNTIME` takes precedence over both.

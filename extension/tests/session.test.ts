@@ -8,6 +8,7 @@ const tabStore = new Map<number, chrome.tabs.Tab>([
 const sessionStore: Record<string, unknown> = {};
 
 vi.stubGlobal('browser', {
+  runtime: { getURL: (path: string) => `chrome-extension://test${path}` },
   storage: {
     session: {
       get: async (keys: string[]) => Object.fromEntries(keys.filter((key) => key in sessionStore).map((key) => [key, sessionStore[key]])),
@@ -19,7 +20,7 @@ vi.stubGlobal('browser', {
     create: vi.fn(async () => ({ id: 10, tabs: [{ id: 11, windowId: 10, url: 'about:blank', active: true }] })),
     get: async (id: number) => ({ id }),
     remove: async () => undefined,
-    update: async (id: number, updates: chrome.windows.UpdateInfo) => ({ id, ...updates }),
+    update: vi.fn(async (id: number, updates: chrome.windows.UpdateInfo) => ({ id, ...updates })),
   },
   tabs: {
     query: async (query: chrome.tabs.QueryInfo) => {
@@ -92,6 +93,24 @@ describe('session ownership', () => {
     await expect(manager.start('different-session')).rejects.toMatchObject({ code: 'session_conflict' });
     await manager.stop();
     await expect(manager.start('x'.repeat(65))).rejects.toMatchObject({ code: 'invalid_session_name' });
+  });
+
+  it('never focuses or raises the Agent Window over the operator', async () => {
+    delete sessionStore['overseer.session.v1'];
+    tabStore.set(21, { id: 21, windowId: 10, url: 'about:blank', active: false });
+    const create = vi.mocked(browser.windows.create);
+    const update = vi.mocked(browser.windows.update);
+    create.mockClear();
+    update.mockClear();
+    const manager = new SessionManager();
+
+    await manager.start();
+    await manager.createTab();
+    await manager.selectTab(21);
+
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({ focused: false, url: 'chrome-extension://test/agent-window.html' }));
+    for (const [, updates] of update.mock.calls) expect(updates).not.toHaveProperty('focused');
+    await manager.stop();
   });
 
   it('returns the updated active tab after selection', async () => {
