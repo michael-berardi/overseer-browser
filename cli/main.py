@@ -802,8 +802,13 @@ def _session_start_params(args: list[str]) -> dict[str, Any]:
 
 def _require_mobile_support(extension_command: str, params: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
     """An extension older than 0.6.4 ignores `mobile` and opens a normal ~500px window; never report that as a phone width."""
-    if extension_command != "sessions.start" or not params.get("mobile") or not payload.get("ok"):
+    if extension_command != "sessions.start" or not params.get("mobile"):
         return payload
+    if not payload.get("ok"):
+        # 0.6.3 and older refuse the unknown `mobile` parameter outright.
+        error = payload.get("error")
+        if not (isinstance(error, dict) and error.get("code") == "invalid_params"):
+            return payload
     result = payload.get("result")
     if isinstance(result, dict) and result.get("mobile") and isinstance(result.get("viewport"), dict):
         return payload
@@ -811,8 +816,9 @@ def _require_mobile_support(extension_command: str, params: dict[str, Any], payl
         "ok": False,
         "error": {
             "code": "extension_outdated",
-            "message": "The loaded OverSeer Browser extension does not support --mobile, so it started a normal-width session. "
-            "Run `overseer-browser sessions stop`, then reload the extension in chrome://extensions after `overseer-browser update`.",
+            "message": "The loaded OverSeer Browser extension is older than 0.6.4 and does not support --mobile. "
+            "Load the updated extension directory in chrome://extensions (shown by `overseer-browser update`); "
+            "if a normal-width session started, run `overseer-browser sessions stop`.",
         },
     }
 

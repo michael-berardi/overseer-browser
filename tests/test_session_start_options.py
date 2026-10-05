@@ -42,6 +42,8 @@ class SessionStartOptionsTests(unittest.TestCase):
         self.assertIs(_require_mobile_support("sessions.start", {"mobile": True}, new), new)
         plain = {"ok": True, "result": {"started": True}}
         self.assertIs(_require_mobile_support("sessions.start", {}, plain), plain)
+        refused = {"ok": False, "error": {"code": "invalid_params", "message": "unsupported parameters"}}
+        self.assertEqual(_require_mobile_support("sessions.start", {"mobile": True}, refused)["error"]["code"], "extension_outdated")
         failed = {"ok": False, "error": {"code": "window_size_clamped"}}
         self.assertIs(_require_mobile_support("sessions.start", {"mobile": True}, failed), failed)
 
