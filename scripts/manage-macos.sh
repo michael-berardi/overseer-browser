@@ -15,6 +15,7 @@ MANAGER_PATH="$MANAGER_DIR/manage-macos.sh"
 SOURCE_ROOT_PATH="$APP_SUPPORT/source-root"
 CLI_LAUNCHER_PATH="$APP_SUPPORT/cli-launcher-path"
 HOST_PATH="$APP_SUPPORT/overseer-browser-native-host"
+RELAY_PATH="$APP_SUPPORT/overseer-browser-operator-relay"
 EXTENSION_DIR="$ROOT/chrome-extension"
 DEFAULT_CLI_LAUNCHER="${OVERSEER_BROWSER_BIN_DIR:-$HOME/.local/bin}/overseer-browser"
 CLI_LAUNCHER="$DEFAULT_CLI_LAUNCHER"
@@ -136,6 +137,32 @@ publish_manifest() {
   atomic_write "$1" <"$RUNTIME/native-manifest.json"
 }
 
+# An operator-authorized relay for the everyday Chrome (README: operator relay) registers its own launcher.
+# Updating must keep that registration and move the launcher to the new runtime; publishing the generic
+# manifest would silently disconnect the operator's Chrome at its next extension reload.
+relay_registered() {
+  [ -f "$RELAY_PATH" ] && [ -f "$MANIFEST" ] &&
+    "$PYTHON" -I -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1])).get("path") == sys.argv[2] else 1)' "$MANIFEST" "$RELAY_PATH"
+}
+
+keep_operator_relay() {
+  local updated
+  updated="$("$PYTHON" -I - "$RELAY_PATH" "$APP_SUPPORT/runtimes" "$RUNTIME" <<'PYRELAY'
+import re, sys
+launcher, runtimes, runtime = sys.argv[1:4]
+text = open(launcher).read()
+pattern = re.escape(runtimes) + r'/runtime-[A-Za-z0-9]+'
+if len(re.findall(pattern, text)) != 1 or '--operator-relay' not in text:
+    sys.exit('operator relay launcher does not name exactly one runtime with --operator-relay: ' + launcher)
+sys.stdout.write(re.sub(pattern, runtime, text))
+PYRELAY
+)" || fail "cannot update the operator relay launcher; registration left unchanged"
+  printf '%s\n' "$updated" | atomic_write "$RELAY_PATH" 700
+  "$PYTHON" -I -c 'import json,sys; m=json.load(open(sys.argv[1])); m["path"]=sys.argv[2]; print(json.dumps(m, indent=2))' \
+    "$RUNTIME/native-manifest.json" "$RELAY_PATH" | atomic_write "$MANIFEST"
+  say "Kept the operator relay registration: $RELAY_PATH now runs $RUNTIME"
+}
+
 install_host() {
   stage_runtime
   atomic_write "$HOST_PATH" 700 <<EOF
@@ -144,7 +171,11 @@ exec "$PYTHON" -I -B -c 'import runpy,sys; sys.path.insert(0, sys.argv.pop(1)); 
 EOF
   install_manager
   install_cli_launcher
-  publish_manifest "$MANIFEST"
+  if relay_registered; then
+    keep_operator_relay
+  else
+    publish_manifest "$MANIFEST"
+  fi
   publish_manifest "$TESTING_MANIFEST"
 }
 

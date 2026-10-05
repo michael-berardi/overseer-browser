@@ -226,6 +226,13 @@ commands then report `connection_mode: operator-relay`. The CLI never starts or
 stops a selected relay's host. A stale, insecure or changed-token descriptor
 fails with `active_connection_unavailable` instead of starting another browser.
 
+On macOS, name that launcher `overseer-browser-operator-relay` in the OverSeer
+Browser support folder and register it as Chrome's native host. Updates
+(`scripts/update-macos.sh`) then keep that registration and point the launcher at
+the new runtime, so the relay survives the next extension reload. The extension
+Chrome loads unpacked still has to be reloaded in `chrome://extensions` after an
+update; Chrome never reloads it on its own.
+
 Agent Windows never take focus (0.6.2+). `sessions start` opens them unfocused
 and `tabs select` switches tabs without raising the window, so an agent working
 in your everyday browser does not interrupt you. A new Agent Window first shows
