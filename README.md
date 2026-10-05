@@ -95,13 +95,18 @@ The installer builds the extension, stages it, and registers a per-user native
 host and the `overseer-browser` CLI. It never opens or reloads your everyday
 Chrome.
 
-To update, pull and rerun the installer's update step, then reload the
-extension wherever you loaded it:
+To update, pull, rerun the installer's update step, and move the extension
+Chrome already loaded to the new version (Chrome's Reload button only rereads
+the folder it loaded from), then click Reload once in `chrome://extensions`:
 
 ```sh
 git pull --ff-only
 overseer-browser update
+overseer-browser refresh-extension   # refuses while agent sessions are active
 ```
+
+`overseer-browser status` reports `extension_update` when the loaded extension
+is older than the installed CLI.
 
 `overseer-browser uninstall` removes the native host and CLI; remove the
 extension from `chrome://extensions` yourself.

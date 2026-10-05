@@ -68,7 +68,7 @@ _SCREENSHOT_MAGIC = {
 
 REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
 CLI_COMMANDS = (
-    "health", "status", "doctor", "qa", "timelapse", "record", "dom", "version", "install", "update", "uninstall", "help", "sessions", "windows", "tabs",
+    "health", "status", "doctor", "qa", "timelapse", "record", "dom", "version", "install", "update", "uninstall", "refresh-extension", "help", "sessions", "windows", "tabs",
     "open", "close", "navigate", "back", "forward", "reload", "snapshot", "observe", "click", "hover", "fill", "type", "select", "press",
     "scroll", "evaluate", "eval", "console", "network", "batch", "capture", "screenshot",
     "screenshot-element", "element-screenshot", "upload", "takeover", "cancel", "wait",
@@ -823,10 +823,29 @@ def _require_mobile_support(extension_command: str, params: dict[str, Any], payl
     }
 
 
+def _version_key(value: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in value.split(".") if part.isdigit())
+
+
+def _extension_update_hint(loaded: Any) -> dict[str, Any] | None:
+    """The loaded extension is older than this CLI: Chrome's Reload only rereads the folder it loaded."""
+    if not isinstance(loaded, str) or not loaded or _version_key(loaded) >= _version_key(CLI_VERSION):
+        return None
+    return {
+        "loaded": loaded,
+        "installed": CLI_VERSION,
+        "hint": "Chrome is running an older extension. Its Reload button rereads only the folder it was loaded from, "
+        "so run `overseer-browser refresh-extension` (puts this version in that folder) and then click Reload once.",
+    }
+
+
 def _run_script(action: str) -> dict[str, Any]:
-    script = Path(__file__).resolve().parents[1] / "scripts" / "manage-macos.sh"
-    if not script.exists():
-        raise CLIError("not_installed", "installer script is missing")
+    # A source checkout carries scripts/; an installed runtime does not, so use the installed manager.
+    candidates = [Path(__file__).resolve().parents[1] / "scripts" / "manage-macos.sh",
+                  Path.home() / "Library/Application Support/OverSeer/browser/scripts/manage-macos.sh"]
+    script = next((path for path in candidates if path.is_file()), None)
+    if script is None:
+        raise CLIError("not_installed", "installer script is missing: " + ", ".join(str(path) for path in candidates))
     try:
         completed = subprocess.run([str(script), action], capture_output=True, text=True, timeout=300, check=False)
     except OSError as exc:
@@ -1081,7 +1100,7 @@ def main(argv: list[str] | None = None) -> int:
                                                CLI_VERSION, session_key, tab_id=tab_id,
                                                frames=frames, interval=interval, tracked=created)
                 payload['result']['expires_unix'] = temp_outputs.metadata(directory, keep_outputs)['expires_unix']
-        elif command in {"install", "update", "uninstall"}:
+        elif command in {"install", "update", "uninstall", "refresh-extension"}:
             _exact(args, 0, command)
             payload = _run_script(command)
         elif command == "health":
@@ -1101,6 +1120,9 @@ def main(argv: list[str] | None = None) -> int:
                     extension_result = extension_response.get("result")
                     if extension_response.get("ok") is True and isinstance(extension_result, dict):
                         payload["extension"] = {"ok": True, **extension_result}
+                        update = _extension_update_hint(extension_result.get("extension_version"))
+                        if update:
+                            payload["extension_update"] = update
                     else:
                         payload["ok"] = False
                         payload["extension"] = {"ok": False, "error": extension_response.get("error", {"code": "invalid_response", "message": "Extension status was unavailable."})}
