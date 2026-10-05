@@ -186,6 +186,17 @@ credentials and do not isolate hostile processes: sessions share the dedicated
 profile's cookies and site permissions. Screenshots are paced to Chrome's
 extension-wide capture limit; everything else runs concurrently.
 
+**Screenshot size and scale.** A screenshot is the visible tab at the display's
+pixel density, so a 1920×1080 viewport on a 2× display is a 3840×2160 bitmap.
+`screenshot-element` crops that bitmap to the element's rectangle, clipped to the
+viewport (scroll it into view first). If the image does not fit the 850 KB
+native frame, it is shrunk in steps (scale 1, 0.8, 0.64, 0.5, 0.4, with lower
+JPEG quality at each step). The result says what happened: `viewport` (CSS
+pixels and `devicePixelRatio`), `source` (the captured bitmap), `crop` (the kept
+region, in bitmap pixels), `scale` (returned size ÷ crop size) and `quality`
+(JPEG only), next to the returned `width` and `height`. To map a point in the
+image back to the page: `css = (crop.left + x / scale) / devicePixelRatio`.
+
 ### Lend a tab from your everyday browser
 
 To let an agent work in a normal tab, load the built extension in that browser
