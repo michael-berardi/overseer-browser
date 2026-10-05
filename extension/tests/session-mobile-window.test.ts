@@ -77,6 +77,21 @@ describe('mobile Agent Window', () => {
     expect(sessionStore['overseer.session.v1']).toMatchObject({ mobile: { width: 375, height: 812 } });
   });
 
+  it('reads the placeholder page by message when scripting cannot reach the extension page', async () => {
+    const stub = installBrowser(MAC_POPUP);
+    stub.scripting.executeScript.mockRejectedValue(new Error('Cannot access contents of url "chrome-extension://test/agent-window.html".'));
+    const sendMessage = vi.fn(async (message: { type: string; windowId: number }) =>
+      message.type === 'overseer-agent-window-viewport' && message.windowId === 10
+        ? { width: outer.width - MAC_POPUP.frame.width, height: outer.height - MAC_POPUP.frame.height, devicePixelRatio: 2 }
+        : undefined,
+    );
+    (stub.runtime as Record<string, unknown>).sendMessage = sendMessage;
+    const started = await new SessionManager().start(undefined, { width: 375, height: 812 });
+
+    expect(started).toMatchObject({ started: true, viewport: { width: 375, height: 812, devicePixelRatio: 2 } });
+    expect(sendMessage).toHaveBeenCalledWith({ type: 'overseer-agent-window-viewport', windowId: 10 });
+  });
+
   it('compensates for side borders so the page, not the frame, is 375px wide', async () => {
     const stub = installBrowser({ ...MAC_POPUP, frame: { width: 16, height: 39 } });
     const started = await new SessionManager().start(undefined, { width: 375, height: 812 });

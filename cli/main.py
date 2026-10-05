@@ -33,7 +33,7 @@ except ImportError:
     from cli.runtime_discovery import find_active_runtime
 from cli import evidence, recording, dom_query, temp_outputs
 
-CLI_VERSION = "0.6.3"
+CLI_VERSION = "0.6.4"
 MAX_UPLOAD_BYTES = 8 * 1024 * 1024
 MAX_UPLOAD_CHUNKS = 32
 MAX_UPLOAD_FILES = 16
@@ -800,6 +800,23 @@ def _session_start_params(args: list[str]) -> dict[str, Any]:
     return params
 
 
+def _require_mobile_support(extension_command: str, params: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    """An extension older than 0.6.4 ignores `mobile` and opens a normal ~500px window; never report that as a phone width."""
+    if extension_command != "sessions.start" or not params.get("mobile") or not payload.get("ok"):
+        return payload
+    result = payload.get("result")
+    if isinstance(result, dict) and result.get("mobile") and isinstance(result.get("viewport"), dict):
+        return payload
+    return {
+        "ok": False,
+        "error": {
+            "code": "extension_outdated",
+            "message": "The loaded OverSeer Browser extension does not support --mobile, so it started a normal-width session. "
+            "Run `overseer-browser sessions stop`, then reload the extension in chrome://extensions after `overseer-browser update`.",
+        },
+    }
+
+
 def _run_script(action: str) -> dict[str, Any]:
     script = Path(__file__).resolve().parents[1] / "scripts" / "manage-macos.sh"
     if not script.exists():
@@ -1130,6 +1147,7 @@ def main(argv: list[str] | None = None) -> int:
             extension_command, params = _command_request(command, args)
             params = _apply_targeting(extension_command, params, tab_id, max_nodes, wait_until)
             payload = request_once(extension_command, params, timeout=timeout, request_id=request_id, **request_options)
+            payload = _require_mobile_support(extension_command, params, payload)
     except CLIError as exc:
         payload = {"ok": False, "error": {"code": exc.code, "message": exc.message}}
     except ProtocolError as exc:

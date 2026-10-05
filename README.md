@@ -263,6 +263,8 @@ and device pixel ratio are the desktop's. It holds exactly one tab (navigate it;
 `tabs create` is refused), and a link that opens a new tab can open it in another
 window. A session keeps its window mode: stop it before starting a different one.
 
+The extension must be 0.6.4 or later. An older loaded extension ignores `--mobile`; the CLI then reports `extension_outdated` instead of a normal-width session.
+
 `OVERSEER_BROWSER_CONNECTION=managed` keeps the isolated browser;
 `OVERSEER_BROWSER_CONNECTION=/path/to/descriptor.json` selects another
 descriptor. An explicit `OVERSEER_BROWSER_RUNTIME` takes precedence over both.

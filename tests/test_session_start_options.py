@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from cli.main import CLIError, _command_request
+from cli.main import CLIError, _command_request, _require_mobile_support
 
 
 class SessionStartOptionsTests(unittest.TestCase):
@@ -30,6 +30,20 @@ class SessionStartOptionsTests(unittest.TestCase):
             with self.assertRaises(CLIError) as caught:
                 _command_request("sessions", args)
             self.assertEqual(caught.exception.code, "usage")
+
+    def test_old_extension_ignoring_mobile_is_reported_not_trusted(self) -> None:
+        old = {"ok": True, "result": {"name": "qa", "started": True}}
+        out = _require_mobile_support("sessions.start", {"mobile": True}, old)
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["error"]["code"], "extension_outdated")
+
+    def test_mobile_result_and_plain_start_pass_through(self) -> None:
+        new = {"ok": True, "result": {"mobile": {"width": 375, "height": 812}, "viewport": {"width": 375, "height": 812, "devicePixelRatio": 2}}}
+        self.assertIs(_require_mobile_support("sessions.start", {"mobile": True}, new), new)
+        plain = {"ok": True, "result": {"started": True}}
+        self.assertIs(_require_mobile_support("sessions.start", {}, plain), plain)
+        failed = {"ok": False, "error": {"code": "window_size_clamped"}}
+        self.assertIs(_require_mobile_support("sessions.start", {"mobile": True}, failed), failed)
 
 
 if __name__ == "__main__":
