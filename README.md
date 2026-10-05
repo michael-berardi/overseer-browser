@@ -377,6 +377,10 @@ clients and serialize navigation per tab. `evaluate` needs a site grant and
 Chrome's **Allow User Scripts** setting, and runs in the CSP-exempt User Scripts
 world, so strict sites do not need `unsafe-eval`.
 
+Keyboard events are synthetic. `press Enter` includes legacy key code 13 for
+older controls as well as the modern key and code. A cancelled keydown prevents
+the tool's default form submission; this does not manufacture trusted input.
+
 **Temporary output.** Screenshots without a path go to `/tmp/screenshots/` on
 POSIX. Screenshots, evidence packs, timelapses and recordings written to the OS
 temp directory expire after about 15 minutes (sooner under a 512 MiB /

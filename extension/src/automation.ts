@@ -863,7 +863,15 @@ async function isolatedAutomation(action: AutomationAction, dialogToken: string 
         if (action.ref || (element !== element.ownerDocument.body && element !== element.ownerDocument.documentElement)) requireInteractable(element);
         element.focus();
         const view = elementWindow(element);
-        const init = { key: action.key, code: action.code ?? action.key, bubbles: true, cancelable: true };
+        // Older controls (including Closure-based search inputs) still use keyCode.
+        // Preserve synthetic input and cancellation; do not spoof isTrusted.
+        const init = {
+          key: action.key,
+          code: action.code ?? action.key,
+          ...(action.key === 'Enter' ? { keyCode: 13 } : {}),
+          bubbles: true,
+          cancelable: true,
+        };
         const allowed = element.dispatchEvent(new view.KeyboardEvent('keydown', init));
         if (allowed) {
           if (action.key === 'Enter') {
