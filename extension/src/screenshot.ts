@@ -26,9 +26,20 @@ export interface ScreenshotResult {
   format: ScreenshotFormat;
   data: string;
   bytes: number;
+  /** Size of the returned image in pixels (after any crop and downscale). */
   width: number;
   height: number;
   cropped: boolean;
+  /** The page viewport in CSS pixels and its device pixel ratio when the frame was captured. */
+  viewport?: { width: number; height: number; devicePixelRatio: number };
+  /** The captured bitmap before cropping or scaling, in device pixels. */
+  source?: { width: number; height: number };
+  /** The region of the source bitmap that was kept, in source pixels (the whole frame when not cropped). */
+  crop?: { left: number; top: number; width: number; height: number };
+  /** Returned size divided by crop size (1 = full resolution); smaller when shrunk to fit the frame limit. */
+  scale?: number;
+  /** JPEG quality used (0..1); absent for PNG. */
+  quality?: number;
 }
 
 export async function requireActiveScreenshotTarget(tabId: number, windowId: number): Promise<void> {
@@ -103,6 +114,11 @@ export async function captureScreenshot(
           width: targetWidth,
           height: targetHeight,
           cropped: Boolean(rect),
+          viewport: { width: viewport.width, height: viewport.height, devicePixelRatio: viewport.devicePixelRatio },
+          source: { width: source.width, height: source.height },
+          crop: { left: crop.left, top: crop.top, width: crop.width, height: crop.height },
+          scale,
+          ...(quality === undefined ? {} : { quality }),
         };
         if (serializedSize(result) <= MAX_SCREENSHOT_FRAME_BYTES && isBoundedNativeFrame(result)) return result;
       }
