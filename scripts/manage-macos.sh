@@ -324,7 +324,7 @@ for target in targets:
     if current.get('key') != new.get('key') or current.get('name') != new.get('name'):
         sys.exit(f'{target} is not this extension (manifest key or name differs); not touching it')
     if current.get('version') == new.get('version'):
-        print(f'{target} already holds {new["version"]}; click Reload in chrome://extensions if Chrome still shows {current["version"]}')
+        print(f'{target} already holds {new["version"]}; if Chrome still reports an older version, click Reload on OverSeer Browser in chrome://extensions once')
         continue
     parent = os.path.dirname(target)
     staged = tempfile.mkdtemp(prefix='.overseer-extension-', dir=parent)
