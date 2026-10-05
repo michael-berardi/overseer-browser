@@ -13,7 +13,7 @@ REPO = Path(__file__).resolve().parents[1]
 
 
 class InstallStagingTests(unittest.TestCase):
-    def exercise(self, script):
+    def exercise(self, script, relay=False):
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
             root = base / 'checkout'
@@ -87,9 +87,33 @@ class InstallStagingTests(unittest.TestCase):
             after = {str(p.relative_to(first)): hashlib.sha256(p.read_bytes()).hexdigest()
                      for p in first.rglob('*') if p.is_file()}
             self.assertEqual(snapshot, after)
+            if relay:
+                self.check_operator_relay_survives_update(app, home, install, built)
+
+    def check_operator_relay_survives_update(self, app, home, install, built):
+        chrome = home / 'Library/Application Support/Google/Chrome/NativeMessagingHosts/com.imploselabs.overseer_browser.json'
+        relay = app / 'overseer-browser-operator-relay'
+        current = sorted((app / 'runtimes').iterdir(), key=lambda p: p.stat().st_mtime)[-1]
+        relay.write_text('#!/bin/sh\nexport OVERSEER_BROWSER_RUNTIME="/private/relay"\n'
+                         f'exec python3 -c x "{current}" --operator-relay "$@"\n')
+        relay.chmod(0o700)
+        registered = json.loads(chrome.read_text())
+        registered['path'] = str(relay)
+        chrome.write_text(json.dumps(registered))
+        (built / 'background.js').write_text('// relay-era synthetic build')
+        result = install()
+        newest = sorted((app / 'runtimes').iterdir(), key=lambda p: p.stat().st_mtime)[-1]
+        self.assertNotEqual(newest, current)
+        self.assertEqual(json.loads(chrome.read_text())['path'], str(relay), result.stdout)
+        text = relay.read_text()
+        self.assertIn(f'"{newest}" --operator-relay', text)
+        self.assertNotIn(str(current), text)
+        self.assertIn('OVERSEER_BROWSER_RUNTIME="/private/relay"', text)
+        testing = home / 'Library/Application Support/Google/Chrome for Testing/NativeMessagingHosts/com.imploselabs.overseer_browser.json'
+        self.assertEqual(json.loads(testing.read_text())['path'], str(app / 'overseer-browser-native-host'))
 
     def test_macos_staging(self):
-        self.exercise('manage-macos.sh')
+        self.exercise('manage-macos.sh', relay=True)
 
     def test_linux_staging(self):
         self.exercise('install-linux.sh')
