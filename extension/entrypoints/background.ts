@@ -23,7 +23,7 @@ import { ObserveDeltaStore, computeObserveDelta } from '../src/observe_delta';
 import { WaitError, parseWaitTarget } from '../src/wait';
 import { getPermissionState, isNavigableUrl, normalizeSiteAccess } from '../src/permissions';
 import { MeetingDeduper, PendingMeetingQueue } from '../src/meeting';
-import { SessionError } from '../src/session';
+import { SessionError, normalizeMobileWindow, type MobileWindowRequest } from '../src/session';
 import { SessionRegistry, normalizeSessionKey } from '../src/session_registry';
 import { captureScreenshot, requireActiveScreenshotTarget, ScreenshotError } from '../src/screenshot';
 import { browserTelemetry, type BrowserUsageCounter } from '../src/telemetry';
@@ -354,7 +354,7 @@ const COMMAND_PARAM_KEYS: Record<Command | 'debugger.input' | 'debugger.network'
   'debugger.network': ['tab_id', 'action'],
   'debugger.status': ['tab_id'],
   'health.status': ['capabilities_only'],
-  'sessions.start': ['name'],
+  'sessions.start': ['name', 'mobile', 'width', 'height'],
   'sessions.stop': [],
   'sessions.list': [],
   'windows.resize': ['width', 'height', 'left', 'top'],
@@ -949,7 +949,7 @@ async function dispatchCommand(request: NativeRequest, state: InflightRequest): 
     }
     return recordCommand(action, sessionKey, tabId, params);
   }
-  if (command === 'sessions.start') return sessionRegistry.start(sessionKey, optionalString(params, 'name'));
+  if (command === 'sessions.start') return sessionRegistry.start(sessionKey, optionalString(params, 'name'), optionalMobileWindow(params));
   if (command === 'sessions.stop') {
     for (const other of inflight.values()) if (other !== state && other.sessionKey === sessionKey) markCancelled(other);
     try { await recordCommand('clear', sessionKey, -1, {}); } catch { /* peer recorder must not be touched */ }
@@ -1892,6 +1892,16 @@ function optionalInteger(params: Record<string, unknown>, key: string): number |
   const value = params[key];
   if (value === undefined) return undefined;
   return readInteger(params, key, -10_000, 10_000);
+}
+
+/** `mobile: true` asks for a phone-width popup; `width`/`height` (CSS px) are only valid with it. */
+function optionalMobileWindow(params: Record<string, unknown>): MobileWindowRequest | undefined {
+  if (params.mobile === undefined || params.mobile === false) {
+    if (params.width !== undefined || params.height !== undefined) throw new DispatchError('invalid_params', 'width and height apply only with mobile: true.');
+    return undefined;
+  }
+  if (params.mobile !== true) throw new DispatchError('invalid_params', 'mobile must be a boolean.');
+  return normalizeMobileWindow(optionalInteger(params, 'width'), optionalInteger(params, 'height'));
 }
 
 function optionalTabId(params: Record<string, unknown>): number | undefined {

@@ -3,10 +3,32 @@ import { isNavigableUrl } from './permissions';
 export const SESSION_STORAGE_KEY = 'overseer.session.v1';
 export const SESSION_STORAGE_PREFIX = 'overseer.session.v2.';
 
+export const MOBILE_VIEWPORT_DEFAULT = { width: 375, height: 812 } as const;
+const MOBILE_WIDTH_RANGE = [200, 1000] as const;
+const MOBILE_HEIGHT_RANGE = [200, 3000] as const;
+/** Window sizes come back in whole pixels; display scaling can shift them by a pixel or two. */
+const SIZE_TOLERANCE_PX = 2;
+const VIEWPORT_READ_ATTEMPTS = 15;
+const VIEWPORT_READ_DELAY_MS = 100;
+
+/** Requested page viewport (CSS pixels) of a mobile Agent Window. */
+export interface MobileWindowRequest {
+  width: number;
+  height: number;
+}
+
+/** What the page itself reports: window.innerWidth/innerHeight and devicePixelRatio. */
+export interface ViewportReadback {
+  width: number;
+  height: number;
+  devicePixelRatio: number;
+}
+
 export interface SessionState {
   sessionId: string;
   sessionKey?: string;
   agentWindowId: number;
+  mobile?: MobileWindowRequest;
   ownedTabIds: number[];
   borrowedTabIds: number[];
   name?: string;
@@ -117,11 +139,12 @@ export class SessionManager {
     return tabs;
   }
 
-  async start(name?: string): Promise<SessionSummary & { started: boolean }> {
+  async start(name?: string, mobile?: MobileWindowRequest): Promise<SessionSummary & { started: boolean; viewport?: ViewportReadback | null }> {
     return this.serializeLifecycle(async () => {
       await this.load();
       await this.discardClosedAgentWindow();
       const requestedName = normalizeSessionName(name);
+      const requestedMobile = mobile === undefined ? undefined : normalizeMobileWindow(mobile.width, mobile.height);
       if (this.state) {
         if (requestedName !== undefined && this.state.name !== requestedName) {
           throw new SessionError(
@@ -130,27 +153,58 @@ export class SessionManager {
             'Stop the active session before starting one with a different name.',
           );
         }
+        if (requestedMobile && (this.state.mobile?.width !== requestedMobile.width || this.state.mobile.height !== requestedMobile.height)) {
+          throw new SessionError(
+            'session_conflict',
+            `The active browser session has ${this.state.mobile ? `a ${this.state.mobile.width}x${this.state.mobile.height} mobile` : 'a normal'} Agent Window.`,
+            'Stop the active session before starting one with a different window mode.',
+          );
+        }
         await this.refreshAgentTabs();
-        return { ...this.state, connected: true, started: false };
+        const existing = { ...this.state, connected: true, started: false };
+        return this.state.mobile ? { ...existing, viewport: await this.measureViewport().catch(() => null) } : existing;
       }
       // Never raise or focus the Agent Window: it runs in the operator's own
       // browser and must not take over their screen or keyboard. The titled
       // placeholder page lets window managers route it at creation.
-      const agentWindow = await browser.windows.create({ focused: false, type: 'normal', url: browser.runtime.getURL('/agent-window.html'), left: 0, top: 0 });
+      // A mobile window is a popup: Chrome keeps normal windows at least
+      // ~500px wide, but lets popups (no tab strip) go narrower.
+      const agentWindow = await browser.windows.create({
+        focused: false,
+        type: requestedMobile ? 'popup' : 'normal',
+        url: browser.runtime.getURL('/agent-window.html'),
+        left: 0,
+        top: 0,
+        ...(requestedMobile ? { width: requestedMobile.width, height: requestedMobile.height } : {}),
+      });
       if (!agentWindow || agentWindow.id === undefined) throw new Error('Chrome did not return an Agent Window id.');
+      let viewport: ViewportReadback | undefined;
+      if (requestedMobile) {
+        try {
+          viewport = await fitMobileWindow(agentWindow, requestedMobile);
+        } catch (error) {
+          try {
+            await browser.windows.remove(agentWindow.id);
+          } catch {
+            // The window is already gone; nothing is left to clean up.
+          }
+          throw error;
+        }
+      }
       const tabIds = (agentWindow.tabs ?? []).map((tab) => tab.id).filter((id): id is number => id !== undefined);
       this.state = {
         sessionId: crypto.randomUUID(),
         sessionKey: this.sessionKey,
         ...(requestedName === undefined ? {} : { name: requestedName }),
         agentWindowId: agentWindow.id,
+        ...(requestedMobile ? { mobile: requestedMobile } : {}),
         ownedTabIds: tabIds,
         borrowedTabIds: [],
         selectedTabId: tabIds[0],
         startedAtMs: Date.now(),
       };
       await this.persist();
-      return { ...this.state, connected: true, started: true };
+      return { ...this.state, connected: true, started: true, ...(viewport ? { viewport } : {}) };
     });
   }
 
@@ -193,7 +247,7 @@ export class SessionManager {
     return [{ ...this.state, connected: true }];
   }
 
-  async resize(params: { width?: number; height?: number; left?: number; top?: number }): Promise<chrome.windows.Window> {
+  async resize(params: { width?: number; height?: number; left?: number; top?: number }): Promise<chrome.windows.Window & { viewport: ViewportReadback | null }> {
     const state = await this.requireState();
     const updates: chrome.windows.UpdateInfo = {};
     for (const [key, value] of Object.entries(params)) {
@@ -202,18 +256,32 @@ export class SessionManager {
         updates[key as keyof chrome.windows.UpdateInfo] = value as never;
       }
     }
+    let resized: chrome.windows.Window;
     try {
-      return await browser.windows.update(state.agentWindowId, updates);
+      resized = await browser.windows.update(state.agentWindowId, updates);
     } catch {
       if (updates.left !== undefined || updates.top !== undefined) {
         throw new SessionError('window_resize_failed', 'The Agent Window could not be resized.', 'Move the dedicated window onto a visible display and retry.');
       }
       try {
-        return await browser.windows.update(state.agentWindowId, { ...updates, left: 0, top: 0 });
+        resized = await browser.windows.update(state.agentWindowId, { ...updates, left: 0, top: 0 });
       } catch {
         throw new SessionError('window_resize_failed', 'The Agent Window could not be resized or recovered on the primary display.', 'Disable window-manager rules for the Agent Window, move it onto a visible display, and retry.');
       }
     }
+    // Chrome clamps instead of failing (a normal window never goes below ~500px
+    // wide), so a successful update is not proof of the requested size.
+    assertSizeApplied(resized, updates, state.mobile !== undefined);
+    return { ...resized, viewport: await this.measureViewport().catch(() => null) };
+  }
+
+  /** The page's own innerWidth/innerHeight in the Agent Window's active tab. */
+  private async measureViewport(): Promise<ViewportReadback> {
+    const state = this.state;
+    if (!state) throw new SessionError('session_required', 'Start a browser session before using this command.');
+    const [activeTab] = await browser.tabs.query({ windowId: state.agentWindowId, active: true });
+    if (activeTab?.id === undefined) throw new SessionError('viewport_unreadable', 'The Agent Window has no active tab to measure.');
+    return readViewport(activeTab.id);
   }
 
   async listTabs(): Promise<Browser.tabs.Tab[]> {
@@ -234,6 +302,11 @@ export class SessionManager {
       const state = await this.requireState();
       if (url !== undefined && !isNavigableUrl(url)) {
         throw new SessionError('invalid_url', 'Only http and https navigation is allowed.');
+      }
+      // Chrome opens tabs requested for a popup window in a normal window instead,
+      // which would put an Agent tab in the operator's own browser.
+      if (state.mobile) {
+        throw new SessionError('mobile_window_single_tab', 'A mobile Agent Window holds exactly one tab.', 'Navigate the existing tab instead of creating another.');
       }
       const tab = await browser.tabs.create({ windowId: state.agentWindowId, url: url ?? 'about:blank', active: true });
       if (tab.id === undefined) throw new Error('Chrome did not return a tab id.');
@@ -391,6 +464,101 @@ export class SessionError extends Error {
   }
 }
 
+/** Validates a mobile viewport request; omitted sides take the 375x812 phone default. */
+export function normalizeMobileWindow(width: number | undefined, height: number | undefined): MobileWindowRequest {
+  const request = { width: width ?? MOBILE_VIEWPORT_DEFAULT.width, height: height ?? MOBILE_VIEWPORT_DEFAULT.height };
+  if (!isMobileRequest(request)) {
+    throw new SessionError(
+      'invalid_mobile_window',
+      `A mobile window needs an integer width of ${MOBILE_WIDTH_RANGE[0]}–${MOBILE_WIDTH_RANGE[1]} and height of ${MOBILE_HEIGHT_RANGE[0]}–${MOBILE_HEIGHT_RANGE[1]} CSS pixels.`,
+    );
+  }
+  return request;
+}
+
+function isMobileRequest(value: unknown): value is MobileWindowRequest {
+  if (!value || typeof value !== 'object') return false;
+  const { width, height } = value as Partial<MobileWindowRequest>;
+  return Number.isInteger(width) && width! >= MOBILE_WIDTH_RANGE[0] && width! <= MOBILE_WIDTH_RANGE[1] &&
+    Number.isInteger(height) && height! >= MOBILE_HEIGHT_RANGE[0] && height! <= MOBILE_HEIGHT_RANGE[1];
+}
+
+/**
+ * Reads window.innerWidth/innerHeight from the page. The page may still be
+ * committing right after the window opens, so a failed injection is retried.
+ */
+async function readViewport(tabId: number): Promise<ViewportReadback> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < VIEWPORT_READ_ATTEMPTS; attempt += 1) {
+    if (attempt > 0) await new Promise<void>((resolve) => setTimeout(resolve, VIEWPORT_READ_DELAY_MS));
+    try {
+      const [injection] = await browser.scripting.executeScript({
+        target: { tabId },
+        func: () => ({ width: window.innerWidth, height: window.innerHeight, devicePixelRatio: window.devicePixelRatio || 1 }),
+      });
+      const result = injection?.result as Partial<ViewportReadback> | undefined;
+      if (Number.isInteger(result?.width) && Number.isInteger(result?.height) && typeof result?.devicePixelRatio === 'number') {
+        return { width: result.width!, height: result.height!, devicePixelRatio: result.devicePixelRatio };
+      }
+      lastError = new Error('The page returned no viewport.');
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw new SessionError(
+    'viewport_unreadable',
+    `The Agent Window viewport could not be measured: ${lastError instanceof Error ? lastError.message : 'unknown error'}`,
+    'Check that the Agent Window is open on an http(s) page or the placeholder page, then retry.',
+  );
+}
+
+/**
+ * Resizes a freshly opened popup until the page itself reports the requested
+ * viewport. Window sizes include the frame, so one corrective update closes the
+ * gap (title bar on macOS, borders on Windows/Linux). A viewport that stays
+ * wider than requested means Chrome clamped the window: fail, never report it as
+ * the requested width. A shorter screen only limits the height, which is reported.
+ */
+async function fitMobileWindow(agentWindow: chrome.windows.Window, wanted: MobileWindowRequest): Promise<ViewportReadback> {
+  const tabId = agentWindow.tabs?.find((tab) => tab.id !== undefined)?.id;
+  if (agentWindow.id === undefined || tabId === undefined) throw new SessionError('viewport_unreadable', 'Chrome did not return the mobile window tab.');
+  let viewport = await readViewport(tabId);
+  for (let correction = 0; correction < 2 && (viewport.width !== wanted.width || viewport.height !== wanted.height); correction += 1) {
+    const current = await browser.windows.get(agentWindow.id);
+    if (current.width === undefined || current.height === undefined) break;
+    await browser.windows.update(agentWindow.id, {
+      width: Math.max(1, current.width + wanted.width - viewport.width),
+      height: Math.max(1, current.height + wanted.height - viewport.height),
+    });
+    viewport = await readViewport(tabId);
+  }
+  if (viewport.width !== wanted.width) {
+    throw new SessionError(
+      'window_size_clamped',
+      `Chrome gave the mobile window a ${viewport.width}px-wide viewport, not the requested ${wanted.width}px.`,
+      `Chrome will not make a window this narrow on this system. Request ${viewport.width}px or wider, or treat layouts below ${viewport.width}px as untested here.`,
+    );
+  }
+  return viewport;
+}
+
+/** Throws when Chrome applied a different window size than requested. */
+function assertSizeApplied(applied: chrome.windows.Window, requested: chrome.windows.UpdateInfo, mobile: boolean): void {
+  const wrongWidth = requested.width !== undefined && applied.width !== undefined && Math.abs(applied.width - requested.width) > SIZE_TOLERANCE_PX;
+  const wrongHeight = requested.height !== undefined && applied.height !== undefined && Math.abs(applied.height - requested.height) > SIZE_TOLERANCE_PX;
+  if (!wrongWidth && !wrongHeight) return;
+  const asked = `${requested.width ?? 'unchanged'}x${requested.height ?? 'unchanged'}`;
+  const got = `${applied.width ?? 'unknown'}x${applied.height ?? 'unknown'}`;
+  const tooNarrow = wrongWidth && applied.width! > requested.width!;
+  throw new SessionError(
+    'window_size_clamped',
+    `Chrome resized the Agent Window to ${got}, not the requested ${asked}; the window now stays at ${got}.`,
+    tooNarrow && !mobile
+      ? 'Chrome keeps normal windows about 500px wide at minimum. Stop the session and start one with --mobile for phone widths.'
+      : 'Request a size that fits the display and Chrome\'s minimum window size.',
+  );
+}
+
 function normalizeSessionName(value: string | undefined): string | undefined {
   if (value === undefined) return undefined;
   const normalized = value.trim();
@@ -409,5 +577,6 @@ function isSessionState(value: unknown): value is SessionState {
     Array.isArray(candidate.ownedTabIds) && candidate.ownedTabIds.every((id) => Number.isInteger(id)) &&
     Array.isArray(candidate.borrowedTabIds) && candidate.borrowedTabIds.every((id) => Number.isInteger(id)) &&
     (candidate.selectedTabId === undefined || Number.isInteger(candidate.selectedTabId)) &&
+    (candidate.mobile === undefined || isMobileRequest(candidate.mobile)) &&
     (candidate.paused === undefined || typeof candidate.paused === 'boolean') && Number.isFinite(candidate.startedAtMs);
 }
