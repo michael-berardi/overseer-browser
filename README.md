@@ -239,6 +239,30 @@ in your everyday browser does not interrupt you. A new Agent Window first shows
 a blank page titled `OverSeer Agent Window`, which window managers can match to
 keep it off your workspace.
 
+### Phone-width window
+
+Chrome keeps a normal window at least about 500 px wide, so `windows resize 375 812`
+cannot make one. Start a mobile Agent Window instead:
+
+```sh
+overseer-browser --session m sessions start --mobile                      # 375x812
+overseer-browser --session m sessions start --mobile --width 414 --height 896
+```
+
+It opens as an unfocused popup window (no tab strip), and the result carries a
+`viewport` the page measured itself (`innerWidth`, `innerHeight`,
+`devicePixelRatio`). If Chrome cannot make the viewport the requested width,
+`sessions start` fails with `window_size_clamped`, closes the window and says what
+width Chrome gave; `windows resize` fails the same way when the applied size
+differs from the request. Width and height are CSS pixels, 200-1000 and 200-3000.
+A display shorter than the request only limits the height: compare the reported
+`viewport` with what you asked for.
+
+This is a narrow desktop Chrome window, not a phone: the user agent, touch input
+and device pixel ratio are the desktop's. It holds exactly one tab (navigate it;
+`tabs create` is refused), and a link that opens a new tab can open it in another
+window. A session keeps its window mode: stop it before starting a different one.
+
 `OVERSEER_BROWSER_CONNECTION=managed` keeps the isolated browser;
 `OVERSEER_BROWSER_CONNECTION=/path/to/descriptor.json` selects another
 descriptor. An explicit `OVERSEER_BROWSER_RUNTIME` takes precedence over both.
@@ -306,7 +330,7 @@ overseer-browser --version
 overseer-browser [--session KEY] health
 overseer-browser [--session KEY] status [--json]
 overseer-browser doctor
-overseer-browser sessions start [name] | stop | list
+overseer-browser sessions start [name] [--mobile [--width PX] [--height PX]] | stop | list
 overseer-browser windows resize <width> <height>
 overseer-browser tabs list | create [url] | select <id> | close <id> | borrow <id> | return <id>
 overseer-browser navigate <url> [--wait-until load|interactive]

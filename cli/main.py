@@ -652,10 +652,7 @@ def _command_request(command: str, args: list[str]) -> tuple[str, dict[str, Any]
                 raise CLIError("unknown_command", f"unknown command: {command}.{action}")
         elif command == "sessions":
             if action == "start":
-                if len(rest) > 1:
-                    raise CLIError("usage", "usage: overseer-browser sessions start [NAME]")
-                if rest:
-                    params = {"name": rest[0]}
+                params = _session_start_params(rest)
             elif action in {"stop", "list"}:
                 _exact(rest, 0, f"sessions {action}")
             else:
@@ -771,6 +768,36 @@ def _number(value: str) -> int:
     if not 1 <= result <= 16_384:
         raise CLIError("usage", "dimension must be between 1 and 16384")
     return result
+
+
+def _session_start_params(args: list[str]) -> dict[str, Any]:
+    """`sessions start [NAME] [--mobile [--width PX] [--height PX]]`; sizes are page viewport CSS pixels."""
+    usage = "usage: overseer-browser sessions start [NAME] [--mobile [--width PX] [--height PX]]"
+    params: dict[str, Any] = {}
+    names: list[str] = []
+    mobile = False
+    index = 0
+    while index < len(args):
+        item = args[index]
+        if item == "--mobile":
+            mobile = True
+        elif item in {"--width", "--height"}:
+            index += 1
+            if index >= len(args):
+                raise CLIError("usage", usage)
+            params[item[2:]] = _integer(args[index], maximum=10_000)
+        else:
+            names.append(item)
+        index += 1
+    if len(names) > 1:
+        raise CLIError("usage", usage)
+    if ("width" in params or "height" in params) and not mobile:
+        raise CLIError("usage", "--width and --height apply only with --mobile")
+    if names:
+        params["name"] = names[0]
+    if mobile:
+        params["mobile"] = True
+    return params
 
 
 def _run_script(action: str) -> dict[str, Any]:

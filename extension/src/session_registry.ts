@@ -1,4 +1,4 @@
-import { SessionError, SessionManager, SESSION_STORAGE_KEY, SESSION_STORAGE_PREFIX, type SessionReleaseHook, type SessionSummary } from './session';
+import { SessionError, SessionManager, SESSION_STORAGE_KEY, SESSION_STORAGE_PREFIX, type MobileWindowRequest, type SessionReleaseHook, type SessionSummary, type ViewportReadback } from './session';
 
 export const MAX_BROWSER_SESSIONS = 32;
 export const SESSION_KEY_PATTERN = /^[A-Za-z0-9_.:-]{1,128}$/;
@@ -58,7 +58,7 @@ export class SessionRegistry {
     return result;
   }
 
-  start(value?: string, name?: string): Promise<SessionSummary & { started: boolean }> {
+  start(value?: string, name?: string, mobile?: MobileWindowRequest): Promise<SessionSummary & { started: boolean; viewport?: ViewportReadback | null }> {
     return this.serialize(async () => {
       const key = normalizeSessionKey(value);
       await this.load();
@@ -73,7 +73,7 @@ export class SessionRegistry {
       const manager = existing ?? this.manager(key);
       this.managers.set(key, manager);
       try {
-        return await manager.start(name);
+        return await manager.start(name, mobile);
       } catch (error) {
         if (!(await manager.list()).length) this.managers.delete(key);
         throw error;
