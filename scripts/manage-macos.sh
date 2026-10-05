@@ -233,13 +233,13 @@ uninstall() {
 case "$action" in
   status) status ;;
   uninstall) uninstall ;;
-  install|update)
+  install|update|refresh-extension)
     source_root="$(cat "$source_root_file" 2>/dev/null || true)"
     manager="$source_root/scripts/manage-macos.sh"
     [ -x "$manager" ] || { printf 'overseer-browser: source checkout is unavailable; reinstall from the public repository\n' >&2; exit 1; }
     exec "$manager" "$@"
     ;;
-  *) printf 'usage: %s {install|update|uninstall|status}\n' "$0" >&2; exit 2 ;;
+  *) printf 'usage: %s {install|update|refresh-extension|uninstall|status}\n' "$0" >&2; exit 2 ;;
 esac
 EOF
   chmod 700 "$MANAGER_PATH"
@@ -276,9 +276,79 @@ EOF
   chmod 700 "$CLI_LAUNCHER"
 }
 
+# Put the installed runtime's extension into the folder Chrome actually loaded, so its Reload button
+# picks up the update. Refuses while agent sessions or requests are active, and for any folder that is
+# not this extension (manifest key) or is an immutable runtime. Keeps exactly one previous copy.
+refresh_extension() {
+  local runtime
+  runtime="$("$PYTHON" -I -c 'import re,sys; m=re.search(r"\"([^\"]*/runtimes/runtime-[^\"/]+)\"", open(sys.argv[1]).read()); print(m.group(1) if m else "")' "$HOST_PATH" 2>/dev/null || true)"
+  [ -n "$runtime" ] && [ -f "$runtime/extension/manifest.json" ] || fail "no installed runtime found; run overseer-browser update first"
+  if [ "${OVERSEER_BROWSER_SKIP_ACTIVITY_CHECK:-}" != 1 ]; then
+    "$CLI_FALLBACK" status --raw-json 2>/dev/null | "$PYTHON" -I -c '
+import json, sys
+try:
+    e = json.load(sys.stdin).get("extension") or {}
+except ValueError:
+    sys.exit(0)
+busy = len(e.get("sessions") or []) + int((e.get("runtime") or {}).get("inflight_requests") or 0)
+if busy:
+    sys.exit("agent sessions or requests are active; refresh the extension when they finish")
+' || fail "refusing to change the loaded extension while it is in use"
+  fi
+  "$PYTHON" -I - "$runtime/extension" "$APP_SUPPORT" "${OVERSEER_BROWSER_LOADED_EXTENSION:-}" <<'PYREFRESH'
+import glob, json, os, shutil, sys, tempfile
+source, app_support, override = sys.argv[1], sys.argv[2], sys.argv[3]
+EXTENSION_ID = 'iabfdeokmilpklblkgccpjlekchfjcno'
+new = json.load(open(os.path.join(source, 'manifest.json')))
+targets = [override] if override else []
+if not targets:
+    home = os.path.expanduser('~/Library/Application Support')
+    for prefs in glob.glob(home + '/Google/Chrome*/*/Secure Preferences') + glob.glob(home + '/Google/Chrome*/*/Preferences'):
+        try:
+            entry = json.load(open(prefs)).get('extensions', {}).get('settings', {}).get(EXTENSION_ID) or {}
+        except (OSError, ValueError):
+            continue
+        if entry.get('location') == 4 and entry.get('path') and entry['path'] not in targets:
+            targets.append(entry['path'])
+if not targets:
+    sys.exit('no unpacked OverSeer Browser folder is loaded in Chrome; Load unpacked ' + source + ' once')
+for target in targets:
+    target = os.path.realpath(target)
+    if target.startswith(os.path.realpath(os.path.join(app_support, 'runtimes')) + os.sep):
+        print(f'Chrome loads the immutable runtime folder {target}; Load unpacked {source} instead')
+        continue
+    try:
+        current = json.load(open(os.path.join(target, 'manifest.json')))
+    except (OSError, ValueError) as exc:
+        sys.exit(f'{target} has no readable manifest.json ({exc}); not touching it')
+    if current.get('key') != new.get('key') or current.get('name') != new.get('name'):
+        sys.exit(f'{target} is not this extension (manifest key or name differs); not touching it')
+    if current.get('version') == new.get('version'):
+        print(f'{target} already holds {new["version"]}; click Reload in chrome://extensions if Chrome still shows {current["version"]}')
+        continue
+    parent = os.path.dirname(target)
+    staged = tempfile.mkdtemp(prefix='.overseer-extension-', dir=parent)
+    try:
+        shutil.rmtree(staged); shutil.copytree(source, staged)
+        os.chmod(staged, 0o700)
+        previous = os.path.join(app_support, 'rollback-extension-previous')
+        if os.path.lexists(previous):
+            shutil.rmtree(previous)
+        os.rename(target, previous) if os.stat(parent).st_dev == os.stat(app_support).st_dev else shutil.move(target, previous)
+        os.rename(staged, target)
+    except BaseException:
+        if os.path.exists(staged):
+            shutil.rmtree(staged, ignore_errors=True)
+        raise
+    print(f'Put extension {new["version"]} (was {current.get("version")}) into the folder Chrome loads: {target}')
+    print(f'Previous copy kept at {previous}. Now click Reload on OverSeer Browser in chrome://extensions once.')
+PYREFRESH
+}
+
 reload_chrome() {
   say "Daily Chrome was not opened or reloaded. Start a dedicated instance with: overseer-browser sessions start"
-  say "Load unpacked the NEW directory explicitly in chrome://extensions: $EXTENSION_DIR"
+  say "Chrome's Reload button rereads only the folder an extension was loaded from. To move an already loaded extension to this version, run: overseer-browser refresh-extension (then click Reload once in chrome://extensions)."
+  say "First install only: Load unpacked this directory in chrome://extensions: $EXTENSION_DIR"
   say "Coordinate switching with session owners; existing loaded directories and running hosts are retained."
   say "Reconfirm extension connection/site permissions; Chrome does not follow a changed path automatically."
   say "Set OVERSEER_BROWSER_EXTENSION=$EXTENSION_DIR for the installed CLI."
@@ -327,7 +397,8 @@ uninstall() {
 
 case "$ACTION" in
   install|update) install_or_update ;;
+  refresh-extension) refresh_extension ;;
   uninstall) uninstall ;;
   status) status ;;
-  *) fail "usage: $0 {install|update|uninstall|status}" ;;
+  *) fail "usage: $0 {install|update|refresh-extension|uninstall|status}" ;;
 esac
