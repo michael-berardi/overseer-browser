@@ -1,4 +1,5 @@
 import { isNavigableUrl } from './permissions';
+import { AGENT_WINDOW_VIEWPORT_MESSAGE } from './agent-window-protocol';
 
 export const SESSION_STORAGE_KEY = 'overseer.session.v1';
 export const SESSION_STORAGE_PREFIX = 'overseer.session.v2.';
@@ -281,7 +282,7 @@ export class SessionManager {
     if (!state) throw new SessionError('session_required', 'Start a browser session before using this command.');
     const [activeTab] = await browser.tabs.query({ windowId: state.agentWindowId, active: true });
     if (activeTab?.id === undefined) throw new SessionError('viewport_unreadable', 'The Agent Window has no active tab to measure.');
-    return readViewport(activeTab.id);
+    return readViewport(activeTab.id, state.agentWindowId);
   }
 
   async listTabs(): Promise<Browser.tabs.Tab[]> {
@@ -487,16 +488,24 @@ function isMobileRequest(value: unknown): value is MobileWindowRequest {
  * Reads window.innerWidth/innerHeight from the page. The page may still be
  * committing right after the window opens, so a failed injection is retried.
  */
-async function readViewport(tabId: number): Promise<ViewportReadback> {
+async function readViewport(tabId: number, windowId?: number): Promise<ViewportReadback> {
   let lastError: unknown;
   for (let attempt = 0; attempt < VIEWPORT_READ_ATTEMPTS; attempt += 1) {
     if (attempt > 0) await new Promise<void>((resolve) => setTimeout(resolve, VIEWPORT_READ_DELAY_MS));
     try {
-      const [injection] = await browser.scripting.executeScript({
-        target: { tabId },
-        func: () => ({ width: window.innerWidth, height: window.innerHeight, devicePixelRatio: window.devicePixelRatio || 1 }),
-      });
-      const result = injection?.result as Partial<ViewportReadback> | undefined;
+      let result: Partial<ViewportReadback> | undefined;
+      try {
+        const [injection] = await browser.scripting.executeScript({
+          target: { tabId },
+          func: () => ({ width: window.innerWidth, height: window.innerHeight, devicePixelRatio: window.devicePixelRatio || 1 }),
+        });
+        result = injection?.result as Partial<ViewportReadback> | undefined;
+      } catch (error) {
+        // chrome.scripting cannot reach extension pages, including the Agent
+        // Window placeholder; that page answers a viewport message instead.
+        if (windowId === undefined) throw error;
+        result = (await browser.runtime.sendMessage({ type: AGENT_WINDOW_VIEWPORT_MESSAGE, windowId })) as Partial<ViewportReadback> | undefined;
+      }
       if (Number.isInteger(result?.width) && Number.isInteger(result?.height) && typeof result?.devicePixelRatio === 'number') {
         return { width: result.width!, height: result.height!, devicePixelRatio: result.devicePixelRatio };
       }
@@ -522,7 +531,7 @@ async function readViewport(tabId: number): Promise<ViewportReadback> {
 async function fitMobileWindow(agentWindow: chrome.windows.Window, wanted: MobileWindowRequest): Promise<ViewportReadback> {
   const tabId = agentWindow.tabs?.find((tab) => tab.id !== undefined)?.id;
   if (agentWindow.id === undefined || tabId === undefined) throw new SessionError('viewport_unreadable', 'Chrome did not return the mobile window tab.');
-  let viewport = await readViewport(tabId);
+  let viewport = await readViewport(tabId, agentWindow.id);
   for (let correction = 0; correction < 2 && (viewport.width !== wanted.width || viewport.height !== wanted.height); correction += 1) {
     const current = await browser.windows.get(agentWindow.id);
     if (current.width === undefined || current.height === undefined) break;
@@ -530,7 +539,7 @@ async function fitMobileWindow(agentWindow: chrome.windows.Window, wanted: Mobil
       width: Math.max(1, current.width + wanted.width - viewport.width),
       height: Math.max(1, current.height + wanted.height - viewport.height),
     });
-    viewport = await readViewport(tabId);
+    viewport = await readViewport(tabId, agentWindow.id);
   }
   if (viewport.width !== wanted.width) {
     throw new SessionError(
