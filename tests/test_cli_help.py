@@ -117,6 +117,55 @@ class CLIHelpTests(unittest.TestCase):
                 _command_request(command, args)
             self.assertEqual(caught.exception.code, "unknown_option")
 
+    def test_opaque_values_survive_offline_transport(self):
+        cases = [
+            (["fill", "osr-1", "-draft"], "fill", {"ref": "osr-1", "value": "-draft"}),
+            (["type", "osr-1", "-hello"], "type", {"ref": "osr-1", "text": "-hello"}),
+            (["select", "osr-1", "--choice"], "select", {"ref": "osr-1", "value": "--choice"}),
+            (["fill", "osr-1", "--session"], "fill", {"ref": "osr-1", "value": "--session"}),
+            (["type", "osr-1", "--json"], "type", {"ref": "osr-1", "text": "--json"}),
+            (["evaluate", "--", "-someExpression"], "evaluate", {"source": "-someExpression"}),
+            (["eval", "--", "--session"], "evaluate", {"source": "--session"}),
+            (["fill", "osr-1", "--", "--"], "fill", {"ref": "osr-1", "value": "--"}),
+        ]
+        for argv, command, params in cases:
+            with self.subTest(argv=argv), patch.dict(os.environ, {}, clear=True), \
+                 patch("cli.main.request_once", return_value={"ok": True}) as request, \
+                 contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(main(argv), 0)
+                request.assert_called_once()
+                self.assertEqual(request.call_args.args, (command, params))
+                self.assertEqual(_command_request(argv[0], argv[1:]), (command, params))
+
+    def test_opaque_values_do_not_disable_trailing_option_checks(self):
+        for argv in (["fill", "osr-1", "-draft", "--typo"],
+                     ["type", "--typo", "-text"],
+                     ["evaluate", "-z"], ["evaluate", "-someExpression"],
+                     ["sessions", "start", "fixture", "--typo"],
+                     ["sessions", "start", "--", "--typo"],
+                     ["tabs", "create", "--", "--typo"],
+                     ["navigate", "--", "--typo"]):
+            with self.subTest(argv=argv):
+                result = self.invoke_read_only(argv, expected_status=2)
+                self.assertEqual(result["error"]["code"], "unknown_option")
+        for argv in (["evaluate", "--"], ["evaluate", "--", "1", "--typo"],
+                     ["fill", "osr-1", "--", "text", "extra"]):
+            with self.subTest(argv=argv):
+                self.assertEqual(self.invoke_read_only(argv, expected_status=2)["error"]["code"], "usage")
+
+    def test_global_options_and_help_with_opaque_values(self):
+        with patch.dict(os.environ, {}, clear=True), \
+             patch("cli.main.request_once", return_value={"ok": True}) as request, \
+             contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(main(["--session", "fixture", "fill", "osr-1", "-draft", "--timeout", "2"]), 0)
+            self.assertEqual(request.call_args.args, ("fill", {"ref": "osr-1", "value": "-draft"}))
+            self.assertEqual(request.call_args.kwargs["session_key"], "fixture")
+            self.assertEqual(request.call_args.kwargs["timeout"], 2)
+        for argv in (["fill", "osr-1", "-draft", "--help"],
+                     ["evaluate", "--", "--help"], ["sessions", "start", "--", "--help"]):
+            with self.subTest(argv=argv):
+                self.assertTrue(self.invoke_read_only(argv)["ok"])
+
     def test_negative_coordinates_and_literal_help_text_are_preserved(self):
         self.assertEqual(_command_request("scroll", ["-10", "-20"]),
                          ("scroll", {"x": -10, "y": -20}))

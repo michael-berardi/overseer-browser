@@ -172,11 +172,48 @@ def _help_payload(raw: list[str]) -> dict[str, Any] | None:
     result: dict[str, Any] = {
         "commands": list(CLI_COMMANDS),
         "usage": "overseer-browser " + CLI_USAGE.get(path, "COMMAND [ARGS...] [OPTIONS]"),
-        "options": "-h, --help; --session KEY; --timeout SECONDS; --request-id ID; --tab-id ID; --max-nodes N; --wait-until load|interactive; --keep; --json; --raw-json",
+        "options": "-h, --help; --session KEY; --timeout SECONDS; --request-id ID; --tab-id ID; --max-nodes N; --wait-until load|interactive; --keep; --json; --raw-json; -- VALUE (one final fill/type/select value or eval/evaluate source only; help still wins)",
     }
     if path:
         result["subcommands"] = [p for p in CLI_USAGE if p.startswith(path + " ")]
     return {"ok": True, "result": result}
+
+
+_OPAQUE_SLOTS = {"fill": 1, "type": 1, "select": 1, "eval": 0, "evaluate": 0}
+
+
+def _split_opaque_operand(raw: list[str]) -> tuple[list[str], tuple[int, str] | None]:
+    """Protect one data operand from option extraction, not the whole argv tail.
+
+    REF VALUE commands accept implicit opaque values. Scripts need `--` when
+    dash-prefixed: before a required operand, a flag must remain an error.
+    `--` is supported only immediately at these data slots, with one final value;
+    it cannot turn a session name, URL, or malformed command into valid input.
+    Help interception still takes precedence over this literal-data mechanism.
+    """
+    indices = []
+    index = 0
+    while index < len(raw):
+        if raw[index] in _GLOBAL_OPTIONS:
+            index += 1 + _GLOBAL_OPTIONS[raw[index]]
+        else:
+            indices.append(index)
+            index += 1
+        if indices and raw[indices[0]] in _OPAQUE_SLOTS:
+            slot = _OPAQUE_SLOTS[raw[indices[0]]]
+            if len(indices) == slot + 1:
+                operand_index = index
+                if operand_index >= len(raw):
+                    return raw, None
+                operand = raw[operand_index]
+                if operand == "--":
+                    if operand_index + 2 != len(raw):
+                        raise CLIError("usage", "-- requires exactly one final opaque data operand")
+                    return raw[:operand_index], (slot, raw[operand_index + 1])
+                if slot == 1:
+                    return raw[:operand_index] + raw[operand_index + 1:], (slot, operand)
+                return raw, None
+    return raw, None
 
 
 def _reject_unknown_options(args: list[str], allowed: set[str]) -> None:
@@ -685,9 +722,14 @@ def iter_upload_chunks(path: Path, ref: str) -> Iterable[dict[str, Any]]:
     """Yield the backward-compatible single-file upload chunk contract."""
     yield from iter_upload_file_chunks([path], ref)
 
-def _command_request(command: str, args: list[str]) -> tuple[str, dict[str, Any]]:
+def _command_request(command: str, args: list[str], *,
+                     opaque_operand: tuple[int, str] | None = None) -> tuple[str, dict[str, Any]]:
     """Map friendly CLI paths to the extension's stable dotted command names."""
-    _reject_unknown_options(args, _command_options(command, args))
+    validation_args, opaque = ([command, *args], opaque_operand) if opaque_operand is not None else _split_opaque_operand([command, *args])
+    _reject_unknown_options(validation_args[1:], _command_options(command, args))
+    if opaque is not None:
+        args = validation_args[1:]
+        args.insert(*opaque)
     if command == "console":
         _require(args, 1, "console start|read [--clear]|stop")
         action = args[0]
@@ -1047,6 +1089,7 @@ def main(argv: list[str] | None = None) -> int:
         _render(help_payload, json_output, raw_json)
         return 0
     try:
+        raw, opaque = _split_opaque_operand(raw)
         words = _without_global_options(raw)
         command_options = _command_options(words[0], words[1:]) if words else set()
         _reject_unknown_options(raw, set(_GLOBAL_OPTIONS) | command_options)
@@ -1290,7 +1333,7 @@ def main(argv: list[str] | None = None) -> int:
                 if payload.get('ok') and isinstance(payload.get('result'), dict):
                     payload['result'].update(temp_outputs.metadata(output_path, keep_outputs))
         else:
-            extension_command, params = _command_request(command, args)
+            extension_command, params = _command_request(command, args, opaque_operand=opaque)
             params = _apply_targeting(extension_command, params, tab_id, max_nodes, wait_until)
             payload = request_once(extension_command, params, timeout=timeout, request_id=request_id, **request_options)
             payload = _require_mobile_support(extension_command, params, payload)
