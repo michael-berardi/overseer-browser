@@ -55,7 +55,7 @@ try {
   foreach ($Module in @('__init__', 'host', 'protocol', 'runtime', 'isolation')) {
     Copy-Item (Join-Path $RepoRoot "native_host\$Module.py") $HostDir
   }
-  foreach ($Module in @('__init__', 'main', 'runtime_discovery', 'evidence', 'recording', 'dom_query', 'temp_outputs')) {
+  foreach ($Module in @('__init__', 'main', 'internal_qa', 'runtime_discovery', 'evidence', 'recording', 'dom_query', 'temp_outputs')) {
     Copy-Item (Join-Path $RepoRoot "cli\$Module.py") $CliDir
   }
   $ExtensionSource = Join-Path $RepoRoot 'extension\.output\chrome-mv3'

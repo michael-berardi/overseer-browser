@@ -1335,6 +1335,17 @@ def main(argv: list[str] | None = None) -> int:
         else:
             extension_command, params = _command_request(command, args, opaque_operand=opaque)
             params = _apply_targeting(extension_command, params, tab_id, max_nodes, wait_until)
+            if extension_command in {"navigate", "tabs.create", "batch"}:
+                from cli.internal_qa import prepare_cli_navigation
+                started = time.monotonic()
+                params = prepare_cli_navigation(extension_command, params, request=request_once,
+                                                session_key=session_key, timeout=timeout,
+                                                error_factory=CLIError,
+                                                serialized_batch_size=_serialized_batch_request_bytes,
+                                                max_request_bytes=MAX_EXTENSION_REQUEST_BYTES)
+                timeout -= time.monotonic() - started
+                if timeout <= 0:
+                    raise CLIError("qa_scope_unverified", "QA preparation exceeded the command timeout.")
             payload = request_once(extension_command, params, timeout=timeout, request_id=request_id, **request_options)
             payload = _require_mobile_support(extension_command, params, payload)
     except CLIError as exc:

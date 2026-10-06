@@ -53,7 +53,7 @@ stage_runtime() {
   for module in __init__ host protocol runtime isolation; do
     install -m 600 "$ROOT/native_host/$module.py" "$STAGE/native_host/$module.py"
   done
-  for module in __init__ main runtime_discovery evidence recording dom_query temp_outputs; do
+  for module in __init__ main internal_qa runtime_discovery evidence recording dom_query temp_outputs; do
     install -m 600 "$ROOT/cli/$module.py" "$STAGE/cli/$module.py"
   done
   [ -f "$EXTENSION_SOURCE/manifest.json" ] || fail "Build the extension first: missing $EXTENSION_SOURCE/manifest.json"
