@@ -74,6 +74,123 @@ CLI_COMMANDS = (
     "screenshot-element", "element-screenshot", "upload", "takeover", "cancel", "wait",
 )
 
+# Keep help local: this table is also the command/subcommand usage index.
+CLI_USAGE = {
+    "health": "health", "status": "status", "doctor": "doctor",
+    "qa": "qa pack DIR", "qa pack": "qa pack DIR",
+    "timelapse": "timelapse DIR FRAMES INTERVAL_SECONDS",
+    "record": "record start|restart [FPS SECONDS MAX_BYTES] | status | stop [FILE.webm|FILE.mp4] | clear",
+    "record start": "record start [FPS SECONDS MAX_BYTES]",
+    "record restart": "record restart [FPS SECONDS MAX_BYTES]",
+    "record status": "record status", "record stop": "record stop [FILE.webm|FILE.mp4]",
+    "record clear": "record clear",
+    "dom": "dom find LOCATOR | get QUERY LOCATOR [NAMES...] | is STATE LOCATOR",
+    "dom find": "dom find LOCATOR",
+    "dom get": "dom get text|html|value|attribute|count|box|computedstyles LOCATOR [NAMES...]",
+    "dom is": "dom is visible|enabled|checked|editable|attached LOCATOR",
+    "version": "version | --version", "install": "install", "update": "update",
+    "uninstall": "uninstall", "refresh-extension": "refresh-extension",
+    "help": "help [COMMAND [ACTION]]",
+    "sessions": "sessions start [NAME] [--mobile [--width PX] [--height PX]] | stop | list",
+    "sessions start": "sessions start [NAME] [--mobile [--width PX] [--height PX]]",
+    "sessions stop": "sessions stop", "sessions list": "sessions list",
+    "windows": "windows resize WIDTH HEIGHT [LEFT TOP]",
+    "windows resize": "windows resize WIDTH HEIGHT [LEFT TOP]",
+    "tabs": "tabs list | create [URL] | select|close|borrow|return TAB_ID",
+    "tabs list": "tabs list", "tabs create": "tabs create [URL]",
+    "tabs select": "tabs select TAB_ID", "tabs close": "tabs close TAB_ID",
+    "tabs borrow": "tabs borrow TAB_ID", "tabs return": "tabs return TAB_ID",
+    "open": "open URL", "close": "close", "navigate": "navigate URL",
+    "back": "back", "forward": "forward", "reload": "reload",
+    "snapshot": "snapshot", "observe": "observe [--changes]",
+    "click": "click REF", "hover": "hover REF", "fill": "fill REF VALUE",
+    "type": "type REF TEXT", "select": "select REF VALUE", "press": "press KEY [REF]",
+    "scroll": "scroll Y | scroll REF | scroll X Y | scroll REF X Y",
+    "evaluate": "evaluate SOURCE", "eval": "eval SOURCE",
+    "console": "console start|read [--clear]|stop",
+    "console start": "console start", "console read": "console read [--clear]",
+    "console stop": "console stop", "network": "network read [LIMIT]",
+    "network read": "network read [LIMIT]", "batch": "batch JSON",
+    "capture": "capture start|stop", "capture start": "capture start",
+    "capture stop": "capture stop", "screenshot": "screenshot [PATH]",
+    "screenshot-element": "screenshot-element REF [PATH]",
+    "element-screenshot": "element-screenshot REF [PATH]",
+    "upload": "upload REF PATH [PATH...]", "takeover": "takeover [prompt|resume]",
+    "takeover prompt": "takeover prompt", "takeover resume": "takeover resume",
+    "cancel": "cancel REQUEST_ID",
+    "wait": "wait (--ready | --url TEXT | --text TEXT [--absent] | --selector CSS [--state visible|hidden|enabled] | --stable MS) [--timeout-ms N]",
+}
+for _query in ("text", "html", "value", "attribute", "count", "box", "computedstyles"):
+    CLI_USAGE[f"dom get {_query}"] = f"dom get {_query} LOCATOR" + (
+        " NAME" if _query == "attribute" else " NAMES..." if _query == "computedstyles" else ""
+    )
+for _state in ("visible", "enabled", "checked", "editable", "attached"):
+    CLI_USAGE[f"dom is {_state}"] = f"dom is {_state} LOCATOR"
+
+_GLOBAL_OPTIONS = {
+    "--keep": 0, "--json": 0, "--raw-json": 0, "--version": 0,
+    "--session": 1, "--timeout": 1, "--request-id": 1, "--tab-id": 1,
+    "--max-nodes": 1, "--wait-until": 1,
+}
+_COMMAND_OPTIONS = {
+    "sessions start": {"--mobile", "--width", "--height"},
+    "console read": {"--clear"}, "observe": {"--changes"},
+    "wait": {"--ready", "--absent", "--url", "--text", "--selector", "--state", "--stable", "--timeout-ms"},
+}
+
+
+def _without_global_options(raw: list[str]) -> list[str]:
+    """Find the command path without validating options or touching runtime state."""
+    words = []
+    index = 0
+    while index < len(raw):
+        if raw[index] in _GLOBAL_OPTIONS:
+            index += 1 + _GLOBAL_OPTIONS[raw[index]]
+        else:
+            words.append(raw[index])
+            index += 1
+    return words
+
+
+def _help_payload(raw: list[str]) -> dict[str, Any] | None:
+    # Help wins even over missing operands, malformed options, and session identity.
+    # Bare `help` is a command/action, not arbitrary positional text (fill/type etc.).
+    words = _without_global_options(raw)
+    help_command = bool(words and (words[0] == "help" or
+                        (len(words) > 1 and words[1] == "help" and
+                         any(path.startswith(words[0] + " ") for path in CLI_USAGE))))
+    if raw and not any(arg in {"-h", "--help"} for arg in raw) and not help_command:
+        return None
+    words = [word for word in words if word not in {"-h", "--help"}]
+    if help_command:
+        words.remove("help")
+    path = "help" if help_command and not words else ""
+    for length in range(1, min(len(words), 3) + 1):
+        candidate = " ".join(words[:length])
+        if candidate in CLI_USAGE:
+            path = candidate
+    result: dict[str, Any] = {
+        "commands": list(CLI_COMMANDS),
+        "usage": "overseer-browser " + CLI_USAGE.get(path, "COMMAND [ARGS...] [OPTIONS]"),
+        "options": "-h, --help; --session KEY; --timeout SECONDS; --request-id ID; --tab-id ID; --max-nodes N; --wait-until load|interactive; --keep; --json; --raw-json",
+    }
+    if path:
+        result["subcommands"] = [p for p in CLI_USAGE if p.startswith(path + " ")]
+    return {"ok": True, "result": result}
+
+
+def _reject_unknown_options(args: list[str], allowed: set[str]) -> None:
+    for arg in args:
+        # Negative numeric operands (scroll coordinates/window positions) aren't flags.
+        if arg.startswith("-") and arg != "-" and not re.fullmatch(r"-\d+(?:\.\d+)?", arg) and arg not in allowed:
+            raise CLIError("unknown_option", f"unknown option: {arg}")
+
+
+def _command_options(command: str, args: list[str]) -> set[str]:
+    path = command + (" " + args[0] if args else "")
+    return _COMMAND_OPTIONS.get(path, _COMMAND_OPTIONS.get(command, set()))
+
+
 _TAB_TARGETED_COMMANDS = {
     "dom.query",
     "navigate", "back", "forward", "reload", "snapshot", "observe", "wait.for",
@@ -570,6 +687,7 @@ def iter_upload_chunks(path: Path, ref: str) -> Iterable[dict[str, Any]]:
 
 def _command_request(command: str, args: list[str]) -> tuple[str, dict[str, Any]]:
     """Map friendly CLI paths to the extension's stable dotted command names."""
+    _reject_unknown_options(args, _command_options(command, args))
     if command == "console":
         _require(args, 1, "console start|read [--clear]|stop")
         action = args[0]
@@ -922,6 +1040,19 @@ def _render(payload: dict[str, Any], json_output: bool, raw_json: bool = False) 
 
 def main(argv: list[str] | None = None) -> int:
     raw = list(sys.argv[1:] if argv is None else argv)
+    raw_json = "--raw-json" in raw
+    json_output = "--json" in raw or raw_json
+    help_payload = _help_payload(raw)
+    if help_payload is not None:
+        _render(help_payload, json_output, raw_json)
+        return 0
+    try:
+        words = _without_global_options(raw)
+        command_options = _command_options(words[0], words[1:]) if words else set()
+        _reject_unknown_options(raw, set(_GLOBAL_OPTIONS) | command_options)
+    except CLIError as exc:
+        _render({"ok": False, "error": {"code": exc.code, "message": exc.message}}, json_output, raw_json)
+        return 2
     keep_outputs = "--keep" in raw
     raw = [arg for arg in raw if arg != "--keep"]
     raw_json = "--raw-json" in raw
@@ -1005,13 +1136,8 @@ def main(argv: list[str] | None = None) -> int:
             _render({"ok": False, "error": {"code": "usage", "message": "--wait-until must be load or interactive"}}, json_output, raw_json)
             return 2
         del raw[index : index + 2]
-    if not raw or raw[0] in {"-h", "--help"}:
-        _render({
-            "ok": True,
-            "result": {
-                "commands": list(CLI_COMMANDS)
-            },
-        }, json_output, raw_json)
+    if not raw:
+        _render(_help_payload([]), json_output, raw_json)
         return 0
     command, args = raw[0], raw[1:]
     try:
@@ -1163,14 +1289,6 @@ def main(argv: list[str] | None = None) -> int:
                 payload = _materialize_screenshot(payload, output_path, created.write_bytes if created is not None else None)
                 if payload.get('ok') and isinstance(payload.get('result'), dict):
                     payload['result'].update(temp_outputs.metadata(output_path, keep_outputs))
-        elif command == "help":
-            _exact(args, 0, "help")
-            payload = {
-                "ok": True,
-                "result": {
-                    "commands": list(CLI_COMMANDS)
-                },
-            }
         else:
             extension_command, params = _command_request(command, args)
             params = _apply_targeting(extension_command, params, tab_id, max_nodes, wait_until)
