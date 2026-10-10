@@ -63,8 +63,19 @@ class InstallStagingTests(unittest.TestCase):
                 stale.write_text('{"name": "stale pre-rebrand manifest"}')
             result = install()
             self.assertIn('permissions', result.stdout)
-            self.assertFalse([stale for stale in legacy if stale.exists()], result.stdout)
             self.assertIn('removed legacy manifest', result.stdout)
+            if 'macos' in script:
+                # Chrome may still run the pre-rebrand extension: its old name bridges to the new host until reload.
+                bridge = legacy[0]
+                self.assertEqual([stale for stale in legacy if stale.exists()], [bridge], result.stdout)
+                bridged = json.loads(bridge.read_text())
+                current = json.loads((home / legacy_dirs[0] / 'NativeMessagingHosts/com.paretocybernetics.overseer_browser.json').read_text())
+                self.assertEqual(bridged['name'], 'com.imploselabs.overseer_browser')  # pareto-legacy
+                self.assertEqual(bridged['path'], current['path'])
+                self.assertIn('bridge for the extension still loaded', result.stdout)
+                bridge.unlink()
+            else:
+                self.assertFalse([stale for stale in legacy if stale.exists()], result.stdout)
             self.assertFalse(list(home.rglob(legacy_name)))
             first = next((app / 'runtimes').iterdir())
             snapshot = {str(p.relative_to(first)): hashlib.sha256(p.read_bytes()).hexdigest()
@@ -101,7 +112,7 @@ class InstallStagingTests(unittest.TestCase):
             self.assertEqual(snapshot, after)
             if relay:
                 self.check_operator_relay_survives_update(app, home, install, built)
-                self.check_operator_relay_migrates_from_legacy_manifest(app, home, install, built)
+                self.check_operator_relay_migrates_from_legacy_manifest(app, home, install, built, env)
                 self.check_installed_manager_uninstall_sweeps_legacy_manifests(app, home, env, base)
 
     def check_operator_relay_survives_update(self, app, home, install, built):
@@ -126,7 +137,7 @@ class InstallStagingTests(unittest.TestCase):
         testing = home / 'Library/Application Support/Google/Chrome for Testing/NativeMessagingHosts/com.paretocybernetics.overseer_browser.json'
         self.assertEqual(json.loads(testing.read_text())['path'], str(app / 'overseer-browser-native-host'))
 
-    def check_operator_relay_migrates_from_legacy_manifest(self, app, home, install, built):
+    def check_operator_relay_migrates_from_legacy_manifest(self, app, home, install, built, env):
         # pareto-legacy: remove after 2027-08-23. First update after the rename: the relay registration still sits in the old-name manifest.
         nm = home / 'Library/Application Support/Google/Chrome/NativeMessagingHosts'
         chrome = nm / 'com.paretocybernetics.overseer_browser.json'
@@ -138,6 +149,13 @@ class InstallStagingTests(unittest.TestCase):
         old.write_text(json.dumps(registered))  # pareto-legacy
         (built / 'background.js').write_text('// legacy relay-era synthetic build')
         result = install()
+        self.assertEqual(json.loads(chrome.read_text())['path'], str(relay), result.stdout)
+        # The loaded extension still uses the old name, so the old name bridges to the relay until Reload.
+        self.assertEqual(json.loads(old.read_text())['path'], str(relay), result.stdout)  # pareto-legacy
+        env['OVERSEER_BROWSER_LOADED_EXTENSION_VERSION'] = '999.0.0'  # reloaded extension, at least this build
+        (built / 'background.js').write_text('// reloaded synthetic build')
+        result = install()
+        env.pop('OVERSEER_BROWSER_LOADED_EXTENSION_VERSION')
         self.assertEqual(json.loads(chrome.read_text())['path'], str(relay), result.stdout)
         self.assertFalse(old.exists(), result.stdout)  # pareto-legacy
 
