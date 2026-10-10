@@ -14,7 +14,7 @@ MAX_ERROR_CODE = 96
 MAX_ERROR_TEXT = 4_096
 MAX_ADAPTER_STATE = 128
 EXTENSION_ID = "iabfdeokmilpklblkgccpjlekchfjcno"
-NATIVE_HOST_NAME = "com.imploselabs.overseer_browser"
+NATIVE_HOST_NAME = "com.paretocybernetics.overseer_browser"
 
 _REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
 _COMMAND_RE = re.compile(r"^[A-Za-z0-9_.:/-]{1,96}$")

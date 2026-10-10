@@ -168,6 +168,17 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(status["token"], {"ok": False})
         self.assertIn("Reinstall the native host manifest", status["hint"])
 
+    def test_local_status_points_pre_rebrand_manifest_at_update(self) -> None:
+        # pareto-legacy: remove after 2027-08-23.
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"OVERSEER_BROWSER_RUNTIME": directory}), patch(
+            "cli.main._manifest_exists", side_effect=lambda legacy=False: legacy
+        ):
+            status = local_health()
+        self.assertFalse(status["ok"])
+        self.assertIn("overseer-browser update", status["hint"])
+        self.assertIn("com.paretocybernetics.overseer_browser", status["hint"])
+
+
 class HostRoutingTests(unittest.TestCase):
     def test_request_is_authenticated_then_forwarded_without_token(self) -> None:
         native_out = io.BytesIO()
@@ -443,11 +454,11 @@ class CLIMappingTests(unittest.TestCase):
             self.assertEqual(
                 _manifest_paths(),
                 [
-                    Path("/Users/test/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.imploselabs.overseer_browser.json"),
-                    Path("/Users/test/Library/Application Support/Google/Chrome for Testing/NativeMessagingHosts/com.imploselabs.overseer_browser.json"),
-                    Path("/Users/test/Library/Application Support/Chromium/NativeMessagingHosts/com.imploselabs.overseer_browser.json"),
-                    Path("/Users/test/Library/Application Support/BraveSoftware/Brave-Browser/NativeMessagingHosts/com.imploselabs.overseer_browser.json"),
-                    Path("/Users/test/Library/Application Support/Microsoft Edge/NativeMessagingHosts/com.imploselabs.overseer_browser.json"),
+                    Path("/Users/test/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.paretocybernetics.overseer_browser.json"),
+                    Path("/Users/test/Library/Application Support/Google/Chrome for Testing/NativeMessagingHosts/com.paretocybernetics.overseer_browser.json"),
+                    Path("/Users/test/Library/Application Support/Chromium/NativeMessagingHosts/com.paretocybernetics.overseer_browser.json"),
+                    Path("/Users/test/Library/Application Support/BraveSoftware/Brave-Browser/NativeMessagingHosts/com.paretocybernetics.overseer_browser.json"),
+                    Path("/Users/test/Library/Application Support/Microsoft Edge/NativeMessagingHosts/com.paretocybernetics.overseer_browser.json"),
                 ],
             )
 
@@ -458,10 +469,10 @@ class CLIMappingTests(unittest.TestCase):
             patch.dict(os.environ, {"XDG_CONFIG_HOME": "/xdg"}, clear=False),
         ):
             paths = _manifest_paths()
-        self.assertIn(Path("/xdg/google-chrome/NativeMessagingHosts/com.imploselabs.overseer_browser.json"), paths)
-        self.assertIn(Path("/xdg/chromium/NativeMessagingHosts/com.imploselabs.overseer_browser.json"), paths)
-        self.assertIn(Path("/xdg/BraveSoftware/Brave-Browser/NativeMessagingHosts/com.imploselabs.overseer_browser.json"), paths)
-        self.assertIn(Path("/xdg/microsoft-edge/NativeMessagingHosts/com.imploselabs.overseer_browser.json"), paths)
+        self.assertIn(Path("/xdg/google-chrome/NativeMessagingHosts/com.paretocybernetics.overseer_browser.json"), paths)
+        self.assertIn(Path("/xdg/chromium/NativeMessagingHosts/com.paretocybernetics.overseer_browser.json"), paths)
+        self.assertIn(Path("/xdg/BraveSoftware/Brave-Browser/NativeMessagingHosts/com.paretocybernetics.overseer_browser.json"), paths)
+        self.assertIn(Path("/xdg/microsoft-edge/NativeMessagingHosts/com.paretocybernetics.overseer_browser.json"), paths)
 
     def test_windows_manifest_discovery_uses_local_app_data(self) -> None:
         with (

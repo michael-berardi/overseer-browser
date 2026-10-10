@@ -67,6 +67,23 @@ class IsolationTests(unittest.TestCase):
             request_once('sessions.stop', {}, timeout=1)
             stop.assert_called_once_with(isolated_paths(self.base))
 
+    def test_supervise_removes_pre_rebrand_profile_manifest(self):
+        # pareto-legacy: remove after 2027-08-23.
+        root = isolated_paths(self.base).root
+        hosts = root / 'profile' / 'NativeMessagingHosts'
+        hosts.mkdir(parents=True)
+        stale = hosts / 'com.imploselabs.overseer_browser.json'  # pareto-legacy
+        stale.write_text('{}')
+        (root / 'quit').touch()
+        with patch('native_host.isolation.subprocess.Popen') as launch, patch('sys.stderr') as stderr:
+            child = launch.return_value
+            child.pid = 123
+            child.poll.return_value = None
+            supervise(root, '/owned/chrome', '/owned/extension')
+        self.assertFalse(stale.exists())
+        self.assertTrue((hosts / 'com.paretocybernetics.overseer_browser.json').is_file())
+        self.assertIn('removed legacy manifest', ''.join(call.args[0] for call in stderr.write.call_args_list))
+
     def test_launch_has_own_profile_and_shutdown_uses_child_handle(self):
         root = isolated_paths(self.base).root
         root.mkdir()

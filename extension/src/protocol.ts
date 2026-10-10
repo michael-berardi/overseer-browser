@@ -1,5 +1,5 @@
 export const PROTOCOL_VERSION = 1 as const;
-export const NATIVE_HOST_NAME = 'com.imploselabs.overseer_browser';
+export const NATIVE_HOST_NAME = 'com.paretocybernetics.overseer_browser';
 export const EXTENSION_ID = 'iabfdeokmilpklblkgccpjlekchfjcno';
 export const MAX_REQUEST_BYTES = 512 * 1024;
 export const MAX_NATIVE_FRAME_BYTES = 900 * 1024;

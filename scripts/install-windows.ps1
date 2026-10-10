@@ -96,7 +96,7 @@ Write-Utf8NoBom $CliLauncher @"
 # Build via ConvertTo-Json so Windows backslashes in the launcher path are
 # escaped correctly; hand-interpolated JSON would corrupt the path.
 $ManifestObject = [ordered]@{
-  name = 'com.imploselabs.overseer_browser'
+  name = 'com.paretocybernetics.overseer_browser'
   description = 'Private local OverSeer Browser native host'
   path = $HostLauncher
   type = 'stdio'
@@ -105,13 +105,24 @@ $ManifestObject = [ordered]@{
 Write-Utf8NoBom $ManifestPath ($ManifestObject | ConvertTo-Json)
 
 $RegistryKeys = @(
-  'HKCU:\Software\Google\Chrome\NativeMessagingHosts\com.imploselabs.overseer_browser',
-  'HKCU:\Software\Microsoft\Edge\NativeMessagingHosts\com.imploselabs.overseer_browser',
-  'HKCU:\Software\BraveSoftware\Brave\NativeMessagingHosts\com.imploselabs.overseer_browser'
+  'HKCU:\Software\Google\Chrome\NativeMessagingHosts\com.paretocybernetics.overseer_browser',
+  'HKCU:\Software\Microsoft\Edge\NativeMessagingHosts\com.paretocybernetics.overseer_browser',
+  'HKCU:\Software\BraveSoftware\Brave\NativeMessagingHosts\com.paretocybernetics.overseer_browser'
 )
 foreach ($Key in $RegistryKeys) {
   New-Item -Path $Key -Force | Out-Null
   Set-Item -Path $Key -Value $ManifestPath
+}
+
+# pareto-legacy: remove after 2027-08-23. One-time migration off the pre-rebrand native host name:
+# the new keys above are written first, then the old keys are removed and each removal is reported.
+$LegacyHostName = 'com.imploselabs.overseer_browser' # pareto-legacy
+foreach ($Browser in @('Google\Chrome', 'Microsoft\Edge', 'BraveSoftware\Brave')) {
+  $LegacyKey = "HKCU:\Software\$Browser\NativeMessagingHosts\$LegacyHostName"
+  if (Test-Path $LegacyKey) {
+    Remove-Item -Path $LegacyKey -Recurse -Force
+    Write-Host "Migrated native messaging host to com.paretocybernetics.overseer_browser; removed legacy registry key: $LegacyKey"
+  }
 }
 
 Write-Host "Load unpacked extension directory: $ExtensionDir"

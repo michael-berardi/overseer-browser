@@ -563,6 +563,11 @@ def local_health(paths: RuntimePaths | None = None) -> dict[str, Any]:
     checks["ok"] = all(item.get("ok", False) for item in checks.values() if isinstance(item, dict))
     if checks["socket"]["ok"]:
         checks["hint"] = "Local host is available"
+    elif not checks["native_manifest"]["ok"] and _manifest_exists(legacy=True):
+        checks["hint"] = (
+            "The native host manifest still uses the pre-rebrand name; run overseer-browser update "
+            "to register com.paretocybernetics.overseer_browser, then reload the extension"
+        )
     elif not checks["native_manifest"]["ok"]:
         checks["hint"] = "Reinstall the native host manifest, then reload the extension"
     else:
@@ -597,21 +602,23 @@ def _private_socket(path: Path) -> bool:
         return False
 
 
-_MANIFEST_FILENAME = "com.imploselabs.overseer_browser.json"
+_MANIFEST_FILENAME = "com.paretocybernetics.overseer_browser.json"
+# pareto-legacy: remove after 2027-08-23. Pre-rebrand native host name; only used to tell the operator to migrate.
+_LEGACY_HOST_NAME = "com.imploselabs.overseer_browser"  # pareto-legacy
 
 
-def _manifest_paths() -> list[Path]:
+def _manifest_paths(filename: str = _MANIFEST_FILENAME) -> list[Path]:
     override = os.environ.get("OVERSEER_BROWSER_MANIFEST", "").strip()
     if override:
         return [Path(override).expanduser()]
     if sys.platform == "darwin":
         base = Path.home() / "Library" / "Application Support"
         return [
-            base / "Google" / "Chrome" / "NativeMessagingHosts" / _MANIFEST_FILENAME,
-            base / "Google" / "Chrome for Testing" / "NativeMessagingHosts" / _MANIFEST_FILENAME,
-            base / "Chromium" / "NativeMessagingHosts" / _MANIFEST_FILENAME,
-            base / "BraveSoftware" / "Brave-Browser" / "NativeMessagingHosts" / _MANIFEST_FILENAME,
-            base / "Microsoft Edge" / "NativeMessagingHosts" / _MANIFEST_FILENAME,
+            base / "Google" / "Chrome" / "NativeMessagingHosts" / filename,
+            base / "Google" / "Chrome for Testing" / "NativeMessagingHosts" / filename,
+            base / "Chromium" / "NativeMessagingHosts" / filename,
+            base / "BraveSoftware" / "Brave-Browser" / "NativeMessagingHosts" / filename,
+            base / "Microsoft Edge" / "NativeMessagingHosts" / filename,
         ]
     if os.name == "nt":
         # Windows native messaging is registered in the registry; the on-disk
@@ -619,32 +626,36 @@ def _manifest_paths() -> list[Path]:
         return [Path(os.environ.get("LOCALAPPDATA", Path.home())) / "OverSeer" / "browser" / "native-host.json"]
     config_home = Path(os.environ.get("XDG_CONFIG_HOME", "").strip() or (Path.home() / ".config"))
     return [
-        config_home / "google-chrome" / "NativeMessagingHosts" / _MANIFEST_FILENAME,
-        config_home / "chromium" / "NativeMessagingHosts" / _MANIFEST_FILENAME,
-        config_home / "BraveSoftware" / "Brave-Browser" / "NativeMessagingHosts" / _MANIFEST_FILENAME,
-        config_home / "microsoft-edge" / "NativeMessagingHosts" / _MANIFEST_FILENAME,
+        config_home / "google-chrome" / "NativeMessagingHosts" / filename,
+        config_home / "chromium" / "NativeMessagingHosts" / filename,
+        config_home / "BraveSoftware" / "Brave-Browser" / "NativeMessagingHosts" / filename,
+        config_home / "microsoft-edge" / "NativeMessagingHosts" / filename,
     ]
 
 
 _WINDOWS_NATIVE_HOST_KEYS = (
-    r"Software\Google\Chrome\NativeMessagingHosts\com.imploselabs.overseer_browser",
-    r"Software\Microsoft\Edge\NativeMessagingHosts\com.imploselabs.overseer_browser",
-    r"Software\BraveSoftware\Brave\NativeMessagingHosts\com.imploselabs.overseer_browser",
+    r"Software\Google\Chrome\NativeMessagingHosts\com.paretocybernetics.overseer_browser",
+    r"Software\Microsoft\Edge\NativeMessagingHosts\com.paretocybernetics.overseer_browser",
+    r"Software\BraveSoftware\Brave\NativeMessagingHosts\com.paretocybernetics.overseer_browser",
+)
+_WINDOWS_LEGACY_NATIVE_HOST_KEYS = tuple(
+    key.rsplit("\\", 1)[0] + "\\" + _LEGACY_HOST_NAME for key in _WINDOWS_NATIVE_HOST_KEYS
 )
 
 
-def _manifest_exists() -> bool:
+def _manifest_exists(*, legacy: bool = False) -> bool:
     if os.name == "nt" and not os.environ.get("OVERSEER_BROWSER_MANIFEST", "").strip():
         import winreg
 
-        for key_path in _WINDOWS_NATIVE_HOST_KEYS:
+        for key_path in _WINDOWS_LEGACY_NATIVE_HOST_KEYS if legacy else _WINDOWS_NATIVE_HOST_KEYS:
             try:
                 with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path):
                     return True
             except (OSError, FileNotFoundError):
                 continue
         return False
-    return any(path.is_file() for path in _manifest_paths())
+    filename = f"{_LEGACY_HOST_NAME}.json" if legacy else _MANIFEST_FILENAME
+    return any(path.is_file() for path in _manifest_paths(filename))
 
 
 def _safe_mime_type(path: Path) -> str:
