@@ -98,6 +98,16 @@ exec "$PYTHON" -I -B -c 'import runpy,sys; sys.path.insert(0, sys.argv.pop(1)); 
 EOF
 }
 
+# pareto-legacy: remove after 2027-08-23. Pre-rebrand native host name; install_manifests replaces and removes its manifests.
+LEGACY_HOST_NAME="com.imploselabs.overseer_browser" # pareto-legacy
+
+remove_legacy_manifest() {
+  if [ -e "$1" ] || [ -L "$1" ]; then
+    rm -f "$1"
+    say "Migrated native messaging host to com.paretocybernetics.overseer_browser; removed legacy manifest: $1"
+  fi
+}
+
 install_manifests() {
   for browser_dir in \
     "$CONFIG_HOME/google-chrome" \
@@ -107,7 +117,8 @@ install_manifests() {
   do
     mkdir -p "$browser_dir/NativeMessagingHosts"
     chmod 700 "$browser_dir/NativeMessagingHosts"
-    publish_manifest "$browser_dir/NativeMessagingHosts/com.imploselabs.overseer_browser.json"
+    publish_manifest "$browser_dir/NativeMessagingHosts/com.paretocybernetics.overseer_browser.json"
+    remove_legacy_manifest "$browser_dir/NativeMessagingHosts/$LEGACY_HOST_NAME.json"
   done
 }
 

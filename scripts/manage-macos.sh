@@ -25,8 +25,11 @@ if [ -r "$CLI_LAUNCHER_PATH" ]; then
 fi
 CLI_FALLBACK="$CLI_DIR/overseer-browser"
 TOKEN_PATH="$APP_SUPPORT/token"
-MANIFEST="$HOME/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.imploselabs.overseer_browser.json"
-TESTING_MANIFEST="$HOME/Library/Application Support/Google/Chrome for Testing/NativeMessagingHosts/com.imploselabs.overseer_browser.json"
+MANIFEST="$HOME/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.paretocybernetics.overseer_browser.json"
+TESTING_MANIFEST="$HOME/Library/Application Support/Google/Chrome for Testing/NativeMessagingHosts/com.paretocybernetics.overseer_browser.json"
+# pareto-legacy: remove after 2027-08-23. Pre-rebrand native host name; install migrates away from it and uninstall sweeps it.
+LEGACY_HOST_NAME="com.imploselabs.overseer_browser" # pareto-legacy
+LEGACY_MANIFEST="$HOME/Library/Application Support/Google/Chrome/NativeMessagingHosts/$LEGACY_HOST_NAME.json"
 CHROME_EXTENSIONS_PAGE="chrome://extensions"
 
 say() { printf '%s\n' "$*"; }
@@ -140,9 +143,31 @@ publish_manifest() {
 # An operator-authorized relay for the everyday Chrome (README: operator relay) registers its own launcher.
 # Updating must keep that registration and move the launcher to the new runtime; publishing the generic
 # manifest would silently disconnect the operator's Chrome at its next extension reload.
+# The registration may still sit in the pre-rebrand manifest on the first update after the rename.
 relay_registered() {
-  [ -f "$RELAY_PATH" ] && [ -f "$MANIFEST" ] &&
-    "$PYTHON" -I -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1])).get("path") == sys.argv[2] else 1)' "$MANIFEST" "$RELAY_PATH"
+  local candidate
+  [ -f "$RELAY_PATH" ] || return 1
+  for candidate in "$MANIFEST" "$LEGACY_MANIFEST"; do
+    [ -f "$candidate" ] || continue
+    if "$PYTHON" -I -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1])).get("path") == sys.argv[2] else 1)' "$candidate" "$RELAY_PATH"; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# One-time migration: the new-name manifests are published first, then every pre-rebrand manifest is removed
+# (Chrome, Chrome for Testing, Chromium, Brave, Edge) and each removal is reported.
+# pareto-legacy: remove after 2027-08-23.
+remove_legacy_manifests() {
+  local dir legacy
+  for dir in "Google/Chrome" "Google/Chrome for Testing" "Chromium" "BraveSoftware/Brave-Browser" "Microsoft Edge"; do
+    legacy="$HOME/Library/Application Support/$dir/NativeMessagingHosts/$LEGACY_HOST_NAME.json"
+    if [ -e "$legacy" ] || [ -L "$legacy" ]; then
+      rm -f "$legacy"
+      say "Migrated native messaging host to com.paretocybernetics.overseer_browser; removed legacy manifest: $legacy"
+    fi
+  done
 }
 
 keep_operator_relay() {
@@ -177,6 +202,7 @@ EOF
     publish_manifest "$MANIFEST"
   fi
   publish_manifest "$TESTING_MANIFEST"
+  remove_legacy_manifests
 }
 
 
@@ -198,8 +224,10 @@ if [ -r "$cli_launcher_path_file" ]; then
   saved_cli_launcher="$(cat "$cli_launcher_path_file" 2>/dev/null || true)"
   [ -z "$saved_cli_launcher" ] || cli_launcher="$saved_cli_launcher"
 fi
-manifest="$HOME/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.imploselabs.overseer_browser.json"
-testing_manifest="$HOME/Library/Application Support/Google/Chrome for Testing/NativeMessagingHosts/com.imploselabs.overseer_browser.json"
+manifest="$HOME/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.paretocybernetics.overseer_browser.json"
+testing_manifest="$HOME/Library/Application Support/Google/Chrome for Testing/NativeMessagingHosts/com.paretocybernetics.overseer_browser.json"
+# pareto-legacy: remove after 2027-08-23. Pre-rebrand native host name, swept on uninstall.
+legacy_host_name="com.imploselabs.overseer_browser" # pareto-legacy
 source_root_file="$app_support/source-root"
 
 status() {
@@ -226,6 +254,13 @@ uninstall() {
     printf 'Preserved unrelated CLI launcher: %s\n' "$cli_launcher"
   fi
   rm -f "$manifest" "$testing_manifest" "$host_path" "$app_support/token" "$source_root_file" "$cli_launcher_path_file"
+  for dir in "Google/Chrome" "Google/Chrome for Testing" "Chromium" "BraveSoftware/Brave-Browser" "Microsoft Edge"; do
+    legacy="$HOME/Library/Application Support/$dir/NativeMessagingHosts/$legacy_host_name.json"
+    if [ -e "$legacy" ] || [ -L "$legacy" ]; then
+      rm -f "$legacy"
+      printf 'Removed legacy native host manifest: %s\n' "$legacy"
+    fi
+  done
   rm -rf "$app_support/native_host" "$app_support/cli" "$app_support/scripts"
   printf 'Removed native host and manifest\n'
 }
@@ -380,6 +415,7 @@ install_or_update() {
   say "Installed $HOST_PATH"
   say "Native messaging manifest: $MANIFEST"
   say "Chrome for Testing native messaging manifest: $TESTING_MANIFEST"
+  say "The native host is now registered as com.paretocybernetics.overseer_browser; click Reload on OverSeer Browser in chrome://extensions so the extension uses the new name."
   reload_chrome
 }
 
@@ -390,6 +426,7 @@ uninstall() {
     say "Preserved unrelated CLI launcher: $CLI_LAUNCHER"
   fi
   rm -f "$MANIFEST" "$TESTING_MANIFEST" "$HOST_PATH" "$TOKEN_PATH" "$SOURCE_ROOT_PATH" "$CLI_LAUNCHER_PATH"
+  remove_legacy_manifests
   rm -rf "$HOST_DIR" "$CLI_DIR" "$MANAGER_DIR"
   say "Removed native host and manifest"
   say "If Chrome still shows the extension, remove/reload it from $CHROME_EXTENSIONS_PAGE."

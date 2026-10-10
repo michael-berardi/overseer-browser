@@ -101,7 +101,12 @@ def supervise(root: Path, chrome: str, extension: str) -> None:
     # Chromium resolves per-user native manifests relative to --user-data-dir,
     # not the default Chrome for Testing application-support directory.
     host = root.parent / 'overseer-browser-native-host'
-    write_manifest(profile / 'NativeMessagingHosts' / 'com.imploselabs.overseer_browser.json', host)
+    write_manifest(profile / 'NativeMessagingHosts' / 'com.paretocybernetics.overseer_browser.json', host)
+    # pareto-legacy: remove after 2027-08-23. One-time migration: a profile created before the rename still holds the old-name manifest.
+    legacy_manifest = profile / 'NativeMessagingHosts' / 'com.imploselabs.overseer_browser.json'  # pareto-legacy
+    if legacy_manifest.exists() or legacy_manifest.is_symlink():
+        legacy_manifest.unlink()
+        print(f'overseer-browser: migrated native messaging host to com.paretocybernetics.overseer_browser; removed legacy manifest {legacy_manifest}', file=sys.stderr)
     running = root / 'supervisor.running'
     # Exclusive creation also protects concurrent or abandoned startup attempts.
     fd = os.open(running, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)

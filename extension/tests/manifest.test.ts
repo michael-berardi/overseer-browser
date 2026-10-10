@@ -21,7 +21,7 @@ describe('manifest privacy invariants', () => {
     // Recording uses a real popup gesture; no undeclared debugger escalation.
     expect(config).not.toMatch(/\b(?:optional_)?permissions:\s*\[[^\]]*['"]debugger['"]/);
     expect(config).not.toContain('update_url');
-    expect(config).toContain("connect-src https://analytics.implosecybernetics.com");
+    expect(config).toContain("connect-src https://analytics.paretocybernetics.com");
     expect(config).not.toContain("connect-src *");
   });
 

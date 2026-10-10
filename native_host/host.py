@@ -567,7 +567,7 @@ def _ultravox_socket_from_env() -> Path | None:
     if runtime:
         return Path(runtime).expanduser() / "voice-v1.sock"
     if sys.platform == "darwin":
-        return Path(tempfile.gettempdir()) / "com.imploselabs.ultravox" / "voice-v1.sock"
+        return Path(tempfile.gettempdir()) / "com.paretocybernetics.ultravox" / "voice-v1.sock"
     return None
 
 

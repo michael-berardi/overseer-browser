@@ -38,7 +38,7 @@ export default defineConfig({
       },
     },
     content_security_policy: {
-      extension_pages: "script-src 'self'; object-src 'self'; connect-src https://analytics.implosecybernetics.com",
+      extension_pages: "script-src 'self'; object-src 'self'; connect-src https://analytics.paretocybernetics.com",
     },
   },
 });

@@ -10,7 +10,7 @@ import time
 from typing import Any, Callable
 from urllib.parse import unquote_plus, urlsplit
 
-# Snapshot of overseer-j0268/scripts/lib/site-inventory.mjs: 47 apexes.
+# Snapshot of overseer/scripts/lib/site-inventory.mjs: 47 apexes.
 OWNED_APEXES = frozenset("""
 libertydesign.studio property-perfected.com plataworks.com dubledger.com
  dubhaven.com juiceboxx.net lucerolegal.org argentinavisalaw.com
@@ -22,7 +22,7 @@ libertydesign.studio property-perfected.com plataworks.com dubledger.com
  francaisargentine.com argentinaparafrances.com dubmenu.com americansinargentina.com
  chilenosargentina.com uruguayosenargentina.com usatoargentina.com canadatoargentina.com
  canadiansinargentina.com realtybuilt.com simplygreenny.com aussiesinargentina.com
- australiatoargentina.com implosecybernetics.com imploselabs.com mileinews.com
+ australiatoargentina.com paretocybernetics.com mileinews.com
  mouseia.org ottercasa.com plataplace.com platastar.com
 """.split())
 OWNED_HOSTS = OWNED_APEXES | frozenset("www." + host for host in OWNED_APEXES)

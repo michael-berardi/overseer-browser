@@ -46,18 +46,20 @@ class Transport:
 
 class URLMarkerTests(unittest.TestCase):
     def test_exact_inventory_including_nine_new_cloudflare_domains(self):
-        inventory = Path(__file__).resolve().parents[2] / "overseer-j0268/scripts/lib/site-inventory.mjs"
+        # The canonical site inventory lives in the overseer checkout beside this repo (or OVERSEER_DIR).
+        overseer = Path(os.environ.get("OVERSEER_DIR") or Path(__file__).resolve().parents[2] / "overseer")
+        inventory = overseer / "scripts/lib/site-inventory.mjs"
         domains = re.findall(r'\bdomain:\s*"([^"]+)"', inventory.read_text())
-        self.assertEqual(len(domains), 47)
+        self.assertEqual(len(domains), 46)
         self.assertEqual(OWNED_APEXES, frozenset(domains))
-        self.assertEqual(len(OWNED_HOSTS), 94)
+        self.assertEqual(len(OWNED_HOSTS), 92)
         for host in OWNED_HOSTS:
             for scheme in ("http", "https", "HTTPS"):
                 with self.subTest(host=host, scheme=scheme):
                     url = f"{scheme}://{host.upper()}:8443/a?x=%2f+%20#F"
                     self.assertEqual(mark_owned_url(url), url.replace("#", "&overseer_internal=1#"))
-        self.assertTrue({"aussiesinargentina.com", "australiatoargentina.com", "implosecybernetics.com",
-                         "imploselabs.com", "mileinews.com", "mouseia.org", "ottercasa.com",
+        self.assertTrue({"aussiesinargentina.com", "australiatoargentina.com", "paretocybernetics.com",
+                         "mileinews.com", "mouseia.org", "ottercasa.com",
                          "plataplace.com", "platastar.com"} <= OWNED_APEXES)
 
     def test_unowned_and_ambiguous_urls_remain_byte_identical(self):
