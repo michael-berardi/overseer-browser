@@ -30,6 +30,7 @@ TESTING_MANIFEST="$HOME/Library/Application Support/Google/Chrome for Testing/Na
 # pareto-legacy: remove after 2027-08-23. Pre-rebrand native host name; install migrates away from it and uninstall sweeps it.
 LEGACY_HOST_NAME="com.imploselabs.overseer_browser" # pareto-legacy
 LEGACY_MANIFEST="$HOME/Library/Application Support/Google/Chrome/NativeMessagingHosts/$LEGACY_HOST_NAME.json"
+EXTENSION_VERSION="$(sed -n 's/.*"version": "\([0-9.]*\)".*/\1/p' "$ROOT/extension/package.json" | head -1)"
 CHROME_EXTENSIONS_PAGE="chrome://extensions"
 
 say() { printf '%s\n' "$*"; }
@@ -156,17 +157,39 @@ relay_registered() {
   return 1
 }
 
-# One-time migration: the new-name manifests are published first, then every pre-rebrand manifest is removed
-# (Chrome, Chrome for Testing, Chromium, Brave, Edge) and each removal is reported.
-# pareto-legacy: remove after 2027-08-23.
-remove_legacy_manifests() {
+# One-time migration to com.paretocybernetics.overseer_browser (pareto-legacy: remove after 2027-08-23).
+# An extension still running pre-rebrand code connects under the old host name until someone clicks Reload in
+# chrome://extensions, so until that extension reports this version the old name stays registered as a bridge
+# to the same host. The first update after the reload removes every pre-rebrand manifest (Chrome, Chrome for
+# Testing, Chromium, Brave, Edge) and reports each removal.
+loaded_extension_current() {
+  local loaded="${OVERSEER_BROWSER_LOADED_EXTENSION_VERSION:-}"
+  if [ -z "$loaded" ]; then
+    loaded="$("$CLI_FALLBACK" status --raw-json 2>/dev/null | "$PYTHON" -I -c '
+import json, sys
+try:
+    print((json.load(sys.stdin).get("extension") or {}).get("extension_version") or "")
+except ValueError:
+    print("")
+' 2>/dev/null || true)"
+  fi
+  [ -n "$loaded" ] || return 1
+  "$PYTHON" -I -c 'import sys; v=lambda s: tuple(int(p) for p in s.split(".") if p.isdigit()); sys.exit(0 if v(sys.argv[1]) >= v(sys.argv[2]) else 1)' "$loaded" "$EXTENSION_VERSION"
+}
+
+migrate_legacy_manifests() {
   local dir legacy
   for dir in "Google/Chrome" "Google/Chrome for Testing" "Chromium" "BraveSoftware/Brave-Browser" "Microsoft Edge"; do
     legacy="$HOME/Library/Application Support/$dir/NativeMessagingHosts/$LEGACY_HOST_NAME.json"
-    if [ -e "$legacy" ] || [ -L "$legacy" ]; then
-      rm -f "$legacy"
-      say "Migrated native messaging host to com.paretocybernetics.overseer_browser; removed legacy manifest: $legacy"
+    [ -e "$legacy" ] || [ -L "$legacy" ] || continue
+    if [ "$legacy" = "$LEGACY_MANIFEST" ] && ! loaded_extension_current; then
+      "$PYTHON" -I -c 'import json,sys; m=json.load(open(sys.argv[1])); m["name"]=sys.argv[2]; print(json.dumps(m, indent=2))' \
+        "$MANIFEST" "$LEGACY_HOST_NAME" | atomic_write "$LEGACY_MANIFEST"
+      say "Kept $LEGACY_HOST_NAME registered as a bridge for the extension still loaded in Chrome; click Reload on OverSeer Browser in chrome://extensions, then run overseer-browser update once more to retire it."
+      continue
     fi
+    rm -f "$legacy"
+    say "Migrated native messaging host to com.paretocybernetics.overseer_browser; removed legacy manifest: $legacy"
   done
 }
 
@@ -202,7 +225,7 @@ EOF
     publish_manifest "$MANIFEST"
   fi
   publish_manifest "$TESTING_MANIFEST"
-  remove_legacy_manifests
+  migrate_legacy_manifests
 }
 
 
@@ -426,7 +449,9 @@ uninstall() {
     say "Preserved unrelated CLI launcher: $CLI_LAUNCHER"
   fi
   rm -f "$MANIFEST" "$TESTING_MANIFEST" "$HOST_PATH" "$TOKEN_PATH" "$SOURCE_ROOT_PATH" "$CLI_LAUNCHER_PATH"
-  remove_legacy_manifests
+  for dir in "Google/Chrome" "Google/Chrome for Testing" "Chromium" "BraveSoftware/Brave-Browser" "Microsoft Edge"; do
+    rm -f "$HOME/Library/Application Support/$dir/NativeMessagingHosts/$LEGACY_HOST_NAME.json"
+  done
   rm -rf "$HOST_DIR" "$CLI_DIR" "$MANAGER_DIR"
   say "Removed native host and manifest"
   say "If Chrome still shows the extension, remove/reload it from $CHROME_EXTENSIONS_PAGE."
