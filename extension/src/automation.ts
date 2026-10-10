@@ -619,13 +619,14 @@ async function isolatedAutomation(action: AutomationAction, dialogToken: string 
     }
     return active && isHtmlElement(active) ? active : document.body;
   };
-  const focusNext = (current: HTMLElement): void => {
+  const focusNext = (current: HTMLElement, reverse = false): void => {
     const candidates = allElements().filter((candidate) => (
       ['a', 'button', 'input', 'select', 'textarea', 'summary'].includes(tagOf(candidate)) || candidate.hasAttribute('tabindex')
     )).filter((candidate) => visible(candidate) && candidate.tabIndex >= 0 && !disabledOrInert(candidate));
     if (candidates.length === 0) return;
     const currentIndex = candidates.indexOf(current);
-    candidates[(currentIndex + 1) % candidates.length]?.focus();
+    const nextIndex = reverse ? (currentIndex <= 0 ? candidates.length - 1 : currentIndex - 1) : (currentIndex + 1) % candidates.length;
+    candidates[nextIndex]?.focus();
   };
   const setTextValue = (element: HTMLInputElement | HTMLTextAreaElement, value: string): void => {
     const view = elementWindow(element);
@@ -865,29 +866,41 @@ async function isolatedAutomation(action: AutomationAction, dialogToken: string 
         const view = elementWindow(element);
         // Older controls (including Closure-based search inputs) still use keyCode.
         // Preserve synthetic input and cancellation; do not spoof isTrusted.
+        // "Shift+Tab", "Control+a": modifier names before the final key. A trailing "+" is the plus key itself.
+        const parts = action.key.length > 1 && action.key.endsWith('+') ? [...action.key.slice(0, -1).split('+').filter(Boolean), '+'] : action.key.split('+');
+        const chordKey = parts[parts.length - 1] || action.key;
+        const modifiers = parts.slice(0, -1).map((name) => name.toLowerCase());
+        if (modifiers.some((name) => !['shift', 'control', 'ctrl', 'alt', 'meta', 'cmd'].includes(name))) {
+          fail('invalid_key', `Unknown modifier in "${action.key}". Use Shift, Control, Alt or Meta before the key.`);
+        }
+        const shift = modifiers.includes('shift');
         const init = {
-          key: action.key,
-          code: action.code ?? action.key,
-          ...(action.key === 'Enter' ? { keyCode: 13 } : {}),
+          key: chordKey,
+          code: action.code ?? chordKey,
+          ...(chordKey === 'Enter' ? { keyCode: 13 } : {}),
+          shiftKey: shift,
+          ctrlKey: modifiers.includes('control') || modifiers.includes('ctrl'),
+          altKey: modifiers.includes('alt'),
+          metaKey: modifiers.includes('meta') || modifiers.includes('cmd'),
           bubbles: true,
           cancelable: true,
         };
         const allowed = element.dispatchEvent(new view.KeyboardEvent('keydown', init));
         if (allowed) {
-          if (action.key === 'Enter') {
+          if (chordKey === 'Enter') {
             const form = element.closest('form') as HTMLFormElement | null;
             if (form) form.requestSubmit();
             else if (tagOf(element) === 'button' || element.getAttribute('role') === 'button') element.click();
-          } else if (action.key === ' ' || action.key === 'Spacebar') {
+          } else if (chordKey === ' ' || chordKey === 'Spacebar') {
             if (tagOf(element) === 'button' || element.getAttribute('role') === 'button') element.click();
-          } else if (action.key === 'Tab') {
-            focusNext(element);
-          } else if ((action.key === 'Backspace' || action.key === 'Delete') && ['input', 'textarea'].includes(tagOf(element))) {
+          } else if (chordKey === 'Tab') {
+            focusNext(element, shift);
+          } else if ((chordKey === 'Backspace' || chordKey === 'Delete') && ['input', 'textarea'].includes(tagOf(element))) {
             const textControl = element as HTMLInputElement | HTMLTextAreaElement;
             const start = textControl.selectionStart ?? textControl.value.length;
             const end = textControl.selectionEnd ?? start;
-            const from = action.key === 'Backspace' && start === end ? Math.max(0, start - 1) : start;
-            const to = action.key === 'Delete' && start === end ? Math.min(textControl.value.length, end + 1) : end;
+            const from = chordKey === 'Backspace' && start === end ? Math.max(0, start - 1) : start;
+            const to = chordKey === 'Delete' && start === end ? Math.min(textControl.value.length, end + 1) : end;
             setTextValue(textControl, `${textControl.value.slice(0, from)}${textControl.value.slice(to)}`);
             textControl.setSelectionRange(from, from);
             textControl.dispatchEvent(new view.InputEvent('input', { bubbles: true, inputType: 'deleteContentBackward' }));
