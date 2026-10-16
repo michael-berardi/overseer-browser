@@ -217,4 +217,4 @@ native browser format. No debugger permission is used or implied approved.
 
 Read-only [DOM queries](DOM_QUERIES.md) use fixed native `dom.query` with an explicit
 session and owned tab; no User Scripts permission or evaluate fallback. Requires
-the 0.6.0 (unreleased) extension source and operator-approved reload.
+the 0.6.0 or later extension and operator-approved reload.
