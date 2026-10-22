@@ -934,7 +934,7 @@ class InstallerContractTests(unittest.TestCase):
     def test_installer_installs_cli_and_preserves_unrelated_launcher(self) -> None:
         script = (Path(__file__).resolve().parents[1] / "scripts" / "manage-macos.sh").read_text(encoding="utf-8")
         self.assertIn('install -m 600 "$ROOT/cli/$module.py" "$STAGE/cli/$module.py"', script)
-        self.assertIn('dom_query temp_outputs; do', script)
+        self.assertIn('dom_query temp_outputs secret_input; do', script)
         self.assertIn("# OverSeer Browser managed launcher", script)
         self.assertIn('Preserved unrelated CLI launcher', script)
         self.assertIn('rm -rf "$HOST_DIR" "$CLI_DIR"', script)

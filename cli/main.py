@@ -31,7 +31,7 @@ except ImportError:
     from native_host.protocol import MAX_FRAME_BYTES, ProtocolError, encode_frame, read_frame
     from native_host.runtime import RuntimePaths, is_private_file
     from cli.runtime_discovery import find_active_runtime
-from cli import evidence, recording, dom_query, temp_outputs
+from cli import evidence, recording, dom_query, temp_outputs, secret_input
 
 CLI_VERSION = "0.6.2"
 MAX_UPLOAD_BYTES = 8 * 1024 * 1024
@@ -69,7 +69,7 @@ _SCREENSHOT_MAGIC = {
 REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
 CLI_COMMANDS = (
     "health", "status", "doctor", "qa", "timelapse", "record", "dom", "version", "install", "update", "uninstall", "help", "sessions", "windows", "tabs",
-    "open", "close", "navigate", "back", "forward", "reload", "snapshot", "observe", "click", "hover", "fill", "type", "select", "press",
+    "open", "close", "navigate", "back", "forward", "reload", "snapshot", "observe", "click", "hover", "fill", "fill-secret", "type", "select", "press",
     "scroll", "evaluate", "eval", "console", "network", "batch", "capture", "screenshot",
     "screenshot-element", "element-screenshot", "upload", "takeover", "cancel", "wait",
 )
@@ -946,6 +946,17 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     command, args = raw[0], raw[1:]
     try:
+        if command == 'fill-secret':
+            if session_key is None or tab_id is None:
+                raise CLIError('usage', 'fill-secret requires an owned --session and explicit --tab-id')
+            if request_id is not None or max_nodes is not None or wait_until is not None:
+                raise CLIError('usage', 'fill-secret does not accept request-id or snapshot/navigation options')
+            def secret_request(cmd, params):
+                params = _apply_targeting(cmd, dict(params), tab_id, None)
+                return request_once(cmd, params, timeout=timeout, request_id=request_id, **request_options)
+            payload = secret_input.run(args, secret_request, sys.stdin)
+            _render(payload, json_output, raw_json)
+            return 0 if payload.get('ok') else 1
         if command == 'dom':
             if session_key is None:
                 raise CLIError('usage', 'dom requires an owned --session')
