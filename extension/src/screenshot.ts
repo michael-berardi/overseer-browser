@@ -66,7 +66,7 @@ export async function captureScreenshot(
     dataUrl = await queueCapture(async () => {
       checkCancelled();
       await requireActiveScreenshotTarget(tabId, windowId);
-      const captured = await chrome.tabs.captureVisibleTab(windowId, captureOptions);
+      const captured = await captureWithReadbackRetry(windowId, captureOptions);
       await requireActiveScreenshotTarget(tabId, windowId);
       checkCancelled();
       return captured;
@@ -80,6 +80,13 @@ export async function captureScreenshot(
         'screenshot_permission_required',
         'Chrome blocks tab capture without an <all_urls> grant.',
         'Enable unlimited access in the popup; if it is already on, toggle it off and on once to upgrade the grant.',
+      );
+    }
+    if (isReadbackFailure(error)) {
+      throw new ScreenshotError(
+        'screenshot_window_occluded',
+        'Chrome could not read back a frame from the Agent Window: it is covered or minimized, so Chrome stopped painting it.',
+        'Use the isolated agent browser (OVERSEER_BROWSER_CONNECTION=managed), or uncover the Agent Window and retry. Agent Windows are never focused automatically.',
       );
     }
     throw error;
@@ -127,6 +134,25 @@ export async function captureScreenshot(
     source.close();
   }
   throw new ScreenshotError('screenshot_too_large', 'Screenshot could not be compressed below the native frame limit.', 'Resize the Agent Window or request a smaller element screenshot.');
+}
+
+const READBACK_RETRY_DELAYS_MS = [250, 600];
+
+export function isReadbackFailure(error: unknown): boolean {
+  return error instanceof Error && /image readback failed/i.test(error.message);
+}
+
+/** An occluded window can return one transient readback failure while Chrome resumes painting. */
+async function captureWithReadbackRetry(windowId: number, options: chrome.tabs.CaptureVisibleTabOptions): Promise<string> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await chrome.tabs.captureVisibleTab(windowId, options);
+    } catch (error) {
+      const delay = READBACK_RETRY_DELAYS_MS[attempt];
+      if (!isReadbackFailure(error) || delay === undefined) throw error;
+      await new Promise<void>((resolve) => setTimeout(resolve, delay));
+    }
+  }
 }
 
 export function calculateCrop(rect: RectResult, viewport: { width: number; height: number }, imageWidth: number, imageHeight: number): RectResult {
