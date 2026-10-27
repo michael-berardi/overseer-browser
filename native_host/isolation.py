@@ -93,6 +93,42 @@ def stop_instance(paths: RuntimePaths, timeout: float = 15) -> None:
         time.sleep(.1)
 
 
+def _extension_version(extension: Path) -> str | None:
+    try:
+        return str(json.loads((extension / 'manifest.json').read_text())['version'])
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def reset_stale_extension_worker(profile: Path, extension: Path) -> bool:
+    """Drop Chrome's cached service worker when the loaded extension version changes.
+
+    Chrome for Testing keeps running a cached MV3 service worker from an
+    --load-extension folder even after the folder's code changes. After the
+    0.6.6 host rename that stale worker kept calling the old native host name
+    (com.imploselabs...), so the isolated browser never connected and every
+    command failed with isolation_unavailable. Only the dedicated agent profile
+    is touched; the operator's browsers are never read or changed.
+    """
+    version = _extension_version(extension)
+    marker = profile / 'overseer-extension-version'
+    try:
+        previous = marker.read_text().strip()
+    except OSError:
+        previous = None
+    if version is None or previous == version:
+        return False
+    worker_cache = profile / 'Default' / 'Service Worker'
+    reset = worker_cache.exists()
+    if reset:
+        import shutil
+        shutil.rmtree(worker_cache)
+        print(f'overseer-browser: extension {previous or "unknown"} -> {version}; cleared cached service worker in {worker_cache}', file=sys.stderr)
+    marker.write_text(version)
+    os.chmod(marker, 0o600)
+    return reset
+
+
 def supervise(root: Path, chrome: str, extension: str) -> None:
     paths = RuntimePaths(root, root / 'overseer-browser.sock', root / 'token')
     ensure_private_directory(root)
@@ -102,6 +138,7 @@ def supervise(root: Path, chrome: str, extension: str) -> None:
     # not the default Chrome for Testing application-support directory.
     host = root.parent / 'overseer-browser-native-host'
     write_manifest(profile / 'NativeMessagingHosts' / 'com.paretocybernetics.overseer_browser.json', host)
+    reset_stale_extension_worker(profile, Path(extension))
     # pareto-legacy: remove after 2027-08-23. One-time migration: a profile created before the rename still holds the old-name manifest.
     legacy_manifest = profile / 'NativeMessagingHosts' / 'com.imploselabs.overseer_browser.json'  # pareto-legacy
     if legacy_manifest.exists() or legacy_manifest.is_symlink():

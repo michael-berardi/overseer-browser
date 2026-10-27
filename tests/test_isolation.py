@@ -98,3 +98,34 @@ class IsolationTests(unittest.TestCase):
             self.assertEqual(launch.call_args.kwargs['env']['OVERSEER_BROWSER_RUNTIME'], str(root))
             child.terminate.assert_called_once()
             self.assertFalse((root / 'supervisor.running').exists())
+
+
+class StaleWorkerTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        root = Path(self.tmp.name)
+        self.profile = root / 'profile'
+        self.extension = root / 'extension'
+        self.extension.mkdir()
+        self.cache = self.profile / 'Default' / 'Service Worker' / 'ScriptCache'
+        self.cache.mkdir(parents=True)
+        (self.cache / 'stale_0').write_text('com.imploselabs.overseer_browser')
+
+    def _version(self, version):
+        (self.extension / 'manifest.json').write_text('{"version": "%s"}' % version)
+
+    def test_version_change_clears_cached_worker_once(self):
+        from native_host.isolation import reset_stale_extension_worker
+        self._version('0.6.8')
+        self.assertTrue(reset_stale_extension_worker(self.profile, self.extension))
+        self.assertFalse((self.profile / 'Default' / 'Service Worker').exists())
+        self.assertEqual((self.profile / 'overseer-extension-version').read_text(), '0.6.8')
+        self.cache.mkdir(parents=True)
+        self.assertFalse(reset_stale_extension_worker(self.profile, self.extension))
+        self.assertTrue(self.cache.exists())
+
+    def test_unreadable_manifest_leaves_profile_alone(self):
+        from native_host.isolation import reset_stale_extension_worker
+        self.assertFalse(reset_stale_extension_worker(self.profile, self.extension))
+        self.assertTrue(self.cache.exists())
