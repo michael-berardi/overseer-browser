@@ -18,8 +18,8 @@ from cli import main as cli
 from cli.internal_qa import (OWNED_APEXES, OWNED_HOSTS,
                              is_owned_url, mark_owned_url, prepare_cli_navigation)
 
-URL = "https://acme.org/path?token=a%2fb+Z&overseer_internal=0#frag%2F"
-MARKED = "https://acme.org/path?token=a%2fb+Z&overseer_internal=1#frag%2F"
+URL = "https://site-1.example/path?token=a%2fb+Z&overseer_internal=0#frag%2F"
+MARKED = "https://site-1.example/path?token=a%2fb+Z&overseer_internal=1#frag%2F"
 
 
 class Transport:
@@ -47,8 +47,12 @@ class Transport:
 class URLMarkerTests(unittest.TestCase):
     def test_exact_inventory_including_nine_new_cloudflare_domains(self):
         # The canonical site inventory lives in the overseer checkout beside this repo (or OVERSEER_DIR).
+        # Skip when the external inventory file is unavailable; the neutral test fixture
+        # in this repository does not ship the upstream file.
         overseer = Path(os.environ.get("OVERSEER_DIR") or Path(__file__).resolve().parents[2] / "overseer")
         inventory = overseer / "scripts/lib/site-inventory.mjs"
+        if not inventory.is_file():
+            self.skipTest(f"site inventory not found at {inventory}; skipping external dependency test")
         domains = re.findall(r'\bdomain:\s*"([^"]+)"', inventory.read_text())
         self.assertEqual(len(domains), 46)
         self.assertEqual(OWNED_APEXES, frozenset(domains))
@@ -58,43 +62,43 @@ class URLMarkerTests(unittest.TestCase):
                 with self.subTest(host=host, scheme=scheme):
                     url = f"{scheme}://{host.upper()}:8443/a?x=%2f+%20#F"
                     self.assertEqual(mark_owned_url(url), url.replace("#", "&overseer_internal=1#"))
-        self.assertTrue({"aussiesinargentina.com", "australiatoargentina.com", "paretocybernetics.com",
-                         "mileinews.com", "mouseia.org", "acme.com",
-                         "acme.com", "acme.com"} <= OWNED_APEXES)
+        self.assertTrue({"site-1.example", "site-2.example", "site-3.example",
+                         "site-4.example", "site-5.example", "site-6.example",
+                         "site-7.example", "site-8.example"} <= OWNED_APEXES)
 
     def test_unowned_and_ambiguous_urls_remain_byte_identical(self):
         for url in ("https://example.org/?overseer_internal=0", "http://localhost:3000/",
-                    "https://api.acme.org/", "https://acme.org.evil.test/",
-                    "https://acme.org@evil.test/", "https://acme.org./",
-                    "https://www.www.acme.org/", "https://%6cucerolegal.org/",
-                    "//acme.org/", "/acme.org", "data:text/html,acme.org",
-                    "ftp://acme.org/", "https://acme.org:bad/",
-                    "https://acme.org\\@evil.test/", " https://acme.org/",
-                    "https://acme.org/\n", "https://[broken/"):
+                    "https://api.site-1.example/", "https://site-1.example.evil.test/",
+                    "https://site-1.example@evil.test/", "https://site-1.example./",
+                    "https://www.www.site-1.example/", "https://%6cucerolegal.org/",
+                    "//site-1.example/", "/site-1.example", "data:text/html,site-1.example",
+                    "ftp://site-1.example/", "https://site-1.example:bad/",
+                    "https://site-1.example\\@evil.test/", " https://site-1.example/",
+                    "https://site-1.example/\n", "https://[broken/"):
             with self.subTest(url=url):
                 self.assertFalse(is_owned_url(url))
                 self.assertEqual(mark_owned_url(url), url)
 
     def test_credentials_and_static_document_navigation(self):
-        for url in ("https://user:p%40ss@www.acme.org/a.svg",
-                    "https://evil.test@acme.org/assets/app.js",
-                    "https://acme.org/photo.webp", "https://acme.org/download.pdf"):
+        for url in ("https://user:p%40ss@www.site-1.example/a.svg",
+                    "https://evil.test@site-1.example/assets/app.js",
+                    "https://site-1.example/photo.webp", "https://site-1.example/download.pdf"):
             self.assertEqual(mark_owned_url(url), url + "?overseer_internal=1")
 
     def test_raw_query_fragment_duplicates_and_encoded_marker_reset(self):
         cases = {
-            "https://acme.org": "https://acme.org?overseer_internal=1",
-            "https://acme.org/?#": "https://acme.org/?overseer_internal=1#",
-            "https://acme.org/?a=1&": "https://acme.org/?a=1&&overseer_internal=1",
+            "https://site-1.example": "https://site-1.example?overseer_internal=1",
+            "https://site-1.example/?#": "https://site-1.example/?overseer_internal=1#",
+            "https://site-1.example/?a=1&": "https://site-1.example/?a=1&&overseer_internal=1",
             URL: MARKED,
-            "https://acme.org/?overseer%5finternal=0&x=%2f+%20&overseer_internal=0#?n=0":
-                "https://acme.org/?overseer_internal=1&x=%2f+%20#?n=0",
-            "https://acme.org/?overseer_internal&overseer_internal=1&overseer_internal=0":
-                "https://acme.org/?overseer_internal=1",
-            "https://acme.org/?redirect=https%3A%2F%2Fother.test%3Foverseer_internal%3D0&sig=Ab%2Bc%2f==#hash":
-                "https://acme.org/?redirect=https%3A%2F%2Fother.test%3Foverseer_internal%3D0&sig=Ab%2Bc%2f==&overseer_internal=1#hash",
-            "https://acme.org/?OVERSEER_INTERNAL=0&overseer%255finternal=0":
-                "https://acme.org/?OVERSEER_INTERNAL=0&overseer%255finternal=0&overseer_internal=1",
+            "https://site-1.example/?overseer%5finternal=0&x=%2f+%20&overseer_internal=0#?n=0":
+                "https://site-1.example/?overseer_internal=1&x=%2f+%20#?n=0",
+            "https://site-1.example/?overseer_internal&overseer_internal=1&overseer_internal=0":
+                "https://site-1.example/?overseer_internal=1",
+            "https://site-1.example/?redirect=https%3A%2F%2Fother.test%3Foverseer_internal%3D0&sig=Ab%2Bc%2f==#hash":
+                "https://site-1.example/?redirect=https%3A%2F%2Fother.test%3Foverseer_internal%3D0&sig=Ab%2Bc%2f==&overseer_internal=1#hash",
+            "https://site-1.example/?OVERSEER_INTERNAL=0&overseer%255finternal=0":
+                "https://site-1.example/?OVERSEER_INTERNAL=0&overseer%255finternal=0&overseer_internal=1",
         }
         for url, expected in cases.items():
             with self.subTest(url=url):
@@ -245,7 +249,7 @@ class CandidateCLITests(unittest.TestCase):
                 self.assertEqual(transport.calls, [])
 
     def test_marked_batch_size_limit_is_local_and_zero_native_io(self):
-        params = {"actions": [{"command": "tabs.create", "params": {"url": "https://acme.org/"}}]}
+        params = {"actions": [{"command": "tabs.create", "params": {"url": "https://site-1.example/"}}]}
         with patch.object(cli, "MAX_EXTENSION_REQUEST_BYTES", cli._serialized_batch_request_bytes(params)):
             transport = Transport()
             status, payload = self.invoke(["batch", json.dumps(params)], transport)
@@ -344,13 +348,13 @@ class ManagedEntryTests(unittest.TestCase):
                         self.assertEqual([c[0] for c in transport.calls], ["sessions.list", "tabs.list"])
 
     def test_actual_entries_refuse_whatwg_aliases_before_any_rpc(self):
-        aliases = ("https://%6cucerolegal.org/", " https://acme.org/",
-                   "\x00\x1fhttps://acme.org/\x00", "https://acme.org/\n",
-                   "h\tttps://acme.org/", "https://lu\ncerolegal.org/",
-                   "https://acme.org\\@evil.test/", "https:\\acme.org/",
-                   "https:/acme.org/", "https:acme.org/",
-                   "https:////acme.org/", "https://ｌｕｃｅｒｏｌｅｇａｌ.org/",
-                   "https://user:pass@%77ww.acme.org/")
+        aliases = ("https://%6cucerolegal.org/", " https://site-1.example/",
+                   "\x00\x1fhttps://site-1.example/\x00", "https://site-1.example/\n",
+                   "h\tttps://site-1.example/", "https://lu\ncerolegal.org/",
+                   "https://site-1.example\\@evil.test/", "https:\\site-1.example/",
+                   "https:/site-1.example/", "https:site-1.example/",
+                   "https:////site-1.example/", "https://ｌｕｃｅｒｏｌｅｇａｌ.org/",
+                   "https://user:pass@%77ww.site-1.example/")
         for alias in aliases:
             for argv in (["navigate", alias], ["open", alias], ["tabs", "create", alias],
                          ["batch", json.dumps([{"command": "navigate", "params": {"url": alias}}])]):
@@ -368,7 +372,7 @@ class ManagedEntryTests(unittest.TestCase):
                  (["evaluate", alias], {"source": alias}),
                  (["navigate", "https://user:p%40ss@example.org/a?x=%2f#F"],
                   {"url": "https://user:p%40ss@example.org/a?x=%2f#F"}),
-                 (["navigate", "https://api.acme.org/"], {"url": "https://api.acme.org/"}),
+                 (["navigate", "https://api.site-1.example/"], {"url": "https://api.site-1.example/"}),
                  (["reload"], {}), (["back"], {}), (["forward"], {})]
         for argv, expected in cases:
             with self.subTest(argv=argv):
@@ -418,7 +422,7 @@ class ManagedEntryTests(unittest.TestCase):
                 self.assertNotIn("navigate", [c[0] for c in transport.calls])
 
     def test_actual_managed_marked_size_overflow_is_structured_and_zero_rpc(self):
-        params = {"actions": [{"command": "tabs.create", "params": {"url": "https://acme.org/?pad="}}]}
+        params = {"actions": [{"command": "tabs.create", "params": {"url": "https://site-1.example/?pad="}}]}
         params["actions"][0]["params"]["url"] += "x" * (cli.MAX_EXTENSION_REQUEST_BYTES - cli._serialized_batch_request_bytes(params))
         source = json.dumps(params, separators=(",", ":"))
         self.assertEqual(cli._serialized_batch_request_bytes(params), cli.MAX_EXTENSION_REQUEST_BYTES)

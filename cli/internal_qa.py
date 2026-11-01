@@ -11,20 +11,7 @@ from typing import Any, Callable
 from urllib.parse import unquote_plus, urlsplit
 
 # Snapshot of overseer/scripts/lib/site-inventory.mjs: 47 apexes.
-OWNED_APEXES = frozenset("""
-libertydesign.studio property-perfected.com plataworks.com dubledger.com
- acme.com acme.net acme.org acme.com
- buenosairesexpats.com expatsargentina.com uaeargentina.com dubaitoargentina.com
- turkeyargentina.com turkeytoargentina.com russiatoargentina.com russiaargentina.com
- esteticaeunoia.com chinatoargentina.com chineseargentina.com italiaargentina.com
- italianiargentina.com ukargentina.com britsinargentina.com espanaargentina.com
- espanaenargentina.com germanexpatargentina.com deutschlandargentinien.com
- francaisargentine.com argentinaparafrances.com dubmenu.com americansinargentina.com
- chilenosargentina.com uruguayosenargentina.com usatoargentina.com canadatoargentina.com
- canadiansinargentina.com realtybuilt.com simplygreenny.com aussiesinargentina.com
- australiatoargentina.com paretocybernetics.com mileinews.com
- mouseia.org acme.com acme.com acme.com
-""".split())
+OWNED_APEXES = frozenset(f"site-{i}.example" for i in range(1, 47))
 OWNED_HOSTS = OWNED_APEXES | frozenset("www." + host for host in OWNED_APEXES)
 MARKER_KEY = "overseer_internal"
 MARKER_PAIR = MARKER_KEY + "=1"
