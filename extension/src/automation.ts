@@ -653,6 +653,26 @@ async function isolatedAutomation(action: AutomationAction, dialogToken: string 
       selection.removeAllRanges();
       selection.addRange(range);
     }
+    // Rich-text editors (Draft.js on X, Lexical, ProseMirror, Slate) keep their
+    // own model of the text. Programmatic execCommand('insertText') reaches them
+    // twice (their beforeinput handler plus the native DOM edit), which doubled
+    // every value on X. They all accept a paste: announce the new selection the
+    // way a real pointer does, then offer the text as a paste. An editor that
+    // consumes it calls preventDefault; anything else falls back to insertText.
+    const view = (ownerDocument.defaultView ?? window) as Window & typeof globalThis;
+    try {
+      element.dispatchEvent(new view.MouseEvent('mouseup', { bubbles: true }));
+      element.dispatchEvent(new view.KeyboardEvent('keyup', { bubbles: true, key: 'Shift' }));
+      ownerDocument.dispatchEvent(new view.Event('selectionchange'));
+      if (typeof view.DataTransfer === 'function' && typeof view.ClipboardEvent === 'function') {
+        const transfer = new view.DataTransfer();
+        transfer.setData('text/plain', data);
+        const paste = new view.ClipboardEvent('paste', { clipboardData: transfer, bubbles: true, cancelable: true });
+        if (!element.dispatchEvent(paste)) return true;
+      }
+    } catch {
+      // Fall through to the native insertion path below.
+    }
     if (typeof ownerDocument.execCommand !== 'function') return false;
     try {
       return ownerDocument.execCommand('insertText', false, data);

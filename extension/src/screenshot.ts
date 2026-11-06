@@ -143,10 +143,12 @@ export function isReadbackFailure(error: unknown): boolean {
 }
 
 /** An occluded window can return one transient readback failure while Chrome resumes painting. */
-async function captureWithReadbackRetry(windowId: number, options: chrome.tabs.CaptureVisibleTabOptions): Promise<string> {
+type CaptureOptions = { format?: 'jpeg' | 'png'; quality?: number };
+
+async function captureWithReadbackRetry(windowId: number, options: CaptureOptions): Promise<string> {
   for (let attempt = 0; ; attempt += 1) {
     try {
-      return await chrome.tabs.captureVisibleTab(windowId, options);
+      return await (chrome.tabs.captureVisibleTab as (windowId: number, options: CaptureOptions) => Promise<string>)(windowId, options);
     } catch (error) {
       const delay = READBACK_RETRY_DELAYS_MS[attempt];
       if (!isReadbackFailure(error) || delay === undefined) throw error;
