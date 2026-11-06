@@ -9,7 +9,7 @@ export default defineConfig({
     name: 'OverSeer Browser',
     short_name: 'OverSeer',
     description: 'Local-first Chromium browser automation.',
-    version: '0.7.0',
+    version: '0.7.1',
     key: publicKey,
     permissions: ['activeTab', 'tabCapture', 'offscreen', 'alarms', 'nativeMessaging', 'storage', 'scripting', 'tabs', 'userScripts', 'windows'],
     // '<all_urls>' in host_permissions is required for the dedicated
@@ -38,7 +38,7 @@ export default defineConfig({
       },
     },
     content_security_policy: {
-      extension_pages: "script-src 'self'; object-src 'self'; connect-src https://analytics.example.com",
+      extension_pages: "script-src 'self'; object-src 'self'; connect-src https://analytics.paretocybernetics.com",
     },
   },
 });
