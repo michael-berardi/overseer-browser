@@ -353,7 +353,7 @@ overseer-browser scroll <y> | <x> <y> | <ref> [<x> <y>]
 overseer-browser evaluate <script>
 overseer-browser screenshot [path]
 overseer-browser screenshot-element <ref> [path]
-overseer-browser upload <ref> <path> [path...]
+overseer-browser upload [--via] <ref> <path> [path...]
 overseer-browser dom find LOCATOR | get QUERY LOCATOR [NAMES...] | is STATE LOCATOR
 overseer-browser console start | read | stop
 overseer-browser network read [limit]
@@ -369,6 +369,14 @@ overseer-browser help
 
 Results are minified JSON on stdout, including errors, which carry stable
 codes. `--json` and `--raw-json` are accepted as aliases.
+
+`upload --via <ref>` is for sites that open the file picker from a button
+(LinkedIn's Media, many composers) instead of exposing an `<input type=file>`.
+It clicks `<ref>`, intercepts the picker the page opens (a file input's
+`click`/`showPicker`, or `showOpenFilePicker`) so no native dialog appears,
+and delivers the files to it. The interception is one-shot and is removed
+afterwards; if nothing opens a picker within 5 seconds it fails with
+`chooser_not_opened`.
 
 Ref-based actions work through the top document, open shadow roots and
 visible same-origin frames; cross-origin frame DOM stays opaque. Mutations

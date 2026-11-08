@@ -49,7 +49,12 @@ class URLMarkerTests(unittest.TestCase):
         # The canonical site inventory lives in the overseer checkout beside this repo (or OVERSEER_DIR).
         # Skip when the external inventory file is unavailable; the neutral test fixture
         # in this repository does not ship the upstream file.
-        overseer = Path(os.environ.get("OVERSEER_DIR") or Path(__file__).resolve().parents[2] / "overseer")
+        # Shipped sources are neutral (site-N.example). Compare against a real inventory
+        # only when one is passed explicitly; a sibling checkout's private inventory
+        # never matches the neutral set and is not this repository's contract.
+        if not os.environ.get("OVERSEER_DIR"):
+            self.skipTest("set OVERSEER_DIR to compare against an external site inventory")
+        overseer = Path(os.environ["OVERSEER_DIR"])
         inventory = overseer / "scripts/lib/site-inventory.mjs"
         if not inventory.is_file():
             self.skipTest(f"site inventory not found at {inventory}; skipping external dependency test")

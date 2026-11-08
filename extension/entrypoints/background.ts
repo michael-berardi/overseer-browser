@@ -18,7 +18,7 @@ import {
   responseError,
   responseOk,
 } from '../src/protocol';
-import { AutomationError, runInIsolatedWorld, runPageEvaluation, runWaitFor, type AutomationAction, type SnapshotNode } from '../src/automation';
+import { AutomationError, runChooserUpload, runInIsolatedWorld, runPageEvaluation, runWaitFor, type AutomationAction, type SnapshotNode } from '../src/automation';
 import { ObserveDeltaStore, computeObserveDelta } from '../src/observe_delta';
 import { WaitError, parseWaitTarget } from '../src/wait';
 import { getPermissionState, isNavigableUrl, normalizeSiteAccess } from '../src/permissions';
@@ -381,7 +381,7 @@ const COMMAND_PARAM_KEYS: Record<Command | 'debugger.input' | 'debugger.network'
   'dom.query': ['tab_id', 'query'],
   'screenshot.visible': ['tab_id', 'format'],
   'screenshot.element': ['tab_id', 'ref', 'format'],
-  upload: ['tab_id', 'ref', 'upload_id', 'index', 'total', 'chunk', 'filename', 'mime_type', 'file_index', 'file_total'],
+  upload: ['tab_id', 'ref', 'upload_id', 'index', 'total', 'chunk', 'filename', 'mime_type', 'file_index', 'file_total', 'via'],
   batch: ['actions', 'stop_on_error', 'max_parallel'],
   'console.start': ['tab_id', 'clear'],
   'console.read': ['tab_id', 'clear'],
@@ -1180,6 +1180,16 @@ async function runUpload(params: Record<string, unknown>, state: InflightRequest
   const ref = readString(params, 'ref', 128);
   const assembled = uploads.addChunk(params, tabId, ref, state.sessionKey);
   if (!assembled.complete) return assembled;
+  if (params.via === true) {
+    // The ref is a trigger (e.g. a "Media" button) that opens a file picker
+    // from the page's own script; intercept that picker instead of a DOM input.
+    return enqueueTabMutation(tabId, async () => {
+      assertNotCancelled(state);
+      const result = await runChooserUpload(tabId, ref, assembled.files);
+      assertNotCancelled(state);
+      return result;
+    });
+  }
   return runAction(params, { kind: 'upload', ref, files: assembled.files }, state);
 }
 

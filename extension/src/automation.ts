@@ -1124,3 +1124,157 @@ async function collectDialogGuards(token: string): Promise<CapturedDialog[]> {
   visit(window);
   return dialogs;
 }
+
+/**
+ * Installed in the page's MAIN world before a trigger is clicked. The next
+ * attempt to open a file picker (HTMLInputElement#click / #showPicker on a
+ * file input, or window.showOpenFilePicker) is intercepted instead of opening
+ * the native dialog: the input is kept under `token` so the delivery step can
+ * set its files. One-shot; `releaseFileChooserGuard` restores everything.
+ * Serialized into the page, so it must not close over module scope.
+ */
+export function installFileChooserGuard(token: string): boolean {
+  const host = window as unknown as Record<string, unknown>;
+  if (host[token] !== undefined) return false;
+  const proto = HTMLInputElement.prototype;
+  const originalClick = proto.click;
+  const originalShowPicker = (proto as unknown as { showPicker?: () => void }).showPicker;
+  const pickerHost = window as unknown as { showOpenFilePicker?: (options?: unknown) => Promise<unknown> };
+  const originalOpenPicker = pickerHost.showOpenFilePicker;
+  const state: {
+    input: HTMLInputElement | null;
+    picker: { resolve: (handles: unknown[]) => void; reject: (error: unknown) => void } | null;
+    restore: () => void;
+  } = { input: null, picker: null, restore: () => undefined };
+  const capture = (input: HTMLInputElement): void => {
+    if (state.input === null && state.picker === null) state.input = input;
+  };
+  const guardedClick = function (this: HTMLInputElement): void {
+    if (this.type === 'file' && state.input === null && state.picker === null) { capture(this); return; }
+    return originalClick.call(this);
+  };
+  proto.click = guardedClick;
+  if (originalShowPicker) {
+    (proto as unknown as { showPicker: () => void }).showPicker = function (this: HTMLInputElement): void {
+      if (this.type === 'file' && state.input === null && state.picker === null) { capture(this); return; }
+      return originalShowPicker.call(this);
+    };
+  }
+  if (originalOpenPicker) {
+    pickerHost.showOpenFilePicker = function (options?: unknown): Promise<unknown> {
+      if (state.input !== null || state.picker !== null) return originalOpenPicker.call(window, options);
+      return new Promise((resolve, reject) => { state.picker = { resolve: resolve as (h: unknown[]) => void, reject }; });
+    };
+  }
+  state.restore = (): void => {
+    if (proto.click === guardedClick) proto.click = originalClick;
+    if (originalShowPicker) (proto as unknown as { showPicker: () => void }).showPicker = originalShowPicker;
+    if (originalOpenPicker) pickerHost.showOpenFilePicker = originalOpenPicker;
+  };
+  host[token] = state;
+  return true;
+}
+
+/** MAIN world: report whether the guard has captured a picker yet. */
+export function fileChooserCaptured(token: string): boolean {
+  const state = (window as unknown as Record<string, { input: unknown; picker: unknown } | undefined>)[token];
+  return !!state && (state.input !== null || state.picker !== null);
+}
+
+/**
+ * MAIN world: deliver files to the captured picker, then release the guard.
+ * Always restores the prototypes. Returns a result envelope; never throws.
+ */
+export function deliverFileChooser(token: string, files: AutomationUploadFile[] | null): { ok: boolean; code?: string; count?: number } {
+  const host = window as unknown as Record<string, unknown>;
+  const state = host[token] as {
+    input: HTMLInputElement | null;
+    picker: { resolve: (handles: unknown[]) => void; reject: (error: unknown) => void } | null;
+    restore: () => void;
+  } | undefined;
+  if (!state) return { ok: false, code: 'chooser_guard_missing' };
+  try {
+    state.restore();
+    if (files === null) {
+      if (state.picker) state.picker.reject(new DOMException('The user aborted a request.', 'AbortError'));
+      return { ok: true, count: 0 };
+    }
+    const made = files.map((file) => {
+      const binary = atob(file.contentBase64);
+      const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+      return new File([bytes], file.filename, { type: file.mimeType });
+    });
+    if (state.input) {
+      const transfer = new DataTransfer();
+      for (const file of made) transfer.items.add(file);
+      state.input.files = transfer.files;
+      state.input.dispatchEvent(new Event('input', { bubbles: true }));
+      state.input.dispatchEvent(new Event('change', { bubbles: true }));
+      return { ok: true, count: made.length };
+    }
+    if (state.picker) {
+      state.picker.resolve(made.map((file) => ({
+        kind: 'file',
+        name: file.name,
+        getFile: async () => file,
+        queryPermission: async () => 'granted',
+        requestPermission: async () => 'granted',
+        isSameEntry: async () => false,
+      })));
+      return { ok: true, count: made.length };
+    }
+    return { ok: false, code: 'chooser_not_opened' };
+  } catch {
+    return { ok: false, code: 'invalid_upload' };
+  } finally {
+    delete host[token];
+  }
+}
+
+/**
+ * Click `triggerRef`, intercept the file picker it opens, and deliver `files`
+ * to it. No native dialog is shown. The guard is always released.
+ */
+export async function runChooserUpload(
+  tabId: number,
+  triggerRef: string,
+  files: AutomationUploadFile[],
+  timeoutMs = 5_000,
+): Promise<unknown> {
+  const action: AutomationAction = { kind: 'upload', ref: triggerRef, files };
+  if (!isBoundedUpload(action as Extract<AutomationAction, { kind: 'upload' }>)) {
+    const decodedBytes = decodedUploadBytes(action as Extract<AutomationAction, { kind: 'upload' }>);
+    if (decodedBytes !== null && decodedBytes > MAX_UPLOAD_BYTES) {
+      throw new AutomationError('upload_too_large', 'Upload exceeds the 8 MiB extension limit.');
+    }
+    throw new AutomationError('invalid_upload', 'Upload metadata or content is invalid.');
+  }
+  const token = `overseer-chooser-${crypto.randomUUID()}`;
+  const [installed] = await chrome.scripting.executeScript({ target: { tabId }, world: 'MAIN', func: installFileChooserGuard, args: [token] });
+  if (installed?.result !== true) throw new AutomationError('chooser_guard_failed', 'The file chooser guard could not be installed in the target tab.');
+  let delivered = false;
+  try {
+    await runInIsolatedWorld(tabId, { kind: 'click', ref: triggerRef });
+    const deadline = Date.now() + timeoutMs;
+    let captured = false;
+    while (Date.now() < deadline) {
+      const [probe] = await chrome.scripting.executeScript({ target: { tabId }, world: 'MAIN', func: fileChooserCaptured, args: [token] });
+      if (probe?.result === true) { captured = true; break; }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    if (!captured) throw new AutomationError('chooser_not_opened', 'Clicking the element did not open a file chooser in time.');
+    const [result] = await chrome.scripting.executeScript({ target: { tabId }, world: 'MAIN', func: deliverFileChooser, args: [token, files] });
+    delivered = true;
+    const envelope = result?.result as { ok: boolean; code?: string; count?: number } | undefined;
+    if (!envelope?.ok) throw new AutomationError(envelope?.code ?? 'invalid_upload', 'The file chooser did not accept the files.');
+    return { uploaded: true, count: envelope.count ?? files.length, via: 'chooser' };
+  } finally {
+    if (!delivered) {
+      try {
+        await chrome.scripting.executeScript({ target: { tabId }, world: 'MAIN', func: deliverFileChooser, args: [token, null] });
+      } catch {
+        // The page may have navigated away; its prototypes went with it.
+      }
+    }
+  }
+}

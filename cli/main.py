@@ -33,7 +33,7 @@ except ImportError:
     from cli.runtime_discovery import find_active_runtime
 from cli import evidence, recording, dom_query, temp_outputs
 
-CLI_VERSION = "0.7.1"
+CLI_VERSION = "0.8.0"
 MAX_UPLOAD_BYTES = 8 * 1024 * 1024
 MAX_UPLOAD_CHUNKS = 32
 MAX_UPLOAD_FILES = 16
@@ -115,7 +115,7 @@ CLI_USAGE = {
     "capture stop": "capture stop", "screenshot": "screenshot [PATH]",
     "screenshot-element": "screenshot-element REF [PATH]",
     "element-screenshot": "element-screenshot REF [PATH]",
-    "upload": "upload REF PATH [PATH...]", "takeover": "takeover [prompt|resume]",
+    "upload": "upload [--via] REF PATH [PATH...]", "takeover": "takeover [prompt|resume]",
     "takeover prompt": "takeover prompt", "takeover resume": "takeover resume",
     "cancel": "cancel REQUEST_ID",
     "wait": "wait (--ready | --url TEXT | --text TEXT [--absent] | --selector CSS [--state visible|hidden|enabled] | --stable MS) [--timeout-ms N]",
@@ -134,7 +134,7 @@ _GLOBAL_OPTIONS = {
 }
 _COMMAND_OPTIONS = {
     "sessions start": {"--mobile", "--width", "--height"},
-    "console read": {"--clear"}, "observe": {"--changes"},
+    "console read": {"--clear"}, "observe": {"--changes"}, "upload": {"--via"},
     "wait": {"--ready", "--absent", "--url", "--text", "--selector", "--state", "--stable", "--timeout-ms"},
 }
 
@@ -1307,7 +1307,9 @@ def main(argv: list[str] | None = None) -> int:
                         payload["ok"] = False
                         payload["extension"] = {"ok": False, "error": extension_response.get("error", {"code": "invalid_response", "message": "Extension status was unavailable."})}
         elif command == "upload":
-            _require(args, 2, "upload REF PATH [PATH...]")
+            via = "--via" in args
+            args = [arg for arg in args if arg != "--via"]
+            _require(args, 2, "upload [--via] REF PATH [PATH...]")
             if max_nodes is not None:
                 raise CLIError("usage", "--max-nodes applies only to snapshot and observe")
             if wait_until is not None:
@@ -1321,6 +1323,8 @@ def main(argv: list[str] | None = None) -> int:
             for chunk in iter_upload_file_chunks(paths, ref):
                 if tab_id is not None:
                     chunk["tab_id"] = tab_id
+                if via:
+                    chunk["via"] = True
                 payload = request_once("upload", chunk, timeout=timeout, request_id=request_id, **request_options)
                 if not payload.get("ok"):
                     break

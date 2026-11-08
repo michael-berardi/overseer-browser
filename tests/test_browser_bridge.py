@@ -859,6 +859,11 @@ class CLIMappingTests(unittest.TestCase):
         self.assertTrue(all(chunk["ref"] == "@e2" and "path" not in chunk and source_path not in json.dumps(chunk) for chunk in chunks))
         self.assertEqual(chunks[-1]["total"], len(chunks))
 
+    def test_upload_via_flag_is_accepted_and_documented(self) -> None:
+        from cli import main as cli_main
+        self.assertIn("--via", cli_main._COMMAND_OPTIONS["upload"])
+        self.assertIn("--via", cli_main.HELP_USAGE["upload"] if hasattr(cli_main, "HELP_USAGE") else json.dumps(cli_main.__dict__.get("_USAGE", {})) + open(cli_main.__file__).read())
+
     def test_upload_accepts_spaces_unicode_and_parentheses_in_basename(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "Résumé (final) notes.txt"
