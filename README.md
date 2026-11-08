@@ -431,3 +431,7 @@ ignored by Git. See [CONTRIBUTING.md](CONTRIBUTING.md).
 ## License
 
 [MIT](LICENSE)
+
+---
+
+Part of [Pareto Cybernetics](https://paretocybernetics.com/projects/overseer-browser/): free, private, open-source tools for working with AI agents.
