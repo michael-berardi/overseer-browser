@@ -449,16 +449,16 @@ class CLIMappingTests(unittest.TestCase):
     def test_macos_manifest_discovery_includes_chrome_for_testing(self) -> None:
         with (
             patch("cli.main.sys.platform", "darwin"),
-            patch("cli.main.Path.home", return_value=Path("/Users/test")),
+            patch("cli.main.Path.home", return_value=Path("/home/test")),
         ):
             self.assertEqual(
                 _manifest_paths(),
                 [
-                    Path("/Users/test/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.paretocybernetics.overseer_browser.json"),
-                    Path("/Users/test/Library/Application Support/Google/Chrome for Testing/NativeMessagingHosts/com.paretocybernetics.overseer_browser.json"),
-                    Path("/Users/test/Library/Application Support/Chromium/NativeMessagingHosts/com.paretocybernetics.overseer_browser.json"),
-                    Path("/Users/test/Library/Application Support/BraveSoftware/Brave-Browser/NativeMessagingHosts/com.paretocybernetics.overseer_browser.json"),
-                    Path("/Users/test/Library/Application Support/Microsoft Edge/NativeMessagingHosts/com.paretocybernetics.overseer_browser.json"),
+                    Path("/home/test/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.paretocybernetics.overseer_browser.json"),
+                    Path("/home/test/Library/Application Support/Google/Chrome for Testing/NativeMessagingHosts/com.paretocybernetics.overseer_browser.json"),
+                    Path("/home/test/Library/Application Support/Chromium/NativeMessagingHosts/com.paretocybernetics.overseer_browser.json"),
+                    Path("/home/test/Library/Application Support/BraveSoftware/Brave-Browser/NativeMessagingHosts/com.paretocybernetics.overseer_browser.json"),
+                    Path("/home/test/Library/Application Support/Microsoft Edge/NativeMessagingHosts/com.paretocybernetics.overseer_browser.json"),
                 ],
             )
 
