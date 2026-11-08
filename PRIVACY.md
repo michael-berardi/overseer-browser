@@ -1,5 +1,6 @@
 # Privacy
 
+OverSeer Browser is a local-first Chromium extension, native host, and CLI. It has no user account and no cloud browser-control plane. The app sends no telemetry or usage data to us. Browser control works without an external service.
 
 ## What stays on the device
 

@@ -4,7 +4,9 @@ function storageArea(store: Record<string, unknown>) {
   return {
     get: async (keys: string[] | null) => Object.fromEntries((keys ?? Object.keys(store)).filter((key) => key in store).map((key) => [key, store[key]])),
     set: async (values: Record<string, unknown>) => Object.assign(store, values),
-    remove: async (key: string) => delete store[key],
+    remove: async (keys: string | string[]) => {
+      for (const key of Array.isArray(keys) ? keys : [keys]) delete store[key];
+    },
   };
 }
 
@@ -13,6 +15,8 @@ describe('native tab borrowing approval', () => {
     const localStore: Record<string, unknown> = {
       'overseer.connection.enabled.v1': true,
       'overseer.site.unlimited.v2': true,
+      ...Object.fromEntries(['consent', 'install-id', 'heartbeat-day', 'usage-day', 'pending-usage', 'inflight-usage']
+        .map((key) => [`overseer.telemetry.${key}.v2`, 'old'])),
     };
     const sessionStore: Record<string, unknown> = {};
     const tabs = new Map<number, chrome.tabs.Tab>([
@@ -52,6 +56,7 @@ describe('native tab borrowing approval', () => {
       userScripts: { getScripts: async () => [] },
       runtime: {
         onMessage: { addListener: vi.fn() },
+        onInstalled: { addListener: vi.fn() },
         connectNative: () => port,
         getURL: (path: string) => path,
         getManifest: () => ({ version: '0.2.0' }),
@@ -66,6 +71,15 @@ describe('native tab borrowing approval', () => {
     vi.stubGlobal('defineBackground', (callback: () => void) => callback());
 
     const background = await import('../entrypoints/background');
+    const onInstalled = browserStub.runtime.onInstalled.addListener.mock.calls[0]?.[0] as unknown as (details: { reason: string }) => void;
+    expect(onInstalled).toBeTypeOf('function');
+    onInstalled({ reason: 'update' });
+    await vi.waitFor(() => expect(Object.keys(localStore).filter((key) => key.startsWith('overseer.telemetry.'))).toEqual([]));
+    expect(localStore['overseer.connection.enabled.v1']).toBe(true);
+    expect(localStore['overseer.site.unlimited.v2']).toBe(true);
+    localStore['overseer.telemetry.install-id.v2'] = 'old';
+    onInstalled({ reason: 'install' });
+    await vi.waitFor(() => expect(localStore['overseer.telemetry.install-id.v2']).toBeUndefined());
     await vi.waitFor(() => expect(port.onDisconnect.addListener).toHaveBeenCalledOnce());
     const onDisconnect = port.onDisconnect.addListener.mock.calls[0]?.[0];
     expect(onDisconnect).toBeTypeOf('function');

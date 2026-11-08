@@ -4,6 +4,7 @@ Contributions are welcome when they preserve the local-first, controlled-automat
 
 ## Design rules
 
+- Keep browser control local. Do not add hidden network fallbacks, remote logging, or external control servers. The app sends no telemetry or usage data to us.
 - Never use `chrome.debugger`, CDP, the `debugger` permission, history, bookmarks, or `webRequest` to make a feature easier. `activeTab`, `tabCapture` and `offscreen` exist only for popup-consented recording, and `optional_host_permissions` only for operator site grants; do not widen either use. Required `<all_urls>` host access is intentional for the dedicated agent browser.
 - Preserve exact supported meeting-host matches, no runtime site-permission prompts, and active-session plus tab-ownership command gating.
 - Keep the Agent Window as the default. Require an explicit borrow for normal tabs and return borrowed tabs on stop.
@@ -63,6 +64,7 @@ The popup and takeover surfaces are user tools, not decorative dashboards:
 
 Describe the user-visible behavior, permissions affected, data flow, and tests run. Call out any protocol or error-code change and update [PROTOCOL.md](PROTOCOL.md). Include screenshots only from deterministic fixtures; remove URLs, tokens, page content, and personal data.
 
+Reviewers should inspect the manifest diff, generated permissions, native-host registration, and public artifacts—not only the TypeScript diff. A change is not ready if it weakens the no-debugger, exact meeting-host, all-site autonomy, session/tab ownership, or no-usage-data invariants.
 
 ## Commit and license
 

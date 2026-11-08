@@ -1,4 +1,5 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const config = readFileSync(new URL('../wxt.config.ts', import.meta.url), 'utf8');
@@ -39,5 +40,21 @@ describe('manifest privacy invariants', () => {
     expect(protocol).toContain('iabfdeokmilpklblkgccpjlekchfjcno');
     const forbidden = ['chrome.' + ['debug', 'ger'].join(''), 'chrome.web' + 'Request', 'chrome.' + 'history', 'chrome.' + 'bookmarks'];
     for (const api of forbidden) expect(protocol).not.toContain(api);
+  });
+});
+
+// Scan extension sources and the generated manifest without embedding the forbidden strings.
+describe('network privacy regression', () => {
+  it('keeps retired collection routes out of sources and generated manifest', () => {
+    const root = new URL('..', import.meta.url).pathname;
+    const files = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+      const path = join(dir, entry.name);
+      return entry.isDirectory() ? files(path) : [path];
+    });
+    const manifest = join(root, '.output/chrome-mv3/manifest.json');
+    const paths = [...files(join(root, 'src')), ...files(join(root, 'entrypoints')), join(root, 'wxt.config.ts')];
+    if (existsSync(manifest)) paths.push(manifest);
+    const forbidden = new RegExp(['app', 'telemetry'].join('[-_]?') + '|analytics\\.(?:pareto|implose)cybernetics\\.com', 'i');
+    for (const path of paths) expect(readFileSync(path, 'utf8'), path).not.toMatch(forbidden);
   });
 });

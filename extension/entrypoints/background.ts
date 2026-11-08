@@ -459,6 +459,13 @@ function startBackground(): void {
     });
   });
   chrome.runtime.onInstalled?.addListener(() => {
+    const legacyPrefix = 'overseer.telemetry.';
+    void browser.storage.local.remove([
+      'consent.v2', 'install-id.v2', 'heartbeat-day.v2',
+      'usage-day.v2', 'pending-usage.v2', 'inflight-usage.v2',
+    ].map((key) => legacyPrefix + key)).catch(() => {
+      console.error('Could not remove obsolete local privacy data.');
+    });
     void backgroundStateReady.then(() => {
       configureReconnectAlarm(nativeEnabled);
       if (nativeEnabled && !connected) connectNative();
@@ -542,11 +549,6 @@ function startBackground(): void {
         .then(() => sendResponse({ enabled: nativeEnabled, native_enabled: nativeEnabled, connected, native_error: lastNativeError }))
         .catch(() => sendResponse({ enabled: nativeEnabled, native_enabled: nativeEnabled, connected, native_error: lastNativeError }));
       return true;
-    }
-      return true;
-    }
-      sendResponse({ ok: true });
-      return false;
     }
     if (value.kind === 'popup_state') {
       void popupState().then(sendResponse);
@@ -831,32 +833,8 @@ export async function handleRequest(request: NativeRequest): Promise<void> {
   }
 }
 
-  if (
-    command === 'sessions.start'
-    && result !== null
-    && typeof result === 'object'
-    && 'started' in result
-    && result.started === true
-  ) return 'sessionsStarted';
-  if (
-    command === 'sessions.stop'
-    && result !== null
-    && typeof result === 'object'
-    && 'stopped' in result
-    && result.stopped === true
-  ) return 'sessionsEnded';
-  if (command === 'tabs.create') return 'tabsOpened';
-  if (command === 'tabs.close') return 'tabsClosed';
-  if (command === 'navigate' || command === 'back' || command === 'forward' || command === 'reload') {
-    return 'navigations';
-  }
-  if (command === 'screenshot.visible' || command === 'screenshot.element') return 'screenshots';
-  return undefined;
-}
-
 export async function dispatch(request: NativeRequest, state: InflightRequest): Promise<unknown> {
-  const result = await dispatchCommand(request, state);
-  return result;
+  return dispatchCommand(request, state);
 }
 
 async function dispatchCommand(request: NativeRequest, state: InflightRequest): Promise<unknown> {

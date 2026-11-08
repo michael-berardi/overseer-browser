@@ -405,8 +405,7 @@ Meeting detection, when a build enables it, is limited to documented hosts and
 emits only an opaque event with no URL, meeting ID, title, participants or page
 content. It never starts a recording.
 
-browser control never depends on it. [PRIVACY.md](PRIVACY.md) lists exactly
-what is sent.
+The app sends no telemetry or usage data to us. See [PRIVACY.md](PRIVACY.md).
 
 No extension can protect against a compromised browser, operating system,
 malicious same-user process or hostile page. Use a separate profile or OS

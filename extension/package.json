@@ -6,7 +6,7 @@
   "license": "MIT",
   "type": "module",
   "scripts": {
-    "build": "wxt build",
+    "build": "wxt build && vitest run tests/manifest.test.ts",
     "check": "wxt prepare && tsc --noEmit",
     "dev": "wxt",
     "test": "vitest run"
