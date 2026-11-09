@@ -389,6 +389,7 @@ const COMMAND_PARAM_KEYS: Record<Command | 'debugger.input' | 'debugger.network'
   'network.read': ['tab_id', 'limit'],
   'takeover.prompt': [],
   'takeover.resume': [],
+  'extension.reload': [],
   cancel: ['request_id'],
   'record.start': ['fps', 'seconds', 'max_bytes'],
   'record.restart': ['fps', 'seconds', 'max_bytes'],
@@ -1064,6 +1065,16 @@ async function dispatchCommand(request: NativeRequest, state: InflightRequest): 
   }
   if (command === 'upload') return runUpload(params, state);
   if (command === 'batch') return runBatch(params, state);
+  if (command === 'extension.reload') {
+    // Rereads the unpacked folder Chrome loaded, so `refresh-extension` finishes without a
+    // manual Reload click. Operator-wide: only the explicit default session may ask.
+    if (sessionKey !== 'default') {
+      throw new DispatchError('operator_scope_required', 'Reloading the extension is operator-wide; use the explicit default session.');
+    }
+    const from = chrome.runtime.getManifest().version;
+    setTimeout(() => chrome.runtime.reload(), 300);
+    return { reloading: true, from_version: from };
+  }
   if (command === 'takeover.prompt') {
     await sessions.setPaused(true);
     for (const other of inflight.values()) if (other !== state && other.sessionKey === sessionKey) markCancelled(other);

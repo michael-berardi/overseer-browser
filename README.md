@@ -97,13 +97,18 @@ Chrome.
 
 To update, pull, rerun the installer's update step, and move the extension
 Chrome already loaded to the new version (Chrome's Reload button only rereads
-the folder it loaded from), then click Reload once in `chrome://extensions`:
+the folder it loaded from), then have the extension reload itself:
 
 ```sh
 git pull --ff-only
 overseer-browser update
 overseer-browser refresh-extension   # refuses while agent sessions are active
+overseer-browser --session default extension reload
 ```
+
+`extension reload` needs 0.9.2 or later already loaded; an older loaded
+extension needs one Reload click in `chrome://extensions`. The extension
+reconnects to the native host on its own within seconds.
 
 `overseer-browser status` reports `extension_update` when the loaded extension
 is older than the installed CLI.

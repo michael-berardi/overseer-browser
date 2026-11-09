@@ -33,7 +33,7 @@ except ImportError:
     from cli.runtime_discovery import find_active_runtime
 from cli import evidence, recording, dom_query, temp_outputs
 
-CLI_VERSION = "0.9.1"
+CLI_VERSION = "0.9.2"
 MAX_UPLOAD_BYTES = 8 * 1024 * 1024
 MAX_UPLOAD_CHUNKS = 32
 MAX_UPLOAD_FILES = 16
@@ -71,7 +71,7 @@ CLI_COMMANDS = (
     "health", "status", "doctor", "qa", "timelapse", "record", "dom", "version", "install", "update", "uninstall", "refresh-extension", "help", "sessions", "windows", "tabs",
     "open", "close", "navigate", "back", "forward", "reload", "snapshot", "observe", "click", "hover", "fill", "type", "select", "press",
     "scroll", "evaluate", "eval", "console", "network", "batch", "capture", "screenshot",
-    "screenshot-element", "element-screenshot", "upload", "takeover", "cancel", "wait",
+    "screenshot-element", "element-screenshot", "upload", "takeover", "cancel", "wait", "extension",
 )
 
 # Keep help local: this table is also the command/subcommand usage index.
@@ -118,6 +118,7 @@ CLI_USAGE = {
     "upload": "upload [--via] REF PATH [PATH...]", "takeover": "takeover [prompt|resume]",
     "takeover prompt": "takeover prompt", "takeover resume": "takeover resume",
     "cancel": "cancel REQUEST_ID",
+    "extension": "extension reload",
     "wait": "wait (--ready | --url TEXT | --text TEXT [--absent] | --selector CSS [--state visible|hidden|enabled] | --stable MS) [--timeout-ms N]",
 }
 for _query in ("text", "html", "value", "attribute", "count", "box", "computedstyles"):
@@ -901,6 +902,10 @@ def _command_request(command: str, args: list[str], *,
     if command == "cancel":
         _exact(args, 1, "cancel REQUEST_ID")
         return command, {"request_id": _checked_request_id(args[0])}
+    if command == "extension":
+        if args != ["reload"]:
+            raise CLIError("usage", "usage: overseer-browser extension reload")
+        return "extension.reload", {}
     if command == "takeover":
         if args and args not in (["prompt"], ["resume"]):
             raise CLIError("usage", "usage: overseer-browser takeover [prompt|resume]")
@@ -1006,7 +1011,8 @@ def _extension_update_hint(loaded: Any) -> dict[str, Any] | None:
         "loaded": loaded,
         "installed": CLI_VERSION,
         "hint": "Chrome is running an older extension. Its Reload button rereads only the folder it was loaded from, "
-        "so run `overseer-browser refresh-extension` (puts this version in that folder) and then click Reload once.",
+        "so run `overseer-browser refresh-extension` (puts this version in that folder), then "
+        "`overseer-browser --session default extension reload` (0.9.2+ loaded; older ones need one Reload click in chrome://extensions).",
     }
 
 

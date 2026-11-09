@@ -95,6 +95,7 @@ The required command families are:
 - opt-in bounded console capture and redacted Resource Timing metadata
 - sequential batches of up to 20 explicit actions, or bounded parallel read batches across distinct explicit tab IDs
 - visible `takeover` request and `takeover resume`
+- `extension.reload` (CLI `extension reload`): the extension rereads its unpacked folder via `chrome.runtime.reload()`; operator-wide, explicit default scope only
 - `help` and `cancel`
 - `capture.start`, `capture.stop`
 
@@ -116,7 +117,7 @@ An upload whose chunks carry `via: true` treats `ref` as a trigger: the extensio
 
 Batches are sequential unless `stop_on_error: false` and `max_parallel` is between 2 and 8. Parallel mode accepts only read-only actions with distinct explicit tab IDs. The extension validates the complete batch before execution, preserves result order, and rejects mutation or same-tab parallelism.
 
-Across concurrent CLI clients, page mutations are serialized per tab. A queued mutation that outlives its deadline or cancellation never executes. Reads, waits, and mutations on distinct tabs may run concurrently. Request cancellation, session stop, CLI takeover, and cleanup are scoped; stopping one agent does not reset another agent's observe baselines or console capture. An operator-wide popup takeover pauses all agents and cannot be cleared by a scoped CLI resume. Meeting capture controls are operator-wide and restricted to the explicit default scope.
+Across concurrent CLI clients, page mutations are serialized per tab. A queued mutation that outlives its deadline or cancellation never executes. Reads, waits, and mutations on distinct tabs may run concurrently. Request cancellation, session stop, CLI takeover, and cleanup are scoped; stopping one agent does not reset another agent's observe baselines or console capture. An operator-wide popup takeover pauses all agents and cannot be cleared by a scoped CLI resume. Meeting capture controls and `extension.reload` are operator-wide and restricted to the explicit default scope.
 
 Chrome's visible-tab screenshot API has an extension-wide rate limit. Captures queue at least 550 ms apart, preserve the target window, and recheck tab selection and request cancellation before capture. Other commands do not share this capture queue.
 

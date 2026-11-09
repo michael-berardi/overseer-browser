@@ -431,6 +431,9 @@ class CLIMappingTests(unittest.TestCase):
         self.assertEqual(_command_request("takeover", ["resume"]), ("takeover.resume", {}))
         with self.assertRaises(CLIError):
             _command_request("takeover", ["invalid"])
+        self.assertEqual(_command_request("extension", ["reload"]), ("extension.reload", {}))
+        with self.assertRaises(CLIError):
+            _command_request("extension", [])
         self.assertEqual(_command_request("press", ["Enter", "osr-submit"]), ("press", {"key": "Enter", "ref": "osr-submit"}))
         self.assertEqual(_command_request("scroll", ["osr-target"]), ("scroll", {"ref": "osr-target"}))
         self.assertEqual(_command_request("scroll", ["500"]), ("scroll", {"y": 500}))

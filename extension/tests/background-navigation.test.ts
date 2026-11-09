@@ -219,6 +219,25 @@ describe('background navigation waits', () => {
   });
 });
 
+describe('extension self-reload', () => {
+  it('reloads from the default session and refuses agent sessions', async () => {
+    vi.useFakeTimers();
+    const { background, browserStub } = await loadBackground();
+    const reload = vi.fn();
+    Object.assign(browserStub.runtime, { reload, getManifest: () => ({ version: '0.9.2' }) });
+    await expect(background.dispatch({
+      version: 1, kind: 'request', request_id: 'agent-reload', session_key: 'agent-a', command: 'extension.reload',
+    }, { cancelled: false })).rejects.toMatchObject({ code: 'operator_scope_required' });
+    await expect(background.dispatch({
+      version: 1, kind: 'request', request_id: 'reload', command: 'extension.reload',
+    }, { cancelled: false })).resolves.toMatchObject({ reloading: true, from_version: '0.9.2' });
+    expect(reload).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(400);
+    expect(reload).toHaveBeenCalledOnce();
+    vi.useRealTimers();
+  });
+});
+
 describe('background request cancellation', () => {
   it('stops a batch before its next action after the outer timeout cancels state', async () => {
     vi.useFakeTimers();

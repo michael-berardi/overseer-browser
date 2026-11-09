@@ -14,7 +14,7 @@ export const COMMANDS = [
   'upload', 'batch', 'console.start', 'console.read', 'console.stop', 'network.read',
   'takeover.prompt', 'takeover.resume', 'cancel', 'capture.start', 'capture.stop',
   'record.start', 'record.restart', 'record.status', 'record.stop', 'record.chunk', 'record.clear',
-  'wait.for', 'dom.query',
+  'wait.for', 'dom.query', 'extension.reload',
 ] as const;
 
 export type Command = (typeof COMMANDS)[number];
