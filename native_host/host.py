@@ -59,7 +59,7 @@ except ImportError:
         validate_request,
     )
     from runtime import RuntimePaths, ensure_token, prepare_socket  # type: ignore[no-redef]
-HOST_VERSION = "0.9.0"
+HOST_VERSION = "0.9.1"
 DEFAULT_REQUEST_TIMEOUT = 30.0
 MAX_PENDING = 128
 MAX_CLIENT_REQUEST_IDS = 4_096
@@ -615,11 +615,36 @@ def main(argv: list[str] | None = None) -> int:
         expected_profile = str(RuntimePaths.discover().root / "profile")
         if not args.operator_relay and os.environ.get("OVERSEER_BROWSER_ISOLATED_PROFILE") != expected_profile:
             raise ValueError("native automation is restricted to the dedicated agent Chrome instance")
+        _lifecycle_log("start")
         NativeHost(request_timeout=args.timeout).serve()
     except (FileExistsError, PermissionError, ValueError) as exc:
+        _lifecycle_log(f"refused: {exc}")
         print(f"overseer-browser native host: {exc}", file=sys.stderr)
         return 1
+    except BaseException as exc:
+        _lifecycle_log(f"crashed: {type(exc).__name__}: {exc}")
+        raise
+    _lifecycle_log("stopped: browser closed the native-messaging channel")
     return 0
+
+
+def _lifecycle_log(event: str) -> None:
+    """Append one line per host start/stop to <runtime>/host.log (Chrome discards stderr).
+
+    Without it a dead relay leaves no trace of why it stopped. Bounded: trimmed to the
+    last 200 lines. Never raises; logging must not stop the host.
+    """
+    try:
+        import time
+        root = RuntimePaths.discover().root
+        log = root / "host.log"
+        line = f"{time.strftime('%Y-%m-%dT%H:%M:%S%z')} pid={os.getpid()} ppid={os.getppid()} {event}\n"
+        lines = log.read_text(errors="replace").splitlines(keepends=True)[-199:] if log.exists() else []
+        fd = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as fh:
+            fh.writelines(lines + [line])
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":
