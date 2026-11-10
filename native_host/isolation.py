@@ -355,6 +355,11 @@ def isolation_health(paths: RuntimePaths) -> dict[str, object]:
     launched = bool(state)
     port = bool(_host_lines_since(root / 'host.log', float(state.get('started_at') or 0)))
     running = (root / 'supervisor.running').exists() and supervisor_alive(root / 'supervisor.running')
+    # Chrome writes its Preferences on its own schedule, so after an update the
+    # recorded folder lags the loaded one for a while. An open native port is the
+    # proof that this launch loaded the extension, whatever the file still says.
+    matches_folder = (registered is not None and extension is not None
+                      and Path(registered).resolve() == extension.resolve())
     report: dict[str, object] = {
         'load_mode': state.get('load_mode'),
         'native_host_launcher': {'path': str(launcher), 'ok': launcher.is_file() and os.access(launcher, os.X_OK)},
@@ -362,9 +367,7 @@ def isolation_health(paths: RuntimePaths) -> dict[str, object]:
             'path': str(extension) if extension else None,
             'version': state.get('extension_version'),
             'registered_path': registered,
-            'ok': (not launched) or (
-                registered is not None and extension is not None
-                and Path(registered).resolve() == extension.resolve()),
+            'ok': port or (not launched) or matches_folder,
         },
         'native_port': {'ok': port, 'running': running},
     }

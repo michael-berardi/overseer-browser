@@ -296,6 +296,12 @@ class IsolatedLoadDiagnosisTests(unittest.TestCase):
         with (self.paths.root / 'host.log').open('w') as log:
             log.write(time.strftime('%Y-%m-%dT%H:%M:%S%z') + ' pid=1 ppid=0 start\n')
         self.assertTrue(isolation_health(self.paths)['ok'])
+        # Chrome rewrites Preferences on its own schedule, so the recorded folder can
+        # lag a freshly loaded one; an open native port is the proof, not the file.
+        self.register_extension(self.paths.root / 'previous-runtime-extension')
+        loaded = isolation_health(self.paths)
+        self.assertTrue(loaded['extension']['ok'])
+        self.assertTrue(loaded['ok'])
 
     def test_supervise_writes_the_launcher_it_names_and_the_launch_record(self):
         from native_host.isolation import read_state
