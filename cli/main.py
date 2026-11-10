@@ -33,7 +33,7 @@ except ImportError:
     from cli.runtime_discovery import find_active_runtime
 from cli import evidence, recording, dom_query, temp_outputs
 
-CLI_VERSION = "0.9.3"
+CLI_VERSION = "0.9.4"
 MAX_UPLOAD_BYTES = 8 * 1024 * 1024
 MAX_UPLOAD_CHUNKS = 32
 MAX_UPLOAD_FILES = 16
@@ -543,7 +543,7 @@ def _request_once(
 
 
 def local_health(paths: RuntimePaths | None = None) -> dict[str, Any]:
-    from native_host.isolation import isolated_paths
+    from native_host.isolation import isolated_paths, isolation_health
     active = None
     if paths is None:
         try:
@@ -561,6 +561,10 @@ def local_health(paths: RuntimePaths | None = None) -> dict[str, Any]:
         "tcp_listener": False,
         "external_traffic": False,
     }
+    if active is None:
+        # A manifest on disk says nothing about the isolated instance: report whether
+        # the extension it loaded actually reached its native host.
+        checks["isolated"] = isolation_health(paths)
     checks["ok"] = all(item.get("ok", False) for item in checks.values() if isinstance(item, dict))
     if checks["socket"]["ok"]:
         checks["hint"] = "Local host is available"
@@ -571,6 +575,12 @@ def local_health(paths: RuntimePaths | None = None) -> dict[str, Any]:
         )
     elif not checks["native_manifest"]["ok"]:
         checks["hint"] = "Reinstall the native host manifest, then reload the extension"
+    elif not checks.get("isolated", {}).get("ok", True):
+        checks["hint"] = (
+            "Isolated Chrome has not loaded OverSeer Browser from the installed extension yet; "
+            "run overseer-browser sessions start, which loads it, verifies the native port and "
+            "repairs the instance once. Details: agent-v1/isolation-state.json"
+        )
     else:
         checks["hint"] = (
             "Reload or load the unpacked extension; it reconnects automatically unless "

@@ -207,6 +207,29 @@ region, in bitmap pixels), `scale` (returned size ÷ crop size) and `quality`
 (JPEG only), next to the returned `width` and `height`. To map a point in the
 image back to the page: `css = (crop.left + x / scale) / devicePixelRatio`.
 
+### Isolated browser startup
+
+The isolated supervisor owns everything the instance needs. It writes
+`<runtime>/agent-v1/overseer-browser-native-host`, a launcher for this runtime's
+own native host, and names it in the isolated profile's native-messaging
+manifest, so any private `OVERSEER_BROWSER_RUNTIME` can host an isolated
+instance (previously only the installed support folder had a launcher, and every
+other runtime root ended as an unnamed `isolation_unavailable`). It records each
+launch in `<runtime>/agent-v1/isolation-state.json`: Chrome's build, the
+extension folder and version it loaded, the load mode, the Chrome process and,
+when it ends, the exit code.
+
+A startup that cannot connect is diagnosed from that record, the native host's
+`host.log` and Chrome's own registration of the extension in the profile, not
+from a folder existing on disk. `isolation_unavailable` then names the cause
+(the launcher is missing or not executable, Chrome did not register the
+extension from that folder, the extension never opened its port, the runtime path
+is too long for a Unix socket, or Chrome exited with which error). When the
+instance cannot connect, the CLI stops it and retries once with Chrome's
+exclusive load path (`--disable-extensions-except` plus `--load-extension`), then
+closes the second instance if it also fails. `sessions start` therefore needs no
+manual recovery; `status` reports the same evidence under `isolated`.
+
 ### Lend a tab from your everyday browser
 
 To let an agent work in a normal tab, load the built extension in that browser
