@@ -42,14 +42,14 @@ function Install-OverSeerBrowser {
       $cmd = Get-Command $candidate -ErrorAction SilentlyContinue
       if (-not $cmd) { continue }
       $probeArgs = if ($candidate -eq 'py') { @('-3', '-c', 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)') } else { @('-c', 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)') }
-      & $cmd.Source @probeArgs 2>$null
+      try { & $cmd.Source @probeArgs 2>$null } catch { }
       if ($LASTEXITCODE -eq 0) { $python = $cmd.Source; break }
     }
     if (-not $python) { throw 'overseer-browser install: Python 3.9 or newer is required and was not found; install it with: winget install -e --id Python.Python.3.12 (then run this again)' }
   } else {
     $cmd = Get-Command python3 -ErrorAction SilentlyContinue
     if ($cmd) {
-      & $cmd.Source -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' 2>$null
+      try { & $cmd.Source -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' 2>$null } catch { }
       if ($LASTEXITCODE -eq 0) { $python = $cmd.Source }
     }
     if (-not $python) { throw 'overseer-browser install: Python 3.9 or newer is required and was not found; install it with: sudo apt-get install -y python3 (or your platform equivalent, then run this again)' }
@@ -128,8 +128,14 @@ function Install-OverSeerBrowser {
     Get-ChildItem $releases -Directory | Where-Object { $_.Name -like 'release-*' -and $_.FullName -ne $rel } | Remove-Item -Recurse -Force
 
     if (-not (Test-Path $cli)) { throw "overseer-browser install: the platform installer did not leave a CLI at $cli." }
+    # PowerShell 7.4+ turns nonzero native exits into terminating errors under EAP Stop;
+    # the version probe and the informational health call must not do that here.
+    $savedEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
     $got = (& $cli --version 2>&1 | Out-String).Trim()
-    if ($LASTEXITCODE -ne 0) { throw "overseer-browser install: the installed CLI does not run: $got" }
+    $versionExit = $LASTEXITCODE
+    $ErrorActionPreference = $savedEap
+    if ($versionExit -ne 0) { throw "overseer-browser install: the installed CLI does not run: $got" }
     $parsed = $null
     try { $parsed = $got | ConvertFrom-Json } catch { }
     if (-not $parsed -or $parsed.ok -ne $true -or $parsed.result.cli_version -ne $version) {
@@ -137,7 +143,9 @@ function Install-OverSeerBrowser {
     }
     Write-Host "Version check passed: $got"
     Write-Host "Local health (the extension is not loaded in a browser yet, so 'ok' stays false until it is):"
+    $ErrorActionPreference = 'Continue'
     $health = (& $cli health 2>&1 | Out-String).Trim()
+    $ErrorActionPreference = $savedEap
     Write-Host $health
 
     Write-Host ''
