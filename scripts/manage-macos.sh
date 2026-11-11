@@ -70,6 +70,13 @@ resolve_npm() {
 
 
 build_extension() {
+  # Release bundles ship the built extension; the one-step installer sets this
+  # so users need no Node. A source checkout keeps building as before.
+  if [ "${OVERSEER_BROWSER_PREBUILT_EXTENSION:-}" = 1 ] && [ -f "$ROOT/extension/.output/chrome-mv3/manifest.json" ]; then
+    say "Using the prebuilt extension bundled with this release; Node is not needed"
+    EXTENSION_SOURCE="$ROOT/extension/.output/chrome-mv3"
+    return
+  fi
   [ -f "$ROOT/extension/package.json" ] ||
     fail "extension/package.json is missing"
   local npm_bin npm_path
