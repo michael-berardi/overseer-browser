@@ -84,7 +84,8 @@ function Install-OverSeerBrowser {
     Write-Host "Installing OverSeer Browser $version into $rel..."
     New-Item -ItemType Directory -Force -Path $releases, $BinDir | Out-Null
     if (Test-Path $rel) { Remove-Item -Recurse -Force $rel }
-    Move-Item -LiteralPath $src -Destination $rel
+    # Copy, not Move: the temp folder and the home folder can be on different filesystems.
+    Copy-Item -Recurse -LiteralPath $src -Destination $rel
 
     # The repo's own platform installer registers the native host and the CLI launcher.
     # The bundle already contains the built extension, so Node is not needed.

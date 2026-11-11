@@ -53,32 +53,36 @@ docker run --rm --name overseer-browser-linux-test \
   '
 
 echo "== Windows script under PowerShell 7 on Linux =="
-docker run --rm --name overseer-browser-pwsh-test \
-  -v "$DIST:/rel:ro" -v "$CORRUPT:/bad:ro" mcr.microsoft.com/powershell:latest \
+# The :latest manifest has no arm64 entry; the amd64 image runs natively on x86
+# hosts and emulated on Apple Silicon. Each phase runs in a fresh pwsh process.
+docker run --rm --platform linux/amd64 --name overseer-browser-pwsh-test \
+  -v "$DIST:/rel:ro" -v "$CORRUPT:/bad:ro" mcr.microsoft.com/powershell:amd64 \
   pwsh -NoProfile -Command '
     $ErrorActionPreference = "Stop"
     & apt-get update -qq *> $null
     & apt-get install -y -qq python3 *> $null
     $env:OVERSEER_BROWSER_RELEASE_BASE = "file:///rel"
-    & /rel/install.ps1
+    & pwsh -NoProfile -Command "& /rel/install.ps1"
+    if ($LASTEXITCODE -ne 0) { throw "install failed" }
     & "$HOME/.local/bin/overseer-browser" --version
     if ($LASTEXITCODE -ne 0) { throw "version check failed" }
     Write-Host "-- upgrade re-run --"
-    & /rel/install.ps1
+    & pwsh -NoProfile -Command "& /rel/install.ps1"
+    if ($LASTEXITCODE -ne 0) { throw "upgrade re-run failed" }
     Write-Host "-- corrupt archive must be refused --"
     $env:OVERSEER_BROWSER_RELEASE_BASE = "file:///bad"
     $env:OVERSEER_BROWSER_HOME = "/tmp/badhome/.overseer-browser"
     $env:OVERSEER_BROWSER_BIN_DIR = "/tmp/badhome/bin"
-    $failed = $false
-    try { & /rel/install.ps1 } catch { $failed = $true; if ("$_" -notmatch "checksum mismatch") { throw } }
-    if (-not $failed) { throw "corrupt archive was accepted" }
+    $badOut = (& pwsh -NoProfile -Command "& /rel/install.ps1" 2>&1 | Out-String)
+    if ($LASTEXITCODE -eq 0) { throw "corrupt archive was accepted" }
+    if ($badOut -notmatch "checksum mismatch") { throw "corrupt run failed for the wrong reason: $badOut" }
     if (Test-Path "/tmp/badhome/.overseer-browser/releases") { throw "corrupt run installed something" }
     Write-Host "PowerShell 7 on Linux tests passed"
   '
 
 echo "== PSScriptAnalyzer (skipped when it does not install quickly) =="
-docker run --rm --name overseer-browser-psa-test \
-  -v "$DIST:/rel:ro" mcr.microsoft.com/powershell:latest \
+docker run --rm --platform linux/amd64 --name overseer-browser-psa-test \
+  -v "$DIST:/rel:ro" mcr.microsoft.com/powershell:amd64 \
   pwsh -NoProfile -Command '
     try { Install-Module PSScriptAnalyzer -Force -Scope CurrentUser -ErrorAction Stop }
     catch { Write-Host "PSScriptAnalyzer did not install; skipped: $_"; exit 0 }
