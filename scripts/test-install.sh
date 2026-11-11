@@ -21,7 +21,10 @@ scripts/build-release.sh "$DIST"
 echo "== macOS (throwaway HOME) =="
 OVERSEER_BROWSER_TEST_DIST="$DIST" python3 -m unittest tests.test_release_install -v
 
-CORRUPT=$(mktemp -d "${TMPDIR:-/tmp}/overseer-browser-corrupt.XXXXXX")
+# The corrupt fixture lives under dist/ (gitignored): Docker Desktop file sharing
+# does not reliably expose host /tmp bind mounts to containers.
+CORRUPT="$ROOT/dist/corrupt-test"
+rm -rf "$CORRUPT"; mkdir -p "$CORRUPT"
 trap 'rm -rf "$CORRUPT"' EXIT
 cp "$DIST/overseer-browser.tar.gz" "$DIST/overseer-browser.zip" "$DIST/SHA256SUMS" "$DIST/install.sh" "$DIST/install.ps1" "$CORRUPT/"
 printf 'corrupted bytes' >> "$CORRUPT/overseer-browser.tar.gz"
