@@ -7,7 +7,7 @@
 # (scripts/manage-macos.sh on macOS, scripts/install-linux.sh on Linux) from there. That installer
 # registers the per-user native host and puts `overseer-browser` in $OVERSEER_BROWSER_BIN_DIR
 # (default ~/.local/bin). No sudo, no shell-profile edits; re-running upgrades in place.
-# Environment: OVERSEER_BROWSER_HOME, OVERSEER_BROWSER_BIN_DIR, OVERSEER_BROWSER_VERSION (pin, e.g. 0.9.4),
+# Environment: OVERSEER_BROWSER_HOME, OVERSEER_BROWSER_BIN_DIR, OVERSEER_BROWSER_VERSION (pin, e.g. 0.10.0),
 # OVERSEER_BROWSER_RELEASE_BASE (override the download base URL, used by tests; file:// works).
 set -eu
 
