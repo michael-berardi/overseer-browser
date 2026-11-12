@@ -17,6 +17,18 @@ function Install-OverSeerBrowser {
   if ($PSVersionTable.PSVersion.Major -lt 6) {
     [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
   }
+  # True when a ';'-separated Path value already lists $Folder, literally or after expanding %VAR% entries
+  # (case-insensitive, trailing backslash ignored).
+  function Test-PathEntryPresent([string]$PathValue, [string]$Folder) {
+    $want = $Folder.TrimEnd('\')
+    foreach ($entry in ($PathValue -split ';')) {
+      if (-not $entry) { continue }
+      if ($entry.TrimEnd('\') -ieq $want) { return $true }
+      if ([Environment]::ExpandEnvironmentVariables($entry).TrimEnd('\') -ieq $want) { return $true }
+    }
+    return $false
+  }
+
   $isWinVar = Get-Variable -Name IsWindows -ErrorAction SilentlyContinue
   $OnWindows = (-not $isWinVar) -or $isWinVar.Value   # PowerShell 5.1 has no $IsWindows and is always Windows
 
@@ -132,13 +144,22 @@ function Install-OverSeerBrowser {
         Write-Host "$shim exists and is not ours; left alone. Run the CLI as $cliReal instead."
         $cli = $cliReal
       }
-      $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-      if (-not $userPath) { $userPath = '' }
-      if (($userPath -split ';') -notcontains $BinDir) {
-        $newPath = if ($userPath.TrimEnd(';')) { $userPath.TrimEnd(';') + ';' + $BinDir } else { $BinDir }
-        [Environment]::SetEnvironmentVariable('Path', $newPath, 'User')
-        Write-Host "Added $BinDir to your USER Path; open a new terminal to pick it up."
-      }
+      # Add the bin folder to the USER Path only when absent (never the machine Path). The raw value is read
+      # without expanding %VAR% entries and written back with its existing registry type.
+      $envKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
+      try {
+        $userPath = [string]$envKey.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+        if (-not (Test-PathEntryPresent -PathValue $userPath -Folder $BinDir)) {
+          $newPath = if ($userPath.TrimEnd(';')) { $userPath.TrimEnd(';') + ';' + $BinDir } else { $BinDir }
+          $kind = [Microsoft.Win32.RegistryValueKind]::ExpandString
+          if ($envKey.GetValueNames() -contains 'Path') { $kind = $envKey.GetValueKind('Path') }
+          $envKey.SetValue('Path', $newPath, $kind)
+          # Setting and clearing a dummy user variable broadcasts the change so new terminals pick the Path up.
+          [Environment]::SetEnvironmentVariable('OVERSEER_BROWSER_PATH_REFRESH', '1', 'User')
+          [Environment]::SetEnvironmentVariable('OVERSEER_BROWSER_PATH_REFRESH', $null, 'User')
+          Write-Host "Added $BinDir to your USER Path; open a new terminal to pick it up."
+        }
+      } finally { if ($envKey) { $envKey.Close() } }
     } else {
       $uname = (& uname -s).Trim()
       if ($uname -eq 'Darwin') {

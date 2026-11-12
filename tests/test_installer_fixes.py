@@ -30,6 +30,15 @@ class WindowsStaticTests(unittest.TestCase):
         self.assertNotRegex(BOOTSTRAP, r"&\s*\(Join-Path \$rel 'scripts/install-windows\.ps1'\)")
         self.assertRegex(BOOTSTRAP, r"install-windows\.ps1[^\n]*\n[^\n]*\n[^\n]*-ExecutionPolicy Bypass[^\n]*\n\s*if \(\$LASTEXITCODE -ne 0\)")
 
+    def test_user_path_is_edited_in_the_registry_not_through_environment_api(self):
+        for name, text in (("install.ps1", BOOTSTRAP), ("install-windows.ps1", WINDOWS)):
+            self.assertNotIn("SetEnvironmentVariable('Path'", text, name)
+            self.assertNotIn("GetEnvironmentVariable('Path'", text, name)
+        self.assertIn("DoNotExpandEnvironmentNames", BOOTSTRAP)
+        self.assertIn("OpenSubKey('Environment', $true)", BOOTSTRAP)
+        self.assertIn("GetValueKind('Path')", BOOTSTRAP)
+        self.assertRegex(BOOTSTRAP, r"finally \{ if \(\$envKey\) \{ \$envKey\.Close\(\) \}")
+
     def test_no_ascii_cmd_with_absolute_path_and_shim_is_marked(self):
         for name, text in (("install.ps1", BOOTSTRAP), ("install-windows.ps1", WINDOWS)):
             for line in code_lines(text):
