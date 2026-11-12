@@ -14,6 +14,8 @@ HOST_DIR="$APP_SUPPORT/native_host"
 CLI_DIR="$APP_SUPPORT/cli"
 HOST_PATH="$APP_SUPPORT/overseer-browser-native-host"
 CLI_LAUNCHER="${OVERSEER_BROWSER_BIN_DIR:-$HOME/.local/bin}/overseer-browser"
+CLI_FALLBACK="$APP_SUPPORT/overseer-browser"
+CLI_MARKER="# OverSeer Browser managed launcher"
 EXTENSION_DIR="$ROOT/chrome-extension"
 EXTENSION_SOURCE="$ROOT/extension/.output/chrome-mv3"
 [ -f "$EXTENSION_SOURCE/manifest.json" ] || EXTENSION_SOURCE="$EXTENSION_DIR"
@@ -91,6 +93,18 @@ install_host() {
 #!/bin/sh
 exec "$PYTHON" -I -B -c 'import runpy,sys; sys.path.insert(0, sys.argv.pop(1)); runpy.run_module("native_host.host", run_name="__main__")' "$RUNTIME" "\$@"
 EOF
+  atomic_write "$CLI_FALLBACK" 700 <<EOF
+#!/bin/sh
+# OverSeer Browser managed launcher
+exec "$PYTHON" -I -B -c 'import runpy,sys; sys.path.insert(0, sys.argv.pop(1)); runpy.run_module("cli.main", run_name="__main__")' "$RUNTIME" "\$@"
+EOF
+  # Never overwrite a file this installer did not write.
+  if [ -e "$CLI_LAUNCHER" ] && [ "$(sed -n '2p' "$CLI_LAUNCHER" 2>/dev/null || true)" != "$CLI_MARKER" ]; then
+    say "CLI launcher exists and is not managed; preserving it: $CLI_LAUNCHER"
+    say "Use the executable fallback CLI: $CLI_FALLBACK"
+    return 0
+  fi
+  mkdir -p "$(dirname "$CLI_LAUNCHER")"
   atomic_write "$CLI_LAUNCHER" 700 <<EOF
 #!/bin/sh
 # OverSeer Browser managed launcher

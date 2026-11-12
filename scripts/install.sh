@@ -7,7 +7,7 @@
 # (scripts/manage-macos.sh on macOS, scripts/install-linux.sh on Linux) from there. That installer
 # registers the per-user native host and puts `overseer-browser` in $OVERSEER_BROWSER_BIN_DIR
 # (default ~/.local/bin). No sudo, no shell-profile edits; re-running upgrades in place.
-# Environment: OVERSEER_BROWSER_HOME, OVERSEER_BROWSER_BIN_DIR, OVERSEER_BROWSER_VERSION (pin, e.g. 0.10.0),
+# Environment: OVERSEER_BROWSER_HOME, OVERSEER_BROWSER_BIN_DIR, OVERSEER_BROWSER_VERSION (pin, e.g. 0.10.1),
 # OVERSEER_BROWSER_RELEASE_BASE (override the download base URL, used by tests; file:// works).
 set -eu
 
@@ -107,6 +107,12 @@ main() {
   done
 
   CLI="$BIN_DIR/overseer-browser"
+  if [ -e "$CLI" ] && [ "$(sed -n '2p' "$CLI" 2>/dev/null || true)" != "# OverSeer Browser managed launcher" ]; then
+    # An unrelated command already owns that name; the platform installer left it alone.
+    if [ "$PLATFORM" = macos ]; then CLI="$HOME/Library/Application Support/OverSeer/browser/cli/overseer-browser"
+    else CLI="${XDG_DATA_HOME:-$HOME/.local/share}/overseer-browser/overseer-browser"; fi
+    say "Note: $BIN_DIR/overseer-browser is not ours and was left alone; use $CLI instead."
+  fi
   [ -x "$CLI" ] || die "the platform installer did not leave an executable CLI at $CLI"
   GOT=$("$CLI" --version 2>&1) || die "the installed CLI does not run: $GOT"
   case "$GOT" in *"\"cli_version\":\"$VERSION\""*) ;; *) die "the installed CLI reports '$GOT', not $VERSION" ;; esac

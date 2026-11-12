@@ -54,6 +54,14 @@ docker run --rm --name overseer-browser-linux-test \
     grep -q "checksum mismatch" /tmp/bad.out
     test ! -e /tmp/badhome/.overseer-browser/releases
     test ! -e /tmp/badhome/.local/bin/overseer-browser
+    echo "-- an unrelated overseer-browser command must be left alone --"
+    mkdir -p /tmp/foreignhome/.local/bin
+    printf "#!/bin/sh\necho not ours\n" > /tmp/foreignhome/.local/bin/overseer-browser
+    chmod +x /tmp/foreignhome/.local/bin/overseer-browser
+    HOME=/tmp/foreignhome OVERSEER_BROWSER_RELEASE_BASE=file:///rel sh /rel/install.sh >/tmp/foreign.out 2>&1 || { cat /tmp/foreign.out; exit 1; }
+    grep -q "not ours" /tmp/foreignhome/.local/bin/overseer-browser
+    grep -q "left alone" /tmp/foreign.out
+    "$HOME/.local/bin/overseer-browser" --version >/dev/null
     echo "Linux container tests passed"
   '
 
@@ -76,7 +84,7 @@ fi
 
 echo "== Windows script under PowerShell 7 on Linux =="
 docker run --rm --name overseer-browser-pwsh-test \
-  -v "$DIST:/rel:ro" -v "$CORRUPT:/bad:ro" "$PWSH_IMAGE" \
+  -v "$DIST:/rel:ro" -v "$CORRUPT:/bad:ro" -v "$ROOT/scripts:/scripts:ro" "$PWSH_IMAGE" \
   pwsh -NoProfile -Command '
     $ErrorActionPreference = "Stop"
     & apt-get update -qq *> $null
@@ -89,6 +97,8 @@ docker run --rm --name overseer-browser-pwsh-test \
     Write-Host "-- upgrade re-run --"
     & pwsh -NoProfile -Command "& /rel/install.ps1"
     if ($LASTEXITCODE -ne 0) { throw "upgrade re-run failed" }
+    & pwsh -NoProfile -File /scripts/test-install-windows.ps1
+    if ($LASTEXITCODE -ne 0) { throw "Windows installer checks failed" }
     Write-Host "-- corrupt archive must be refused --"
     $env:OVERSEER_BROWSER_RELEASE_BASE = "file:///bad"
     $env:OVERSEER_BROWSER_HOME = "/tmp/badhome/.overseer-browser"

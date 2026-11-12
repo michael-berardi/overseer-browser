@@ -19,7 +19,8 @@ RELAY_PATH="$APP_SUPPORT/overseer-browser-operator-relay"
 EXTENSION_DIR="$ROOT/chrome-extension"
 DEFAULT_CLI_LAUNCHER="${OVERSEER_BROWSER_BIN_DIR:-$HOME/.local/bin}/overseer-browser"
 CLI_LAUNCHER="$DEFAULT_CLI_LAUNCHER"
-if [ -r "$CLI_LAUNCHER_PATH" ]; then
+# An explicit OVERSEER_BROWSER_BIN_DIR (the one-step installer always sets it) outranks the saved path.
+if [ -z "${OVERSEER_BROWSER_BIN_DIR:-}" ] && [ -r "$CLI_LAUNCHER_PATH" ]; then
   saved_cli_launcher="$(cat "$CLI_LAUNCHER_PATH" 2>/dev/null || true)"
   [ -z "$saved_cli_launcher" ] || CLI_LAUNCHER="$saved_cli_launcher"
 fi

@@ -27,17 +27,25 @@ function Resolve-Python {
   throw 'overseer-browser: Python 3 is required to install the native host (install it from python.org or via the Microsoft Store).'
 }
 
-function Write-Utf8NoBom([string]$Path, [string]$Content) {
+# .cmd files are read by cmd.exe in the OEM code page, not UTF-8: a UTF-8 or ASCII file turns a
+# non-ASCII profile or Python path (C:\Users\Jos<e acute>) into garbage. Paths under the runtime
+# root are written relative to the launcher (%~dp0); only the Python path stays absolute.
+function Get-CmdEncoding {
+  try { return [Text.Encoding]::GetEncoding([Globalization.CultureInfo]::CurrentCulture.TextInfo.OEMCodePage) }
+  catch { return (New-Object System.Text.UTF8Encoding($false)) }
+}
+
+function Write-Utf8NoBom([string]$Path, [string]$Content, [Text.Encoding]$Encoding = (New-Object System.Text.UTF8Encoding($false))) {
   $temporary = Join-Path (Split-Path -Parent $Path) ('.publish-' + [guid]::NewGuid().ToString('N'))
   try {
-    [System.IO.File]::WriteAllText($temporary, $Content, (New-Object System.Text.UTF8Encoding($false)))
+    [System.IO.File]::WriteAllText($temporary, $Content, $Encoding)
     if ([System.IO.File]::Exists($Path)) {
       [System.IO.File]::Replace($temporary, $Path, $null)
     } else {
       [System.IO.File]::Move($temporary, $Path)
     }
   } finally {
-    if (Test-Path $temporary) { Remove-Item $temporary -Force }
+    if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force }
   }
 }
 
@@ -53,15 +61,15 @@ try {
   $CliDir = Join-Path $Stage 'cli'
   New-Item -ItemType Directory -Path $Stage, $HostDir, $CliDir | Out-Null
   foreach ($Module in @('__init__', 'host', 'protocol', 'runtime', 'isolation')) {
-    Copy-Item (Join-Path $RepoRoot "native_host\$Module.py") $HostDir
+    Copy-Item -LiteralPath (Join-Path $RepoRoot "native_host\$Module.py") -Destination $HostDir
   }
   foreach ($Module in @('__init__', 'main', 'internal_qa', 'runtime_discovery', 'evidence', 'recording', 'dom_query', 'temp_outputs')) {
-    Copy-Item (Join-Path $RepoRoot "cli\$Module.py") $CliDir
+    Copy-Item -LiteralPath (Join-Path $RepoRoot "cli\$Module.py") -Destination $CliDir
   }
   $ExtensionSource = Join-Path $RepoRoot 'extension\.output\chrome-mv3'
-  if (-not (Test-Path (Join-Path $ExtensionSource 'manifest.json'))) { $ExtensionSource = $ExtensionDir }
-  if (-not (Test-Path (Join-Path $ExtensionSource 'manifest.json'))) { throw 'Build the extension before installing.' }
-  Copy-Item -Recurse $ExtensionSource (Join-Path $Stage 'extension')
+  if (-not (Test-Path -LiteralPath (Join-Path $ExtensionSource 'manifest.json'))) { $ExtensionSource = $ExtensionDir }
+  if (-not (Test-Path -LiteralPath (Join-Path $ExtensionSource 'manifest.json'))) { throw 'Build the extension before installing.' }
+  Copy-Item -Recurse -LiteralPath $ExtensionSource -Destination (Join-Path $Stage 'extension')
   $Validate = @'
 import importlib, json, sys
 from pathlib import Path
@@ -77,21 +85,25 @@ assert json.loads((root / 'extension/manifest.json').read_text()).get('manifest_
   if ($LASTEXITCODE -ne 0) { throw 'Staged Python import/compile validation failed; prior launchers preserved.' }
   [System.IO.Directory]::Move($Stage, $Runtime)
 } finally {
-  if (Test-Path $Stage) { Remove-Item -Recurse -Force $Stage }
+  if (Test-Path -LiteralPath $Stage) { Remove-Item -Recurse -Force -LiteralPath $Stage }
 }
 $HostDir = Join-Path $Runtime 'native_host'
 $CliDir = Join-Path $Runtime 'cli'
 $ExtensionDir = Join-Path $Runtime 'extension'
 
-Write-Utf8NoBom $HostLauncher @"
+$RuntimeRel = 'runtimes\runtime-' + $Version
+$CmdEncoding = Get-CmdEncoding
+$HostCmd = @"
 @echo off
-set "PYTHONPATH=$Runtime"
-"$Python" -B "$HostDir\host.py" %*
+set "PYTHONPATH=%~dp0$RuntimeRel"
+"$Python" -B "%~dp0$RuntimeRel\native_host\host.py" %*
 "@
-Write-Utf8NoBom $CliLauncher @"
+$CliCmd = @"
 @echo off
-"$Python" -B "$CliDir\main.py" %*
+"$Python" -B "%~dp0$RuntimeRel\cli\main.py" %*
 "@
+Write-Utf8NoBom $HostLauncher $HostCmd $CmdEncoding
+Write-Utf8NoBom $CliLauncher $CliCmd $CmdEncoding
 
 # Build via ConvertTo-Json so Windows backslashes in the launcher path are
 # escaped correctly; hand-interpolated JSON would corrupt the path.
@@ -119,8 +131,8 @@ foreach ($Key in $RegistryKeys) {
 $LegacyHostName = 'com.imploselabs.overseer_browser' # pareto-legacy
 foreach ($Browser in @('Google\Chrome', 'Microsoft\Edge', 'BraveSoftware\Brave')) {
   $LegacyKey = "HKCU:\Software\$Browser\NativeMessagingHosts\$LegacyHostName"
-  if (Test-Path $LegacyKey) {
-    Remove-Item -Path $LegacyKey -Recurse -Force
+  if (Test-Path -LiteralPath $LegacyKey) {
+    Remove-Item -LiteralPath $LegacyKey -Recurse -Force
     Write-Host "Migrated native messaging host to com.paretocybernetics.overseer_browser; removed legacy registry key: $LegacyKey"
   }
 }
@@ -129,10 +141,10 @@ Write-Host "Load unpacked extension directory: $ExtensionDir"
 Write-Host "Native host launcher: $HostLauncher"
 Write-Host "CLI launcher: $CliLauncher"
 if (($env:PATH -split ';') -notcontains $RuntimeRoot) {
-  Write-Host "To run 'overseer-browser' from any shell, add the runtime root to your user PATH:"
+  Write-Host "To run 'overseer-browser' from any shell, add this folder to your user PATH"
+  Write-Host "(Settings > System > About > Advanced system settings > Environment Variables):"
   Write-Host "  $RuntimeRoot"
-  Write-Host "For example, to append it to your existing user PATH (printed here, not executed):"
-  Write-Host "  setx PATH `"%PATH%;$RuntimeRoot`""
+  Write-Host "The one-step installer (install.ps1) does this for you with its own bin folder."
 }
 Write-Host "The extension is loaded and reloaded manually: open your browser's extensions page"
 Write-Host "(e.g. chrome://extensions), enable Developer mode, and load/unload the unpacked"
