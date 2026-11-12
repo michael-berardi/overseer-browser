@@ -31,9 +31,9 @@ printf '%s\n' "$commit" > "$stage/COMMIT"
 ( cd "$stage" && find . -mindepth 1 | LC_ALL=C sort | sed 's|^\./||' > "$stage.list" )
 ( cd "$stage" && find . -mindepth 1 -exec touch -t 198001010000 {} + )
 if tar --version 2>/dev/null | grep -qi gnu; then
-  tar -C "$stage" --owner=0 --group=0 --numeric-owner --mtime=@0 --no-recursion -czf "$OUT/overseer-browser.tar.gz" -T "$stage.list"
+  tar -C "$stage" --owner=0 --group=0 --numeric-owner --mtime=@0 --no-recursion -cf "$stage.tar" -T "$stage.list" && gzip -n -c "$stage.tar" > "$OUT/overseer-browser.tar.gz" && rm -f "$stage.tar"
 else
-  COPYFILE_DISABLE=1 tar -C "$stage" --uid 0 --gid 0 --uname root --gname root --no-xattrs --no-recursion -czf "$OUT/overseer-browser.tar.gz" -T "$stage.list"
+  COPYFILE_DISABLE=1 tar -C "$stage" --uid 0 --gid 0 --uname root --gname root --no-xattrs --no-recursion -cf "$stage.tar" -T "$stage.list" && gzip -n -c "$stage.tar" > "$OUT/overseer-browser.tar.gz" && rm -f "$stage.tar"
 fi
 ( cd "$stage" && zip -X -q "$OUT_ABS/overseer-browser.zip" -@ < "$stage.list" )
 rm -f "$stage.list"
