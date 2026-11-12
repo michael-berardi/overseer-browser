@@ -10,8 +10,8 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/michael-berardi/overseer-browser/releases/latest"><img src="https://img.shields.io/github/v/release/michael-berardi/overseer-browser?label=release" alt="Latest release" /></a>
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/michael-berardi/overseer-browser" alt="MIT License" /></a>
+  <a href="https://github.com/example-user/overseer-browser/releases/latest"><img src="https://img.shields.io/github/v/release/example-user/overseer-browser?label=release" alt="Latest release" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/example-user/overseer-browser" alt="MIT License" /></a>
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey" alt="macOS, Linux and Windows" />
 </p>
 
@@ -81,13 +81,13 @@ error rather than leaving temporary data behind.
 One step, no Node needed. macOS and Linux:
 
 ```sh
-curl -fsSL https://github.com/michael-berardi/overseer-browser/releases/latest/download/install.sh | sh
+curl -fsSL https://github.com/example-user/overseer-browser/releases/latest/download/install.sh | sh
 ```
 
 Windows (PowerShell 5.1 or 7; Windows 10 1803+ is experimental):
 
 ```powershell
-irm https://github.com/michael-berardi/overseer-browser/releases/latest/download/install.ps1 | iex
+irm https://github.com/example-user/overseer-browser/releases/latest/download/install.ps1 | iex
 ```
 
 The installer downloads the release bundle (`overseer-browser.tar.gz`, or
@@ -114,7 +114,7 @@ Overrides for tests and pins: `OVERSEER_BROWSER_HOME`, `OVERSEER_BROWSER_BIN_DIR
 ### macOS from source
 
 ```sh
-git clone https://github.com/michael-berardi/overseer-browser.git
+git clone https://github.com/example-user/overseer-browser.git
 cd overseer-browser
 ./scripts/manage-macos.sh install
 overseer-browser status
@@ -148,7 +148,7 @@ extension from `chrome://extensions` yourself.
 ### Linux from source
 
 ```sh
-git clone https://github.com/michael-berardi/overseer-browser.git
+git clone https://github.com/example-user/overseer-browser.git
 cd overseer-browser
 npm ci --prefix extension && npm run build --prefix extension
 ./scripts/install-linux.sh
@@ -160,7 +160,7 @@ Edge. Rerun it after `git pull --ff-only` to update.
 ### Windows from source (experimental)
 
 ```powershell
-git clone https://github.com/michael-berardi/overseer-browser.git
+git clone https://github.com/example-user/overseer-browser.git
 cd overseer-browser
 npm ci --prefix extension; npm run build --prefix extension
 powershell -ExecutionPolicy Bypass -File .\scripts\install-windows.ps1

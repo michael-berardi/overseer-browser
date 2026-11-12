@@ -37,7 +37,21 @@ else
 fi
 ( cd "$stage" && zip -X -q "$OUT_ABS/overseer-browser.zip" -@ < "$stage.list" )
 rm -f "$stage.list"
-cp scripts/install.sh scripts/install.ps1 "$OUT/"
+# The shipped sources keep a neutral placeholder owner (tests/test_neutrality.py); the released
+# installers get the real GitHub owner/repo, from OVERSEER_BROWSER_RELEASE_REPO or the origin remote.
+PLACEHOLDER="example-user/overseer-browser"
+slug="${OVERSEER_BROWSER_RELEASE_REPO:-}"
+if [ -z "$slug" ]; then
+  slug=$(git remote get-url origin 2>/dev/null | sed -E -n 's#^(git@github\.com:|https://github\.com/)([A-Za-z0-9._-]+)/([A-Za-z0-9._-]+)(\.git)?$#\2/\3#p')
+fi
+printf '%s\n' "$slug" | grep -Eq '^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$' ||
+  { echo "build-release: cannot tell the GitHub owner/repo; set OVERSEER_BROWSER_RELEASE_REPO=owner/repo (or add a GitHub origin remote)" >&2; exit 1; }
+for f in install.sh install.ps1; do
+  sed "s#$PLACEHOLDER#$slug#g" "scripts/$f" > "$OUT/$f"
+  chmod 755 "$OUT/$f"
+  grep -q "$PLACEHOLDER" "$OUT/$f" && { echo "build-release: $f still has the placeholder owner" >&2; exit 1; }
+done
+echo "build-release: release URLs point at github.com/$slug"
 ( cd "$OUT" && if command -v sha256sum >/dev/null 2>&1; then sha256sum overseer-browser.tar.gz overseer-browser.zip install.sh install.ps1; else shasum -a 256 overseer-browser.tar.gz overseer-browser.zip install.sh install.ps1; fi > SHA256SUMS )
 echo "built $OUT for $commit"
 ls -l "$OUT"

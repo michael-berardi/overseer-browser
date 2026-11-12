@@ -18,6 +18,11 @@ shellcheck scripts/install.sh scripts/build-release.sh
 echo "== build release assets =="
 scripts/build-release.sh "$DIST"
 
+echo "== release stamping =="
+if grep -q 'example-user' "$DIST/install.sh" "$DIST/install.ps1"; then echo "released installers still have the placeholder owner" >&2; exit 1; fi
+grep -q 'REPO="[A-Za-z0-9._-]*/overseer-browser"' "$DIST/install.sh" || { echo "released install.sh has no owner/repo" >&2; exit 1; }
+echo "ok - released installers name a real owner/repo and no placeholder"
+
 echo "== macOS (throwaway HOME) =="
 OVERSEER_BROWSER_TEST_DIST="$DIST" python3 -m unittest tests.test_release_install -v
 

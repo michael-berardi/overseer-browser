@@ -1,6 +1,6 @@
 #!/bin/sh
 # OverSeer Browser one-step installer for macOS and Linux:
-#   curl -fsSL https://github.com/michael-berardi/overseer-browser/releases/latest/download/install.sh | sh
+#   curl -fsSL https://github.com/example-user/overseer-browser/releases/latest/download/install.sh | sh
 # Downloads the release bundle (source plus the ALREADY BUILT extension, so no Node is needed),
 # checks its SHA-256 before anything is installed, unpacks it into a versioned folder under
 # $OVERSEER_BROWSER_HOME (default ~/.overseer-browser), then runs the repo's own platform installer
@@ -11,7 +11,7 @@
 # OVERSEER_BROWSER_RELEASE_BASE (override the download base URL, used by tests; file:// works).
 set -eu
 
-REPO="michael-berardi/overseer-browser"
+REPO="example-user/overseer-browser"
 HOME_DIR="${OVERSEER_BROWSER_HOME:-$HOME/.overseer-browser}"
 case "$HOME_DIR" in /*) ;; *) HOME_DIR="$(pwd)/$HOME_DIR" ;; esac
 BIN_DIR="${OVERSEER_BROWSER_BIN_DIR:-$HOME/.local/bin}"
