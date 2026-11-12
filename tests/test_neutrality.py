@@ -52,6 +52,12 @@ PERSONAL_RE = re.compile(
     re.IGNORECASE,
 )
 
+# The repository's own canonical GitHub URL is the only allowed form of the owner name.
+CANONICAL_URL_RE = re.compile(
+    r"https://github\.com/michael-berardi/overseer-browser(?![A-Za-z0-9_-])"
+    r"|https://img\.shields\.io/github/[a-z/-]+/michael-berardi/overseer-browser(?![A-Za-z0-9_-])"
+)
+
 # Documented allowlist. Entries must explain why the match is acceptable.
 ALLOWLIST = {
     # Example: "path/to/file": {"line": 1, "text": "allowed text"},
@@ -138,6 +144,7 @@ class NeutralityTests(unittest.TestCase):
             except OSError:
                 continue
             for lineno, line in enumerate(text.splitlines(), start=1):
+                line = CANONICAL_URL_RE.sub("", line)
                 for match in (m for pattern in patterns for m in pattern.finditer(line)):
                     rel = str(path.relative_to(ROOT))
                     allowed = ALLOWLIST.get(rel)
@@ -146,3 +153,19 @@ class NeutralityTests(unittest.TestCase):
                     hits.append(f"{rel}:{lineno}: personal name {match.group(0)!r}")
         if hits:
             self.fail("Personal names found in shipped files:\n" + "\n".join(hits))
+
+    def test_canonical_url_is_the_only_allowed_owner_form(self):
+        ok = "https://github.com/michael-berardi/overseer-browser/releases/latest"
+        self.assertEqual(CANONICAL_URL_RE.sub("", ok), "/releases/latest")
+        for bad in ("https://github.com/michael-berardi/other-repo",
+                    "https://github.com/michael-berardi/overseer-browser-x",
+                    "by michael-berardi"):
+            self.assertRegex(CANONICAL_URL_RE.sub("", bad), PERSONAL_RE)
+
+    def test_readme_has_no_placeholder_owner_in_urls(self):
+        text = (ROOT / "README.md").read_text(encoding="utf-8")
+        urls = re.findall(r"https?://[^\s)\"'>]+", text)
+        placeholders = ["example-user", "your-org", "your-github-username", "Alex/", "OWNER", "<owner>"]
+        bad = [u for u in urls for p in placeholders if p in u]
+        self.assertEqual(bad, [], "placeholder owner in README URLs")
+        self.assertNotRegex(text, r"(github\.com|shields\.io/github)[^\s)\"']*(example-user|your-org|your-github-username|Alex/|OWNER|<owner>)")
