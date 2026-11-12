@@ -3,7 +3,7 @@
 #   macOS: install into a throwaway HOME, version, upgrade re-run, corrupt archive, missing Python
 #          (tests/test_release_install.py, the repo's unittest runner)
 #   Linux: the same install/upgrade/corrupt flow in ubuntu:24.04 (sh is dash; busybox ash also tried)
-#   Windows script: install.ps1 under PowerShell 7 on Linux (mcr.microsoft.com/powershell),
+#   Windows script: install.ps1 under PowerShell 7 on Linux (local pwsh-install-test:7.4.6 image),
 #          install, version, upgrade re-run, corrupt archive; PSScriptAnalyzer when it installs.
 # Every release base is a local folder passed as file://; no server and no port is used.
 # Containers are named overseer-browser-*, run with --rm, one at a time.
@@ -52,11 +52,26 @@ docker run --rm --name overseer-browser-linux-test \
     echo "Linux container tests passed"
   '
 
+# mcr.microsoft.com/powershell publishes no arm64 Linux image (amd64 and 32-bit arm only), so the
+# PowerShell 7 tests run in a small local image built from ubuntu:24.04 plus Microsoft's official
+# arm64 tarball (built once when absent). No amd64 emulation. Each phase runs in a fresh pwsh process.
+PS_VERSION=7.4.6
+PWSH_IMAGE="pwsh-install-test:$PS_VERSION"
+if ! docker image inspect "$PWSH_IMAGE" >/dev/null 2>&1; then
+  echo "building $PWSH_IMAGE (ubuntu:24.04 + PowerShell $PS_VERSION tarball)"
+  docker build -q -t "$PWSH_IMAGE" - >/dev/null <<DOCKERFILE || { echo "cannot build the PowerShell $PS_VERSION test image" >&2; exit 1; }
+FROM ubuntu:24.04
+RUN apt-get update -qq && apt-get install -y -qq ca-certificates curl libicu74 >/dev/null \\
+ && case "\$(uname -m)" in aarch64) a=arm64 ;; x86_64) a=x64 ;; *) echo "unsupported CPU \$(uname -m)" >&2; exit 1 ;; esac \\
+ && curl -fsSL --retry 3 -o /tmp/ps.tgz "https://github.com/PowerShell/PowerShell/releases/download/v$PS_VERSION/powershell-$PS_VERSION-linux-\$a.tar.gz" \\
+ && mkdir -p /opt/powershell && tar -xzf /tmp/ps.tgz -C /opt/powershell && chmod +x /opt/powershell/pwsh \\
+ && ln -s /opt/powershell/pwsh /usr/bin/pwsh && rm /tmp/ps.tgz
+DOCKERFILE
+fi
+
 echo "== Windows script under PowerShell 7 on Linux =="
-# The :latest manifest has no arm64 entry; the amd64 image runs natively on x86
-# hosts and emulated on Apple Silicon. Each phase runs in a fresh pwsh process.
-docker run --rm --platform linux/amd64 --name overseer-browser-pwsh-test \
-  -v "$DIST:/rel:ro" -v "$CORRUPT:/bad:ro" mcr.microsoft.com/powershell:amd64 \
+docker run --rm --name overseer-browser-pwsh-test \
+  -v "$DIST:/rel:ro" -v "$CORRUPT:/bad:ro" "$PWSH_IMAGE" \
   pwsh -NoProfile -Command '
     $ErrorActionPreference = "Stop"
     & apt-get update -qq *> $null
@@ -81,8 +96,8 @@ docker run --rm --platform linux/amd64 --name overseer-browser-pwsh-test \
   '
 
 echo "== PSScriptAnalyzer (skipped when it does not install quickly) =="
-docker run --rm --platform linux/amd64 --name overseer-browser-psa-test \
-  -v "$DIST:/rel:ro" mcr.microsoft.com/powershell:amd64 \
+docker run --rm --name overseer-browser-psa-test \
+  -v "$DIST:/rel:ro" "$PWSH_IMAGE" \
   pwsh -NoProfile -Command '
     $ErrorActionPreference = "Stop"
     try {

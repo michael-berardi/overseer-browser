@@ -1,6 +1,6 @@
 #Requires -Version 5.1
 # OverSeer Browser one-step installer for Windows (PowerShell 5.1 and 7):
-#   irm https://github.com/example-user/overseer-browser/releases/latest/download/install.ps1 | iex
+#   irm https://github.com/michael-berardi/overseer-browser/releases/latest/download/install.ps1 | iex
 # Downloads the release bundle (source plus the ALREADY BUILT extension, so no Node is needed),
 # checks its SHA-256 before anything is installed, unpacks it into a versioned folder under
 # $env:OVERSEER_BROWSER_HOME (default %LOCALAPPDATA%\OverSeerBrowser), then runs the repo's own
@@ -16,7 +16,7 @@ function Install-OverSeerBrowser {
   $isWinVar = Get-Variable -Name IsWindows -ErrorAction SilentlyContinue
   $OnWindows = (-not $isWinVar) -or $isWinVar.Value   # PowerShell 5.1 has no $IsWindows and is always Windows
 
-  $repo = 'example-user/overseer-browser'
+  $repo = 'michael-berardi/overseer-browser'
   if ($env:OVERSEER_BROWSER_RELEASE_BASE) { $base = $env:OVERSEER_BROWSER_RELEASE_BASE }
   elseif ($env:OVERSEER_BROWSER_VERSION) { $base = "https://github.com/$repo/releases/download/v$($env:OVERSEER_BROWSER_VERSION.TrimStart('v'))" }
   else { $base = "https://github.com/$repo/releases/latest/download" }
