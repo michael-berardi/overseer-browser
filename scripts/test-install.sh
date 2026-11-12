@@ -84,12 +84,14 @@ echo "== PSScriptAnalyzer (skipped when it does not install quickly) =="
 docker run --rm --platform linux/amd64 --name overseer-browser-psa-test \
   -v "$DIST:/rel:ro" mcr.microsoft.com/powershell:amd64 \
   pwsh -NoProfile -Command '
-    try { Install-Module PSScriptAnalyzer -Force -Scope CurrentUser -ErrorAction Stop }
-    catch { Write-Host "PSScriptAnalyzer did not install; skipped: $_"; exit 0 }
-    $results = Invoke-ScriptAnalyzer -Path /rel/install.ps1
-    $results | Format-Table -AutoSize | Out-String | Write-Host
-    if ($results | Where-Object { $_.Severity -eq "Error" }) { exit 1 }
-    Write-Host "PSScriptAnalyzer: no errors"
+    $ErrorActionPreference = "Stop"
+    try {
+      Install-Module PSScriptAnalyzer -Force -Scope CurrentUser -ErrorAction Stop
+      $results = @(Invoke-ScriptAnalyzer -Path /rel/install.ps1)
+      foreach ($r in $results) { [Console]::WriteLine(("{0} {1} line {2}: {3}" -f $r.Severity, $r.RuleName, $r.Line, $r.Message)) }
+      if ($results | Where-Object { $_.Severity -eq "Error" }) { exit 1 }
+      [Console]::WriteLine(("PSScriptAnalyzer: {0} findings, no errors" -f $results.Count))
+    } catch { [Console]::WriteLine("PSScriptAnalyzer did not install; skipped: " + $_.Exception.Message); exit 0 }
   '
 
 echo "all installer tests passed"
