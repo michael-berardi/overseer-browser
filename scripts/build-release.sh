@@ -42,7 +42,7 @@ rm -f "$stage.list"
 PLACEHOLDER="example-user/overseer-browser"
 slug="${OVERSEER_BROWSER_RELEASE_REPO:-}"
 if [ -z "$slug" ]; then
-  slug=$(git remote get-url origin 2>/dev/null | sed -E -n 's#^(git@github\.com:|https://github\.com/)([A-Za-z0-9._-]+)/([A-Za-z0-9._-]+)(\.git)?$#\2/\3#p')
+  slug=$(git remote get-url origin 2>/dev/null | sed -E -n 's#^(git@github\.com:|https://github\.com/)([A-Za-z0-9._-]+)/([A-Za-z0-9._-]+)$#\2/\3#p' | sed 's#\.git$##')
 fi
 printf '%s\n' "$slug" | grep -Eq '^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$' ||
   { echo "build-release: cannot tell the GitHub owner/repo; set OVERSEER_BROWSER_RELEASE_REPO=owner/repo (or add a GitHub origin remote)" >&2; exit 1; }
