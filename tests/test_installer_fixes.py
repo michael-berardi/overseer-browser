@@ -69,6 +69,38 @@ class WindowsStaticTests(unittest.TestCase):
         self.assertIn("$ProgressPreference = 'SilentlyContinue'", BOOTSTRAP)
 
 
+class ShimOwnershipTests(unittest.TestCase):
+    def _pattern(self):
+        match = re.search(r"\$legacyShimPattern = '([^\n]*)'\n", BOOTSTRAP)
+        self.assertIsNotNone(match, "legacy shim pattern missing from install.ps1")
+        return re.compile(match.group(1))
+
+    def test_legacy_010_shim_is_recognised_as_ours(self):
+        pattern = self._pattern()
+        for body in (
+            '@echo off\r\n"C:\\Users\\Ann\\AppData\\Local\\OverSeer\\browser\\overseer-browser.cmd" %*\r\n',
+            '@echo off\r\n"C:\\Users\\Jos?\\AppData\\Local\\OverSeer\\browser\\overseer-browser.cmd" %*',
+            '@echo off\n"D:\\x\\OverSeer\\browser\\overseer-browser.cmd" %*\n',
+        ):
+            self.assertRegex(body, pattern)
+
+    def test_user_files_are_not_mistaken_for_the_legacy_shim(self):
+        pattern = self._pattern()
+        for body in (
+            '@echo off\r\n"C:\\tools\\overseer-browser.cmd" %*\r\n',
+            '@echo off\r\n"C:\\a\\OverSeer\\browser\\overseer-browser.cmd" %*\r\necho extra\r\n',
+            '@echo off\r\nrem mine\r\n"C:\\a\\OverSeer\\browser\\overseer-browser.cmd" %*\r\n',
+        ):
+            self.assertNotRegex(body, pattern)
+
+    def test_ownership_check_wired_in_and_bin_dir_env_restored(self):
+        self.assertIn("Get-Content -LiteralPath $shim -Raw", BOOTSTRAP)
+        self.assertIn("$shimBody -match $legacyShimPattern", BOOTSTRAP)
+        self.assertIn("$savedBinDirEnv = $env:OVERSEER_BROWSER_BIN_DIR", BOOTSTRAP)
+        finally_part = BOOTSTRAP[BOOTSTRAP.rindex("} finally {"):]
+        self.assertIn("$env:OVERSEER_BROWSER_BIN_DIR = $savedBinDirEnv", finally_part)
+
+
 @unittest.skipUnless(BUILT_EXTENSION.is_file(), "needs a built extension (npm run build --prefix extension)")
 class ShellInstallerTests(unittest.TestCase):
     def setUp(self):

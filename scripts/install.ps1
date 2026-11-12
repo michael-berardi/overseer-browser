@@ -66,6 +66,7 @@ function Install-OverSeerBrowser {
 
   $tmp = Join-Path ([IO.Path]::GetTempPath()) ('overseer-browser-install-' + [guid]::NewGuid().ToString('N'))
   New-Item -ItemType Directory -Path $tmp | Out-Null
+  $savedBinDirEnv = $env:OVERSEER_BROWSER_BIN_DIR   # restored in finally: the child installer needs it only during this run
   try {
     Write-Host 'Downloading OverSeer Browser...'
     $zip = Join-Path $tmp 'overseer-browser.zip'
@@ -111,7 +112,17 @@ function Install-OverSeerBrowser {
       $cliTarget = $rootVar + '\OverSeer\browser\overseer-browser.cmd'
       $shim = Join-Path $BinDir 'overseer-browser.cmd'
       $shimMarker = 'REM overseer-browser-shim'
-      $ownShim = (-not (Test-Path -LiteralPath $shim)) -or [bool](Select-String -LiteralPath $shim -SimpleMatch $shimMarker -Quiet)
+      # Ours when absent, when it carries the marker, or when it is the exact 0.10.0 shim (no marker):
+      # two lines, the second pointing at ...\OverSeer\browser\overseer-browser.cmd and nothing else.
+      $legacyShimPattern = '^@echo off\r?\n"[^"\r\n]*\\OverSeer\\browser\\overseer-browser\.cmd" %\*\s*$'
+      $ownShim = -not (Test-Path -LiteralPath $shim)
+      if (-not $ownShim) {
+        $ownShim = [bool](Select-String -LiteralPath $shim -SimpleMatch $shimMarker -Quiet)
+        if (-not $ownShim) {
+          $shimBody = Get-Content -LiteralPath $shim -Raw
+          $ownShim = [bool]($shimBody -and ($shimBody -match $legacyShimPattern))
+        }
+      }
       if ($ownShim) {
         $shimText = "@echo off`r`n$shimMarker (written by the OverSeer Browser installer)`r`n`"$cliTarget`" %*`r`n"
         [IO.File]::WriteAllText($shim, $shimText, [Text.Encoding]::ASCII)
@@ -181,6 +192,7 @@ function Install-OverSeerBrowser {
     Write-Host "Update later by re-running this installer. Remove by deleting $HomeDir and the overseer-browser shim in $BinDir"
     Write-Host '(plus the native host entries the platform installer printed above).'
   } finally {
+    $env:OVERSEER_BROWSER_BIN_DIR = $savedBinDirEnv
     Remove-Item -Recurse -Force -LiteralPath $tmp -ErrorAction SilentlyContinue
   }
 }
