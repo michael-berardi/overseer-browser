@@ -16,9 +16,11 @@ import tempfile
 import time
 
 try:
+    from . import coalition
     from .protocol import EXTENSION_ID, NATIVE_HOST_NAME
     from .runtime import RuntimePaths, ensure_private_directory, ensure_token, write_manifest
 except ImportError:
+    import coalition  # type: ignore[no-redef]
     from protocol import EXTENSION_ID, NATIVE_HOST_NAME  # type: ignore[no-redef]
     from runtime import RuntimePaths, ensure_private_directory, ensure_token, write_manifest  # type: ignore[no-redef]
 
@@ -145,10 +147,11 @@ def socket_path_problem(paths: RuntimePaths) -> str | None:
 
 def start_supervisor(paths: RuntimePaths, chrome: Path, extension: Path, load_mode: str) -> None:
     (paths.root / 'quit').unlink(missing_ok=True)
-    with (paths.root / 'chrome.log').open('ab') as log:
-        subprocess.Popen(
-            [sys.executable, str(Path(__file__).resolve()), str(paths.root), str(chrome), str(extension), load_mode],
-            stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
+    # The supervisor and the browser it owns start in a fresh launchd coalition on
+    # macOS, so the caller's coalition (a terminal multiplexer's, say) never holds them.
+    coalition.spawn(
+        [sys.executable, str(Path(__file__).resolve()), str(paths.root), str(chrome), str(extension), load_mode],
+        log=paths.root / 'chrome.log', state_dir=paths.root / 'launch', what='the isolated supervisor')
 
 
 def wait_for_connection(paths: RuntimePaths, timeout: float) -> bool:
@@ -192,15 +195,13 @@ def _extension_version(extension: Path) -> str | None:
         return None
 
 
-def _chrome_version(chrome: str) -> str | None:
+def _chrome_version(chrome: str, state_dir: Path | None = None) -> str | None:
     """The launched build's own version, for the failure report; never stops a launch."""
     try:
-        completed = subprocess.run([chrome, '--version'], capture_output=True, text=True, timeout=10, check=False)
-        output = completed.stdout if isinstance(completed.stdout, str) else ''
-        error = completed.stderr if isinstance(completed.stderr, str) else ''
+        text = coalition.run_capture([chrome, '--version'], state_dir=state_dir or Path(tempfile.gettempdir()) / 'overseer-browser-launch',
+                                     timeout=10).strip()
     except Exception:
         return None
-    text = (output or error).strip()
     return text or None
 
 
@@ -345,6 +346,27 @@ def diagnose(paths: RuntimePaths, extension: Path) -> str:
             f'Native host log: {host_log}')
 
 
+def coalition_report(state: dict[str, object], running: bool) -> dict[str, object]:
+    """Whether the live isolated browser shares a launchd coalition with this process.
+
+    Sharing is the incident this guards against: stopping the caller's coalition
+    (force-quitting an app registered in it) would take the browser down, and the
+    other way round. Only macOS has coalitions; elsewhere nothing is reported.
+    """
+    pid = state.get('chrome_pid')
+    if sys.platform != 'darwin' or not running or not isinstance(pid, int):
+        return {'ok': True, 'shared_with_caller': None}
+    browser, caller = coalition.coalition_id(pid), coalition.coalition_id(os.getpid())
+    if browser is None or caller is None:
+        return {'ok': True, 'shared_with_caller': None, 'note': 'coalition ids unavailable'}
+    shared = browser == caller
+    report: dict[str, object] = {'ok': not shared, 'shared_with_caller': shared, 'browser_pid': pid}
+    if shared:
+        report['hint'] = ('the isolated browser runs in the same process coalition as this shell, so quitting an app '
+                          'registered there would also stop it; see "launchd refused" in agent-v1/chrome.log, then restart the session')
+    return report
+
+
 def isolation_health(paths: RuntimePaths) -> dict[str, object]:
     """Preflight for the isolated lane, drawn from the loaded instance, not a folder."""
     root = paths.root
@@ -370,9 +392,11 @@ def isolation_health(paths: RuntimePaths) -> dict[str, object]:
             'ok': port or (not launched) or matches_folder,
         },
         'native_port': {'ok': port, 'running': running},
+        'coalition': coalition_report(state, running),
     }
     report['ok'] = (bool(report['native_host_launcher']['ok'])  # type: ignore[index]
                     and bool(report['extension']['ok'])  # type: ignore[index]
+                    and bool(report['coalition']['ok'])  # type: ignore[index]
                     and (port or not running))
     return report
 
@@ -432,7 +456,7 @@ def supervise(root: Path, chrome: str, extension: str, load_mode: str = LOAD_MOD
         'version': 1,
         'started_at': time.time(),
         'chrome': chrome,
-        'chrome_version': _chrome_version(chrome),
+        'chrome_version': _chrome_version(chrome, root / 'launch'),
         'extension': extension,
         'extension_version': _extension_version(Path(extension)),
         'native_host': str(host),
@@ -442,7 +466,8 @@ def supervise(root: Path, chrome: str, extension: str, load_mode: str = LOAD_MOD
     }
     try:
         env = {**os.environ, 'OVERSEER_BROWSER_RUNTIME': str(root), 'OVERSEER_BROWSER_ISOLATED_PROFILE': str(profile)}
-        process = subprocess.Popen([chrome, f'--user-data-dir={profile}', *load_flags, '--no-first-run', '--no-default-browser-check', '--disable-background-mode', 'about:blank'], env=env)
+        process = coalition.spawn([chrome, f'--user-data-dir={profile}', *load_flags, '--no-first-run', '--no-default-browser-check', '--disable-background-mode', 'about:blank'],
+                                  env=env, log=root / 'chrome.log', state_dir=root / 'launch', what='the isolated Chrome')
         with os.fdopen(fd, 'w') as state:
             json.dump({'pid': process.pid, 'profile': str(profile)}, state)
         write_state(root, {**record, 'chrome_pid': process.pid})

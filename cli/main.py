@@ -33,7 +33,7 @@ except ImportError:
     from cli.runtime_discovery import find_active_runtime
 from cli import evidence, recording, dom_query, temp_outputs
 
-CLI_VERSION = "0.10.4"
+CLI_VERSION = "0.10.5"
 MAX_UPLOAD_BYTES = 8 * 1024 * 1024
 MAX_UPLOAD_CHUNKS = 32
 MAX_UPLOAD_FILES = 16
@@ -542,6 +542,14 @@ def _request_once(
     return _validate_response(response, request_id)
 
 
+def _coalition_status() -> dict[str, Any]:
+    """Whether the live isolated browser shares a launchd coalition with this shell (macOS)."""
+    from native_host.isolation import coalition_report, isolated_paths, read_state, supervisor_alive
+    root = isolated_paths(RuntimePaths.discover()).root
+    running = (root / "supervisor.running").exists() and supervisor_alive(root / "supervisor.running")
+    return coalition_report(read_state(root), running)
+
+
 def local_health(paths: RuntimePaths | None = None) -> dict[str, Any]:
     from native_host.isolation import isolated_paths, isolation_health
     active = None
@@ -575,6 +583,8 @@ def local_health(paths: RuntimePaths | None = None) -> dict[str, Any]:
         )
     elif not checks["native_manifest"]["ok"]:
         checks["hint"] = "Reinstall the native host manifest, then reload the extension"
+    elif not checks.get("isolated", {}).get("coalition", {}).get("ok", True):
+        checks["hint"] = checks["isolated"]["coalition"]["hint"]
     elif not checks.get("isolated", {}).get("ok", True):
         checks["hint"] = (
             "Isolated Chrome has not loaded OverSeer Browser from the installed extension yet; "
@@ -1258,6 +1268,7 @@ def main(argv: list[str] | None = None) -> int:
                 if tab_id is not None:
                     raise CLIError("usage", "--tab-id does not apply to doctor")
                 payload = evidence.doctor(evidence_request, CLI_VERSION)
+                payload["result"]["coalition"] = _coalition_status()
             else:
                 if session_key is None:
                     raise CLIError("usage", "evidence capture requires --session or automatic session identity")

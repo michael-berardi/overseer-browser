@@ -52,7 +52,7 @@ stage_runtime() {
   STAGE="$(mktemp -d "$APP_SUPPORT/runtimes/.stage-XXXXXXXX")"
   trap 'if [ -n "${STAGE:-}" ]; then rm -rf "$STAGE"; fi' EXIT
   mkdir "$STAGE/native_host" "$STAGE/cli" "$STAGE/extension"
-  for module in __init__ host protocol runtime isolation; do
+  for module in __init__ host protocol runtime isolation coalition; do
     install -m 600 "$ROOT/native_host/$module.py" "$STAGE/native_host/$module.py"
   done
   for module in __init__ main internal_qa runtime_discovery evidence recording dom_query temp_outputs; do

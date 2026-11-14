@@ -259,6 +259,18 @@ exclusive load path (`--disable-extensions-except` plus `--load-extension`), the
 closes the second instance if it also fails. `sessions start` therefore needs no
 manual recovery; `status` reports the same evidence under `isolated`.
 
+On macOS the isolated supervisor and its Chrome start in their own launchd
+process coalition, not the caller's. A process inherits its parent's coalition,
+and force-quitting an application stops every coalition holding a process
+registered as that application, so a Chrome started from a terminal pane used to
+share the terminal multiplexer's coalition and could take it down when Chrome was
+quit from the Dock. A one-shot `launchctl submit` job starts each process, is
+removed once it is up, and the process keeps running. If launchd refuses, the
+named cause is logged once in `chrome.log` and the process starts directly as
+before; `OVERSEER_BROWSER_COALITION=direct` skips launchd. `status` reports
+`isolated.coalition.shared_with_caller`, and `doctor` reports `coalition`. Linux
+and Windows are unchanged.
+
 ### Lend a tab from your everyday browser
 
 To let an agent work in a normal tab, load the built extension in that browser

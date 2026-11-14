@@ -60,7 +60,7 @@ try {
   $HostDir = Join-Path $Stage 'native_host'
   $CliDir = Join-Path $Stage 'cli'
   New-Item -ItemType Directory -Path $Stage, $HostDir, $CliDir | Out-Null
-  foreach ($Module in @('__init__', 'host', 'protocol', 'runtime', 'isolation')) {
+  foreach ($Module in @('__init__', 'host', 'protocol', 'runtime', 'isolation', 'coalition')) {
     Copy-Item -LiteralPath (Join-Path $RepoRoot "native_host\$Module.py") -Destination $HostDir
   }
   foreach ($Module in @('__init__', 'main', 'internal_qa', 'runtime_discovery', 'evidence', 'recording', 'dom_query', 'temp_outputs')) {
