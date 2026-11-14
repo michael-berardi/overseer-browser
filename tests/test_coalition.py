@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import ast
 import ctypes
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -105,6 +106,14 @@ class RealLaunchdTests(unittest.TestCase):
         self.assertIn('executable not found', str(raised.exception))
         self.assertFalse(any(Path(self.tmp.name, 'launch').glob('spec-*')), 'the spec (it carries the environment) must not linger')
 
+    def test_repeated_starts_never_lose_the_child_to_launchd_cleanup(self):
+        # The wrapper's parent used to exit before the child left its process group, and launchd
+        # then cleaned the child up: about one start in twenty reported nothing and fell back.
+        for _ in range(60):
+            process = self.spawn(['/bin/sleep', '60'], timeout=5)
+            self.assertIsInstance(process, coalition.LaunchdProcess, 'a start was lost; see stderr')
+            process.kill()
+
     def test_start_directory_is_private(self):
         self.spawn(['/bin/sleep', '300'])
         self.assertEqual(Path(self.tmp.name, 'launch').stat().st_mode & 0o777, 0o700)
@@ -151,12 +160,202 @@ class FallbackTests(unittest.TestCase):
             self.assertFalse(coalition.launchd_enabled())
 
     def test_a_recycled_pid_is_never_signalled(self):
-        stale = coalition.LaunchdProcess(os.getpid(), 'x', 'Thu Jan  1 00:00:00 1970')
+        stale = coalition.LaunchdProcess(os.getpid(), 'x', (1, 0))
         with patch('native_host.coalition.os.kill', wraps=os.kill) as kill:
             self.assertEqual(stale.poll(), coalition.EXITED)
             stale.terminate()
             stale.kill()
         self.assertTrue(all(call.args[1] == 0 for call in kill.call_args_list), 'only the liveness probe may run')
+
+
+class HandleTests(unittest.TestCase):
+    """The launchd process handle never reads a failed lookup as an exit and never forks to poll."""
+
+    def test_an_unreadable_start_time_is_not_an_exit(self):
+        handle = coalition.LaunchdProcess(os.getpid(), 'x', (5, 5))
+        with patch.object(coalition, '_identity', return_value=None):
+            self.assertIsNone(handle.poll())
+        unknown = coalition.LaunchdProcess(os.getpid(), 'x', None)
+        with patch.object(coalition, '_identity', return_value=None):
+            self.assertIsNone(unknown.poll())
+        with patch.object(coalition, '_identity', return_value=(7, 1)):
+            self.assertIsNone(unknown.poll())
+            self.assertEqual(unknown.identity, (7, 1))  # learned late, then checked from then on
+            self.assertIsNone(unknown.poll())
+        with patch.object(coalition, '_identity', return_value=(8, 1)):
+            self.assertEqual(unknown.poll(), coalition.EXITED)
+
+    def test_a_start_time_that_differs_or_a_gone_pid_is_an_exit(self):
+        with patch.object(coalition, '_identity', return_value=(9, 9)):
+            self.assertEqual(coalition.LaunchdProcess(os.getpid(), 'x', (1, 1)).poll(), coalition.EXITED)
+        gone = subprocess.Popen([sys.executable, '-c', 'pass'])
+        gone.wait()
+        self.assertEqual(coalition.LaunchdProcess(gone.pid, 'x', (1, 1)).poll(), coalition.EXITED)
+
+    def test_polling_never_forks(self):
+        handle = coalition.LaunchdProcess(os.getpid(), 'x', coalition._identity(os.getpid()))
+        with patch('native_host.coalition.subprocess.run', side_effect=AssertionError('forked')), \
+                patch('native_host.coalition.subprocess.Popen', side_effect=AssertionError('forked')):
+            for _ in range(20):
+                self.assertIsNone(handle.poll())
+
+    @unittest.skipUnless(DARWIN, 'proc_pidinfo exists only on macOS')
+    def test_start_time_matches_ps_and_a_gone_pid_reads_none(self):
+        first = coalition._identity(os.getpid())
+        self.assertIsNotNone(first)
+        self.assertEqual(first, coalition._identity(os.getpid()))
+        ps = subprocess.run(['/bin/ps', '-o', 'lstart=', '-p', str(os.getpid())], capture_output=True, text=True).stdout.strip()
+        stamp = time.strftime('%a %b %e %H:%M:%S %Y', time.localtime(first[0]))
+        self.assertEqual(' '.join(ps.split()), ' '.join(stamp.split()))
+        done = subprocess.Popen([sys.executable, '-c', 'pass'])
+        done.wait()
+        self.assertIsNone(coalition._identity(done.pid))
+
+
+class StartCancelTests(unittest.TestCase):
+    """The wrapper is run directly (no launchd): a start the parent gave up on must never run."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.dir = Path(self.tmp.name)
+
+    def run_wrapper(self, argv, *, cancelled=False):
+        pid_path = self.dir / 'pid.json'
+        spec = self.dir / 'spec.json'
+        spec.write_text(json.dumps({'argv': argv, 'cwd': None, 'env': {'PATH': '/usr/bin:/bin'}, 'log': str(self.dir / 'log'), 'pidfile': str(pid_path)}))
+        if cancelled:
+            pid_path.write_text('{"cancelled": true}')
+        subprocess.run([sys.executable, '-I', '-B', '-c', coalition._WRAPPER, str(spec)], check=True, timeout=20)
+        time.sleep(.5)  # the forked child outlives the wrapper
+        return pid_path
+
+    def test_a_late_wrapper_finds_the_cancel_and_does_not_run_the_command(self):
+        marker = self.dir / 'ran'
+        self.run_wrapper(['/bin/sh', '-c', f'touch {marker}'], cancelled=True)
+        self.assertFalse(marker.exists(), 'a cancelled start must not run the command')
+        self.assertEqual(json.loads((self.dir / 'pid.json').read_text()), {'cancelled': True})
+
+    def test_an_uncancelled_wrapper_reports_its_pid_and_runs(self):
+        marker = self.dir / 'ran'
+        pid_path = self.run_wrapper(['/bin/sh', '-c', f'touch {marker}'])
+        self.assertTrue(marker.exists())
+        self.assertIsInstance(json.loads(pid_path.read_text())['pid'], int)
+
+    def test_an_exec_failure_after_the_pid_report_is_named_in_the_log(self):
+        script = self.dir / 'bad'
+        script.write_text('#!/nonexistent/interpreter\n')
+        script.chmod(0o755)
+        pid_path = self.run_wrapper([str(script)])
+        self.assertIn('pid', json.loads(pid_path.read_text()), 'the pid report the parent read is not overwritten')
+        log = (self.dir / 'log').read_text()
+        self.assertIn('the command did not start', log)
+        self.assertIn('FileNotFoundError', log)
+
+    def test_cancel_wins_only_when_no_report_exists(self):
+        pid_path = self.dir / 'pid.json'
+        self.assertIsNone(coalition._cancel_start(pid_path))
+        self.assertEqual(json.loads(pid_path.read_text()), {'cancelled': True})
+        late = self.dir / 'late.json'
+        late.write_text('{"pid": 4242}')
+        self.assertEqual(coalition._cancel_start(late), {'pid': 4242})
+
+
+class SubmitFallbackTests(unittest.TestCase):
+    """The real refusal paths reach the fallback: _submit runs, only launchctl and the wait are replaced."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.dir = Path(self.tmp.name)
+        coalition._warned = False
+        self.addCleanup(setattr, coalition, '_warned', False)
+        ok = subprocess.CompletedProcess([], 0, '', '')
+        patches = [patch.object(coalition, 'launchd_enabled', return_value=True),
+                   patch.object(coalition, '_launchctl', return_value=ok),
+                   patch.object(coalition, 'CANCEL_GRACE', .1)]
+        for item in patches:
+            item.start()
+            self.addCleanup(item.stop)
+
+    def spawn(self, **kwargs):
+        with patch('native_host.coalition.subprocess.Popen') as popen, patch('sys.stderr') as stderr:
+            result = coalition.spawn(['/bin/sleep', '1'], log=self.dir / 'o.log', state_dir=self.dir / 'l', timeout=.2, **kwargs)
+        return result, popen, ''.join(call.args[0] for call in stderr.write.call_args_list)
+
+    def test_a_start_timeout_cancels_and_falls_back_once_with_the_cause(self):
+        with patch.object(coalition, '_wait_for_report', return_value=None):
+            result, popen, written = self.spawn()
+        popen.assert_called_once()
+        self.assertIs(result, popen.return_value)
+        self.assertIn('nothing started within', written)
+        self.assertEqual(written.count('warning'), 1)
+        markers = list((self.dir / 'l').glob('pid-*.json'))
+        self.assertEqual(len(markers), 1, 'the cancel marker stays so a late wrapper finds it')
+        self.assertEqual(json.loads(markers[0].read_text()), {'cancelled': True})
+        self.assertEqual(list((self.dir / 'l').glob('spec-*')), [])
+
+    def test_a_report_that_arrives_as_the_wait_ends_is_used_not_replaced_by_a_second_start(self):
+        def late(pid_path, timeout):
+            Path(pid_path).write_text(json.dumps({'pid': os.getpid()}))
+            return None
+        with patch.object(coalition, '_wait_for_report', side_effect=[None, {'pid': os.getpid()}]) as wait, \
+                patch.object(coalition, '_cancel_start', wraps=coalition._cancel_start) as cancel:
+            # the report file appears between the timed-out wait and the cancel
+            original = coalition.os.open
+            def appear(path, flags, *args, **kwargs):
+                if str(path).endswith('.json') and 'pid-' in str(path) and flags & os.O_EXCL and not Path(path).exists():
+                    Path(path).write_text(json.dumps({'pid': os.getpid()}))
+                return original(path, flags, *args, **kwargs)
+            with patch.object(coalition.os, 'open', side_effect=appear):
+                result, popen, _ = self.spawn()
+        popen.assert_not_called()
+        self.assertIsInstance(result, coalition.LaunchdProcess)
+        self.assertEqual(result.pid, os.getpid())
+
+    def test_a_wrapper_error_report_falls_back_naming_the_cause(self):
+        with patch.object(coalition, '_wait_for_report', return_value={'error': 'FileNotFoundError: executable not found or not executable: x'}):
+            result, popen, written = self.spawn()
+        popen.assert_called_once()
+        self.assertIn('the command did not start: FileNotFoundError', written)
+
+    def test_launchctl_missing_from_path_still_uses_launchd_by_absolute_path(self):
+        patch.stopall()
+        with patch.object(sys, 'platform', 'darwin'), patch.dict(os.environ, {}, clear=False), \
+                patch('native_host.coalition.shutil.which', return_value=None), \
+                patch('native_host.coalition.Path.exists', return_value=True), \
+                patch('native_host.coalition.subprocess.run') as run:
+            os.environ.pop(coalition.MODE_ENV, None)
+            self.assertTrue(coalition.launchd_enabled())
+            coalition._launchctl('list')
+        self.assertEqual(run.call_args.args[0], ['/bin/launchctl', 'list'])
+
+    def test_launchctl_not_found_anywhere_is_a_named_refusal_and_falls_back(self):
+        patch.stopall()
+        coalition._warned = False
+        with patch.object(coalition, 'launchd_enabled', return_value=True), \
+                patch.object(coalition, '_launchctl_path', return_value=None):
+            result, popen, written = self.spawn()
+        popen.assert_called_once()
+        self.assertIn('launchctl not found', written)
+
+
+class StatusHintTests(unittest.TestCase):
+    def test_a_shared_coalition_hint_wins_even_when_the_socket_is_connected(self):
+        from cli.main import local_health
+        from native_host.runtime import RuntimePaths
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = RuntimePaths(root, root / 's', root / 't')
+            isolated = {'ok': False, 'coalition': {'ok': False, 'hint': 'shared coalition hint'}}
+            with patch('native_host.isolation.isolation_health', return_value=isolated), \
+                    patch('cli.main.find_active_runtime', return_value=None), \
+                    patch('cli.main._private_socket', return_value=True), \
+                    patch.object(Path, 'is_socket', return_value=True):
+                checks = local_health(paths)
+        self.assertTrue(checks['socket']['ok'])
+        self.assertFalse(checks['ok'])
+        self.assertEqual(checks['hint'], 'shared coalition hint')
 
 
 class LauncherGuardTests(unittest.TestCase):

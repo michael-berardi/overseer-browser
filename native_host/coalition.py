@@ -22,6 +22,7 @@ import os
 from pathlib import Path
 import secrets
 import shutil
+import struct
 import subprocess
 import sys
 import time
@@ -31,6 +32,11 @@ MODE_ENV = 'OVERSEER_BROWSER_COALITION'
 LABEL_PREFIX = 'com.overseer-browser.launch'
 START_TIMEOUT = 15.0
 PROC_PIDCOALITIONINFO = 20
+PROC_PIDTBSDINFO = 3
+# struct proc_bsdinfo: 12 u32, comm[16], name[32], 6 u32/i32, then pbi_start_tvsec and tvusec (u64 each).
+PROC_BSDINFO_START_OFFSET = 120
+PROC_BSDINFO_SIZE = 136
+CANCEL_GRACE = 2.0
 EXITED = -1  # a launchd-started process is not our child: it exited, its status is unknown
 
 _warned = False
@@ -41,15 +47,29 @@ _WRAPPER = r'''
 import json, os, shutil, sys
 spec = json.load(open(sys.argv[1]))
 os.unlink(sys.argv[1])
+# launchd cleans up the job's process group once the job's own process exits, so the parent
+# waits until the child has left it (setsid) before exiting; without that wait about one start
+# in twenty lost the child before it reported.
+ready, signal = os.pipe()
 if os.fork():
+    os.close(signal)
+    os.read(ready, 1)
     os._exit(0)
+os.close(ready)
 os.setsid()
+os.write(signal, b'1')
+os.close(signal)
 def report(payload):
-    tmp = spec['pidfile'] + '.tmp'
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    # The first report wins (O_EXCL): the parent creates the same file to cancel a start
+    # it gave up on, and then this process must not run the command.
+    try:
+        fd = os.open(spec['pidfile'], os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    except FileExistsError:
+        return False
     with os.fdopen(fd, 'w') as handle:
         json.dump(payload, handle)
-    os.replace(tmp, spec['pidfile'])
+    return True
+reported = False
 try:
     argv, env = spec['argv'], spec['env']
     exe = argv[0] if os.sep in argv[0] else shutil.which(argv[0], path=env.get('PATH'))
@@ -60,10 +80,17 @@ try:
     null = os.open(os.devnull, os.O_RDONLY)
     out = os.open(spec['log'], os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     os.dup2(null, 0); os.dup2(out, 1); os.dup2(out, 2)
-    report({'pid': os.getpid()})
+    if not report({'pid': os.getpid()}):
+        os._exit(0)
+    reported = True
     os.execve(exe, argv, env)
 except BaseException as exc:
-    report({'error': type(exc).__name__ + ': ' + str(exc)})
+    message = type(exc).__name__ + ': ' + str(exc)
+    # After the pid report the parent has already read it, so the cause goes to the log (fd 2).
+    if reported:
+        os.write(2, ('overseer-browser: the command did not start: ' + message + '\n').encode())
+    else:
+        report({'error': message})
     os._exit(127)
 '''
 
@@ -72,12 +99,20 @@ class LaunchdRefused(Exception):
     """launchd could not start the command; the message names the cause."""
 
 
+def _launchctl_path() -> str | None:
+    """launchctl by absolute path: the caller's PATH may not hold /bin."""
+    found = shutil.which('launchctl')
+    if found:
+        return found
+    return '/bin/launchctl' if Path('/bin/launchctl').exists() else None
+
+
 def launchd_enabled() -> bool:
     if sys.platform != 'darwin':
         return False
     if os.environ.get(MODE_ENV, '').strip().lower() in {'direct', 'off', '0'}:
         return False
-    return shutil.which('launchctl') is not None or Path('/bin/launchctl').exists()
+    return _launchctl_path() is not None
 
 
 def coalition_id(pid: int) -> int | None:
@@ -94,20 +129,28 @@ def coalition_id(pid: int) -> int | None:
     return int(buffer[0]) if size >= 16 and buffer[0] else None
 
 
-def _identity(pid: int) -> str | None:
-    """The process start time: with the pid it names one process, never a recycled one."""
-    try:
-        done = subprocess.run(['/bin/ps', '-o', 'lstart=', '-p', str(pid)], capture_output=True, text=True, timeout=5, check=False)
-    except (OSError, subprocess.SubprocessError):
+def _identity(pid: int) -> tuple[int, int] | None:
+    """The process start time (proc_pidinfo PROC_PIDTBSDINFO, no fork): with the pid it names one
+    process, never a recycled one. None means it could not be read, which is not an exit."""
+    if sys.platform != 'darwin':
         return None
-    text = (done.stdout or '').strip() if isinstance(done.stdout, str) else ''
-    return text or None
+    try:
+        import ctypes
+        lib = ctypes.CDLL('/usr/lib/libproc.dylib', use_errno=True)
+        buffer = ctypes.create_string_buffer(PROC_BSDINFO_SIZE)
+        size = lib.proc_pidinfo(int(pid), PROC_PIDTBSDINFO, 0, buffer, PROC_BSDINFO_SIZE)
+    except (OSError, AttributeError, ValueError):
+        return None
+    if size < PROC_BSDINFO_SIZE:
+        return None
+    seconds, microseconds = struct.unpack_from('=QQ', buffer.raw, PROC_BSDINFO_START_OFFSET)
+    return (seconds, microseconds) if seconds else None
 
 
 class LaunchdProcess:
     """A process started through launchd; the Popen-shaped surface the lifecycle needs."""
 
-    def __init__(self, pid: int, label: str, identity: str | None) -> None:
+    def __init__(self, pid: int, label: str, identity: tuple[int, int] | None) -> None:
         self.pid = pid
         self.label = label
         self.identity = identity
@@ -120,8 +163,13 @@ class LaunchdProcess:
             return False
         except PermissionError:
             return False  # a pid we cannot signal is not ours any more
-        # Without a recorded start time the pid cannot be told from a recycled one.
-        return self.identity is not None and _identity(self.pid) == self.identity
+        current = _identity(self.pid)
+        if current is None:
+            return True  # a start time that cannot be read is not an exit: the pid is still there
+        if self.identity is None:
+            self.identity = current
+            return True
+        return current == self.identity
 
     def poll(self) -> int | None:
         if self.returncode is None and not self._alive():
@@ -149,7 +197,10 @@ class LaunchdProcess:
 
 
 def _launchctl(*args: str) -> subprocess.CompletedProcess:
-    return subprocess.run(['launchctl', *args], capture_output=True, text=True, timeout=20, check=False)
+    path = _launchctl_path()
+    if path is None:
+        raise FileNotFoundError('launchctl not found on PATH or at /bin/launchctl')
+    return subprocess.run([path, *args], capture_output=True, text=True, timeout=20, check=False)
 
 
 def _remove_job(label: str) -> None:
@@ -168,8 +219,17 @@ def _private_dir(path: Path) -> Path:
     return path
 
 
+def _prune_cancelled(state: Path, age: float = 600.0) -> None:
+    """Remove cancel markers and reports whose job is long gone (launchd removed it on cancel)."""
+    for stale in state.glob('pid-*.json'):
+        with contextlib.suppress(OSError):
+            if time.time() - stale.stat().st_mtime > age:
+                stale.unlink()
+
+
 def _submit(argv: list[str], *, cwd: str | None, env: dict[str, str], log: Path, state_dir: Path, timeout: float) -> LaunchdProcess:
     state = _private_dir(state_dir)
+    _prune_cancelled(state)
     token = secrets.token_hex(8)
     label = f'{LABEL_PREFIX}.{os.getpid()}.{token}'
     spec_path = state / f'spec-{token}.json'
@@ -178,6 +238,7 @@ def _submit(argv: list[str], *, cwd: str | None, env: dict[str, str], log: Path,
     with os.fdopen(fd, 'w') as handle:
         json.dump({'argv': argv, 'cwd': cwd, 'env': env, 'log': str(log), 'pidfile': str(pid_path)}, handle)
     submitted = False
+    cancelled_marker = False
     try:
         try:
             done = _launchctl('submit', '-l', label, '-o', os.devnull, '-e', os.devnull, '--',
@@ -189,19 +250,59 @@ def _submit(argv: list[str], *, cwd: str | None, env: dict[str, str], log: Path,
         submitted = True
         report = _wait_for_report(pid_path, timeout)
         if report is None:
-            raise LaunchdRefused(f'launchd accepted the job but nothing started within {timeout:g}s')
+            report = _cancel_start(pid_path)
+            if report is None:
+                cancelled_marker = True  # the late wrapper must still find it: it stays until pruned
+                raise LaunchdRefused(f'launchd accepted the job but nothing started within {timeout:g}s; the start was cancelled')
         if 'error' in report:
             raise LaunchdRefused(f'launchd started the wrapper but the command did not start: {report["error"]}')
         pid = int(report['pid'])
         # The pid is reported after the command's own session starts, so a command that
         # already finished is a fast command, not a refusal; the handle then reads exited.
-        return LaunchdProcess(pid, label, _identity(pid))
+        return LaunchdProcess(pid, label, _read_identity(pid))
     finally:
         if submitted:
             _remove_job(label)
-        for leftover in (spec_path, pid_path):
+        leftovers = [spec_path] if cancelled_marker else [spec_path, pid_path]
+        for leftover in leftovers:
             with contextlib.suppress(OSError):
                 leftover.unlink()
+
+
+def _cancel_start(pid_path: Path) -> dict | None:
+    """Give up on a start that did not report in time. Creating the report file first is the
+    cancel: a wrapper that is merely late then finds it and never runs the command. When the
+    create fails the wrapper already reported, so that report is used and nothing falls back."""
+    try:
+        fd = os.open(pid_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    except FileExistsError:
+        report = _wait_for_report(pid_path, CANCEL_GRACE)
+        if report is None:
+            raise LaunchdRefused('launchd started the wrapper but its report could not be read') from None
+        return report
+    with os.fdopen(fd, 'w') as handle:
+        json.dump({'cancelled': True}, handle)
+    return None
+
+
+def _read_identity(pid: int) -> tuple[int, int] | None:
+    """The start time at handle creation, retried briefly: a fresh process is readable at once."""
+    for _ in range(5):
+        found = _identity(pid)
+        if found is not None or not _pid_exists(pid):
+            return found
+        time.sleep(.02)
+    return None
+
+
+def _pid_exists(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
 
 
 def _wait_for_report(pid_path: Path, timeout: float) -> dict | None:

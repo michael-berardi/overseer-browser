@@ -33,7 +33,7 @@ except ImportError:
     from cli.runtime_discovery import find_active_runtime
 from cli import evidence, recording, dom_query, temp_outputs
 
-CLI_VERSION = "0.10.5"
+CLI_VERSION = "0.10.6"
 MAX_UPLOAD_BYTES = 8 * 1024 * 1024
 MAX_UPLOAD_CHUNKS = 32
 MAX_UPLOAD_FILES = 16
@@ -574,7 +574,9 @@ def local_health(paths: RuntimePaths | None = None) -> dict[str, Any]:
         # the extension it loaded actually reached its native host.
         checks["isolated"] = isolation_health(paths)
     checks["ok"] = all(item.get("ok", False) for item in checks.values() if isinstance(item, dict))
-    if checks["socket"]["ok"]:
+    if not checks.get("isolated", {}).get("coalition", {}).get("ok", True):
+        checks["hint"] = checks["isolated"]["coalition"]["hint"]
+    elif checks["socket"]["ok"]:
         checks["hint"] = "Local host is available"
     elif not checks["native_manifest"]["ok"] and _manifest_exists(legacy=True):
         checks["hint"] = (
@@ -583,8 +585,6 @@ def local_health(paths: RuntimePaths | None = None) -> dict[str, Any]:
         )
     elif not checks["native_manifest"]["ok"]:
         checks["hint"] = "Reinstall the native host manifest, then reload the extension"
-    elif not checks.get("isolated", {}).get("coalition", {}).get("ok", True):
-        checks["hint"] = checks["isolated"]["coalition"]["hint"]
     elif not checks.get("isolated", {}).get("ok", True):
         checks["hint"] = (
             "Isolated Chrome has not loaded OverSeer Browser from the installed extension yet; "
