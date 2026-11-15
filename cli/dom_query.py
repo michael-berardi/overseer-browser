@@ -71,10 +71,13 @@ def run(namespace, args, request):
     except (ValueError, TypeError, UnicodeError, RecursionError) as exc:
         return _error('usage', str(exc)[:512])
     response = request('dom.query', {'query': data})
-    if not isinstance(response, dict):
+    if not isinstance(response, dict) or type(response.get('ok')) is not bool:
         return _error('invalid_response', 'Expected dom.query response envelope.')
     if response.get('ok') is not True:
-        if response.get('error', {}).get('code') in {'unsupported_command', 'unknown_command'}:
+        error = response.get('error')
+        if not isinstance(error, dict) or not isinstance(error.get('code'), str):
+            return _error('invalid_response', 'Expected dom.query error envelope.')
+        if error.get('code') in {'unsupported_command', 'unknown_command'}:
             return _error('extension_upgrade_required', 'Reload the extension with dom.query support (0.6.0+); no evaluate fallback is permitted.')
         return response
     result = response.get('result')

@@ -65,6 +65,16 @@ class DomQueryTests(unittest.TestCase):
         for args in cases:
             self.assertEqual(dom_query.run('dom',args,forbidden)['error']['code'], 'usage')
 
+    def test_malformed_transport_errors_return_invalid_response(self):
+        for response in ({'ok': False, 'error': None},
+                         {'ok': False, 'error': 'broken'},
+                         {'ok': False, 'error': []},
+                         {'ok': False}, {'error': {'code': 'missing_ok'}}):
+            with self.subTest(response=response):
+                result = dom_query.run('dom', ['find', '{"css":"a"}'],
+                                       lambda *args: response)
+                self.assertEqual(result['error']['code'], 'invalid_response')
+
     def test_transport_errors_preserved(self):
         error = {'ok':False,'error':{'code':'session_not_found','message':'Missing'}}
         self.assertIs(dom_query.run('dom',['find','{"css":"a"}'],lambda *a:error), error)

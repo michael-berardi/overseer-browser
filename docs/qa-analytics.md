@@ -29,18 +29,9 @@ and session guards remain authoritative.
 ## Installation
 
 Every supported installer must package `cli/internal_qa.py` with `cli/main.py`.
-The macOS copylist already includes it; the actual Linux/Windows installers are
-`scripts/install-linux.sh` and `scripts/install-windows.ps1` (not `manage-*`).
-Their missing helper copylist entries remain a release blocker until repaired
-in the authorized installer scope.
-
-CLI-only publication is the release parent's responsibility, only after PASS.
-The proposed procedure is to publish the helper first, then atomically replace
-main in the pinned runtime, preserving a durable previous main for rollback and
-refusing an unexpected installed hash. This source repair does not implement or
-execute that publication transaction. No extension/host reload, permission
-expansion, connection-descriptor edit or peer-session interruption is required
-by this unchanged RPC contract.
+The macOS, Linux and Windows installers include it in their staged CLI modules.
+Use the platform installer to update the complete runtime rather than copying
+individual Python files into an installed version.
 
 ## Verification
 
