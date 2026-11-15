@@ -24,9 +24,7 @@ error rather than leaving temporary data behind.
 
 ### Release bundles
 
-The latest-release installer URLs returned HTTP 404 during verification.
-Use the source instructions below until these assets are published. When
-available, release bundles include the built extension and do not need Node.
+Release bundles include the built extension and do not need Node.
 
 macOS and Linux:
 
@@ -122,3 +120,10 @@ and registers the native host under HKCU for Chrome, Edge and Brave. Load the
 extension directory printed by the installer from `chrome://extensions` (Developer mode
 → **Load unpacked**).
 
+
+### Long runtime paths
+
+Unix sockets have a platform-specific path limit (103 bytes on macOS, 107 on
+Linux). If the host reports that its socket path is too long, set
+`OVERSEER_BROWSER_RUNTIME` to a shorter, private directory for both the CLI and
+the native host. This also applies to unusually long home directories.

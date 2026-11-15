@@ -11,13 +11,31 @@ You can also explicitly lend tabs from an everyday browser. Session keys route
 commands, but are not security credentials: sessions share cookies and site
 permissions within the dedicated profile.
 
+[![Release](https://img.shields.io/github/v/release/michael-berardi/overseer-browser?label=release)](https://github.com/michael-berardi/overseer-browser/releases/latest)
+[![MIT License](https://img.shields.io/github/license/michael-berardi/overseer-browser)](LICENSE)
+![Platforms](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey)
+
 ## Install
 
 Requires Python 3.9+ and [Chrome for Testing](https://googlechromelabs.github.io/chrome-for-testing/).
 The dedicated-browser lifecycle supports macOS and Linux. Windows installation
 is experimental; isolated startup and POSIX-only media cleanup are unavailable.
 
-From source on macOS (also requires Node.js and npm):
+macOS and Linux (no Node.js needed):
+
+```sh
+curl -fsSL https://github.com/michael-berardi/overseer-browser/releases/latest/download/install.sh | sh
+```
+
+Windows (PowerShell):
+
+```powershell
+irm https://github.com/michael-berardi/overseer-browser/releases/latest/download/install.ps1 | iex
+```
+
+### From source
+
+On macOS (also requires Node.js and npm):
 
 ```sh
 git clone https://github.com/michael-berardi/overseer-browser.git
@@ -27,8 +45,7 @@ cd overseer-browser
 
 The installer builds the extension, registers a per-user native host, and puts
 the CLI in `~/.local/bin`. Add that directory to PATH if needed. It does not
-open a browser. Release installer assets are currently unavailable; use source
-installation until the release bundles are published.
+open a browser.
 
 See [installation and updates](docs/install.md) for source builds, Windows,
 uninstalling, and loading the extension to lend everyday tabs.
@@ -79,3 +96,5 @@ The Python bridge tests use fixtures and local sockets. See
 ## License
 
 [MIT](LICENSE). [Third-party notices](THIRD_PARTY_NOTICES.txt).
+
+Part of [Pareto Cybernetics](https://paretocybernetics.com/projects/overseer-browser/): free, private, open-source tools for working with AI agents.

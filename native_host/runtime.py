@@ -111,6 +111,13 @@ def is_private_file(path: Path) -> bool:
 
 def prepare_socket(paths: RuntimePaths) -> None:
     """Remove only a stale socket owned by this user; never unlink arbitrary files."""
+    # sockaddr_un includes a terminating NUL; count encoded bytes, not characters.
+    limit = 103 if sys_platform() == "darwin" else 107
+    if len(os.fsencode(paths.socket)) > limit:
+        raise ValueError(
+            f"runtime socket path exceeds {limit} bytes; set OVERSEER_BROWSER_RUNTIME "
+            "to a shorter private directory for both the CLI and native host"
+        )
     ensure_private_directory(paths.root)
     if not paths.socket.exists() and not paths.socket.is_symlink():
         return

@@ -31,7 +31,7 @@ from cli.main import (
 )
 from native_host.host import Client, NativeHost, _normalise_error, main as native_main, validate_caller_origin
 from native_host.protocol import ProtocolError, encode_frame, read_frame, validate_meeting_response, validate_request
-from native_host.runtime import RuntimePaths, ensure_token, native_manifest
+from native_host.runtime import RuntimePaths, ensure_token, native_manifest, prepare_socket
 
 
 class FramingTests(unittest.TestCase):
@@ -96,6 +96,17 @@ class RuntimeTests(unittest.TestCase):
             self.assertEqual(stat.S_IMODE(paths.root.stat().st_mode), 0o700)
             self.assertEqual(stat.S_IMODE(paths.token.stat().st_mode), 0o600)
 
+    def test_long_runtime_socket_path_has_actionable_error(self) -> None:
+        for platform, limit in (("darwin", 103), ("linux", 107)):
+            for name in ("x" * (limit + 1), "é" * (limit // 2 + 1)):
+                with self.subTest(platform=platform, name=name), patch(
+                    "native_host.runtime.sys_platform", return_value=platform
+                ), patch("native_host.runtime.ensure_private_directory") as mkdir:
+                    paths = RuntimePaths(Path("unused"), Path(name), Path("unused/token"))
+                    with self.assertRaisesRegex(ValueError, "OVERSEER_BROWSER_RUNTIME"):
+                        prepare_socket(paths)
+                    mkdir.assert_not_called()
+
     def test_manifest_has_exact_origin_and_no_debugger_permission(self) -> None:
         manifest = native_manifest(Path("/private/host"))
         self.assertEqual(manifest["allowed_origins"], ["chrome-extension://iabfdeokmilpklblkgccpjlekchfjcno/"])
@@ -125,7 +136,8 @@ class RuntimeTests(unittest.TestCase):
                 self.assertEqual(native_main(["chrome-extension://iabfdeokmilpklblkgccpjlekchfjcno/"]), 1)
 
     def test_native_host_runs_as_installed_script(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
+        # AF_UNIX paths must stay short regardless of checkout and TMPDIR.
+        with tempfile.TemporaryDirectory(dir="/tmp" if os.name != "nt" else None) as directory:
             with subprocess.Popen(
                 [
                     sys.executable,
@@ -376,7 +388,8 @@ class HostRoutingTests(unittest.TestCase):
 
 class MeetingForwardingTests(unittest.TestCase):
     def test_only_opaque_detection_is_forwarded(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
+        # AF_UNIX paths must stay short regardless of checkout and TMPDIR.
+        with tempfile.TemporaryDirectory(dir="/tmp" if os.name != "nt" else None) as directory:
             path = Path(directory) / "voice-v1.sock"
             listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             listener.bind(str(path))

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.10.7
+
+- Refuse overlong runtime socket paths with an actionable error naming `OVERSEER_BROWSER_RUNTIME`, instead of crashing during socket binding.
+
+- Malformed DOM query transport errors now return `invalid_response` instead of raising an exception or passing through an invalid envelope. Valid transport errors are unchanged.
+- Shorten the README and move installation, usage and CLI details into guides. Correct stale installer instructions; retain release-first installation.
+
 ## 0.10.6
 
 - macOS: a failed or slow process lookup is no longer read as the isolated browser having exited. The launchd process handle reads the start time through `proc_pidinfo` without forking, so a running Chrome stays supervised and a second instance never starts on the same profile; the supervisor also no longer forks `ps` about ten times a second.
