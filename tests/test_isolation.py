@@ -18,6 +18,11 @@ class IsolationTests(unittest.TestCase):
         discovery = patch('cli.main.find_active_runtime', return_value=None)
         discovery.start()
         self.addCleanup(discovery.stop)
+        # These tests mock subprocess.Popen, which launchctl calls share: use the direct
+        # launch path so no test submits a launchd job or reads a mocked launchctl.
+        direct = patch.dict('os.environ', {'OVERSEER_BROWSER_COALITION': 'direct'})
+        direct.start()
+        self.addCleanup(direct.stop)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         root = Path(self.tmp.name)
@@ -146,6 +151,11 @@ class IsolatedLoadDiagnosisTests(unittest.TestCase):
         discovery = patch('cli.main.find_active_runtime', return_value=None)
         discovery.start()
         self.addCleanup(discovery.stop)
+        # These tests mock subprocess.Popen, which launchctl calls share: use the direct
+        # launch path so no test submits a launchd job or reads a mocked launchctl.
+        direct = patch.dict('os.environ', {'OVERSEER_BROWSER_COALITION': 'direct'})
+        direct.start()
+        self.addCleanup(direct.stop)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         root = Path(self.tmp.name)

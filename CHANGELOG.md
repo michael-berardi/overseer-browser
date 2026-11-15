@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.10.8
+
+- Fix screenshot retries triggering Chrome capture quota errors, and report covered or minimized Agent Windows and persistent rate limits with actionable messages.
+- Make isolation tests independent of launchd.
+
 ## 0.10.7
 
 - Refuse overlong runtime socket paths with an actionable error naming `OVERSEER_BROWSER_RUNTIME`, instead of crashing during socket binding.

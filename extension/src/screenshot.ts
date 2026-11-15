@@ -12,7 +12,6 @@ function queueCapture<T>(work: () => Promise<T>): Promise<T> {
   const run = async (): Promise<T> => {
     const delay = Math.max(0, nextCaptureAt - Date.now());
     if (delay) await new Promise<void>((resolve) => setTimeout(resolve, delay));
-    nextCaptureAt = Date.now() + 550;
     return work();
   };
   const result = captureTail.then(run, run);
@@ -63,14 +62,9 @@ export async function captureScreenshot(
   const captureOptions = format === 'jpeg' ? { format: 'jpeg' as const, quality: 82 } : { format: 'png' as const };
   let dataUrl: string;
   try {
-    dataUrl = await queueCapture(async () => {
-      checkCancelled();
-      await requireActiveScreenshotTarget(tabId, windowId);
-      const captured = await captureWithReadbackRetry(windowId, captureOptions);
-      await requireActiveScreenshotTarget(tabId, windowId);
-      checkCancelled();
-      return captured;
-    });
+    dataUrl = await captureWithReadbackRetry(tabId, windowId, captureOptions, checkCancelled);
+    await requireActiveScreenshotTarget(tabId, windowId);
+    checkCancelled();
   } catch (error) {
     // Chrome accepts only '<all_urls>' (or an activeTab gesture) for
     // captureVisibleTab; scoped per-origin and legacy wildcard grants do not
@@ -137,22 +131,57 @@ export async function captureScreenshot(
 }
 
 const READBACK_RETRY_DELAYS_MS = [250, 600];
+const QUOTA_RETRY_DELAY_MS = 1100;
+const MAX_QUOTA_RETRIES = 3;
 
 export function isReadbackFailure(error: unknown): boolean {
   return error instanceof Error && /image readback failed/i.test(error.message);
 }
 
-/** An occluded window can return one transient readback failure while Chrome resumes painting. */
+function isCaptureQuotaFailure(error: unknown): boolean {
+  return error instanceof Error && /MAX_CAPTURE_VISIBLE_TAB_CALLS_PER_SECOND/i.test(error.message);
+}
+
 type CaptureOptions = { format?: 'jpeg' | 'png'; quality?: number };
 
-async function captureWithReadbackRetry(windowId: number, options: CaptureOptions): Promise<string> {
-  for (let attempt = 0; ; attempt += 1) {
+/** Each API attempt, including retries, shares the extension service worker's queue. */
+async function captureWithReadbackRetry(tabId: number, windowId: number, options: CaptureOptions, checkCancelled: () => void): Promise<string> {
+  let readbackRetries = 0;
+  let quotaRetries = 0;
+  let readbackError: unknown;
+  for (;;) {
     try {
-      return await (chrome.tabs.captureVisibleTab as (windowId: number, options: CaptureOptions) => Promise<string>)(windowId, options);
+      return await queueCapture(async () => {
+        checkCancelled();
+        await requireActiveScreenshotTarget(tabId, windowId);
+        checkCancelled();
+        try {
+          return await (chrome.tabs.captureVisibleTab as (windowId: number, options: CaptureOptions) => Promise<string>)(windowId, options);
+        } finally {
+          // Chrome's budget is shared across windows. Start spacing only after
+          // the prior API call has settled, including rejected attempts.
+          nextCaptureAt = Date.now() + 550;
+        }
+      });
     } catch (error) {
-      const delay = READBACK_RETRY_DELAYS_MS[attempt];
-      if (!isReadbackFailure(error) || delay === undefined) throw error;
-      await new Promise<void>((resolve) => setTimeout(resolve, delay));
+      if (isReadbackFailure(error)) {
+        readbackError = error;
+        const delay = READBACK_RETRY_DELAYS_MS[readbackRetries++];
+        if (delay === undefined) throw error;
+        await new Promise<void>((resolve) => setTimeout(resolve, delay));
+      } else if (isCaptureQuotaFailure(error)) {
+        if (quotaRetries++ >= MAX_QUOTA_RETRIES) {
+          if (readbackError) throw readbackError;
+          throw new ScreenshotError(
+            'screenshot_rate_limited',
+            'Chrome rate-limited screenshot capture after repeated attempts.',
+            'Wait a few seconds and retry; reduce concurrent screenshot or recording requests.',
+          );
+        }
+        await new Promise<void>((resolve) => setTimeout(resolve, QUOTA_RETRY_DELAY_MS));
+      } else {
+        throw error;
+      }
     }
   }
 }

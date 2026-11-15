@@ -44,3 +44,56 @@ describe('parallel Agent Window screenshots', () => {
     expect(calls).toHaveLength(1);
   });
 });
+
+it('spaces retries and other callers from the end of the previous capture', async () => {
+  const { captureScreenshot, calls } = await setup();
+  vi.stubGlobal('chrome', { tabs: { captureVisibleTab: vi.fn(async (windowId: number) => {
+    calls.push({ windowId, at: Date.now() });
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    if (windowId === 10) throw new Error('image readback failed');
+    return 'invalid-image';
+  }) } });
+  const first = captureScreenshot(11, 10).catch((error) => error.code);
+  const second = captureScreenshot(21, 20).catch((error) => error.code);
+  await vi.runAllTimersAsync();
+  expect(await first).toBe('screenshot_window_occluded');
+  expect(await second).toBe('screenshot_capture_failed');
+  expect(calls).toHaveLength(4);
+  for (let i = 1; i < calls.length; i++) {
+    expect(calls[i]!.at - calls[i - 1]!.at - 200).toBeGreaterThanOrEqual(550);
+  }
+});
+
+it('backs off quota errors and succeeds on a later capture', async () => {
+  const { captureScreenshot, calls } = await setup();
+  vi.stubGlobal('chrome', { tabs: { captureVisibleTab: vi.fn(async (windowId: number) => {
+    calls.push({ windowId, at: Date.now() });
+    if (calls.length < 3) throw new Error('This request exceeds the MAX_CAPTURE_VISIBLE_TAB_CALLS_PER_SECOND quota.');
+    return 'invalid-image';
+  }) } });
+  const result = captureScreenshot(11, 10).catch((error) => error.code);
+  await vi.runAllTimersAsync();
+  expect(await result).toBe('screenshot_capture_failed');
+  expect(calls).toHaveLength(3);
+  expect(calls[1]!.at - calls[0]!.at).toBeGreaterThanOrEqual(1100);
+  expect(calls[2]!.at - calls[1]!.at).toBeGreaterThanOrEqual(1100);
+});
+
+it.each([false, true])('reports a persistent quota failure with readback=%s', async (readback) => {
+  const { captureScreenshot, calls } = await setup();
+  vi.stubGlobal('chrome', { tabs: { captureVisibleTab: vi.fn(async (windowId: number) => {
+    calls.push({ windowId, at: Date.now() });
+    if (readback && calls.length === 1) throw new Error('image readback failed');
+    throw new Error('MAX_CAPTURE_VISIBLE_TAB_CALLS_PER_SECOND quota');
+  }) } });
+  const result = captureScreenshot(11, 10).catch((error) => error);
+  await vi.runAllTimersAsync();
+  const error = await result;
+  expect(error.code).toBe(readback ? 'screenshot_window_occluded' : 'screenshot_rate_limited');
+  expect(error.fallback).toBeTruthy();
+  expect(calls).toHaveLength(readback ? 5 : 4);
+  const quotaCalls = readback ? calls.slice(1) : calls;
+  for (let i = 1; i < quotaCalls.length; i++) {
+    expect(quotaCalls[i]!.at - quotaCalls[i - 1]!.at).toBeGreaterThanOrEqual(1100);
+  }
+});
