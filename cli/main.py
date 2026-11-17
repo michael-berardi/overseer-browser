@@ -33,7 +33,7 @@ except ImportError:
     from cli.runtime_discovery import find_active_runtime
 from cli import evidence, recording, dom_query, temp_outputs
 
-CLI_VERSION = "0.10.8"
+CLI_VERSION = "0.10.9"
 MAX_UPLOAD_BYTES = 8 * 1024 * 1024
 MAX_UPLOAD_CHUNKS = 32
 MAX_UPLOAD_FILES = 16
@@ -300,10 +300,13 @@ def _checked_request_id(request_id: str) -> str:
 
 
 class CLIError(RuntimeError):
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(self, code: str, message: str, details: dict[str, Any] | None = None) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
+        # Operator-facing context for the failure (never credentials). It stays out
+        # of the JSON envelope when absent, so error output is unchanged by default.
+        self.details = details
 def checked_session_key(value: str) -> str:
     if not isinstance(value, str) or not REQUEST_ID_RE.fullmatch(value):
         raise CLIError("usage", "session keys must be 1-128 ASCII letters, digits, dots, colons, underscores or hyphens")
@@ -421,6 +424,51 @@ def _parse_batch_payload(source: str) -> dict[str, Any]:
 
 
 
+def _isolated_instance_running(paths: RuntimePaths) -> bool:
+    """Whether the managed isolated instance is already live before this command touches it.
+
+    Mirrors _coalition_status: the launch record names the instance and a live
+    supervisor process is what proves it is still up, so a browser a peer started
+    is never mistaken for this command's own. A record that already ended is a
+    finished launch, not a browser, and never blocks a cleanup.
+    """
+    from native_host.isolation import read_state, supervisor_alive
+    root = paths.root
+    record = read_state(root)
+    supervisor = root / "supervisor.running"
+    if supervisor.exists() and supervisor_alive(supervisor):
+        return True
+    # An unfinished launch record whose supervisor file this call cannot see yet is
+    # still not provably ours: leaving a browser running is the safe outcome.
+    return bool(record.get("started_at")) and record.get("ended_at") is None
+
+
+def _managed_scope_failure(exc: CLIError, paths: RuntimePaths, *,
+                           instance_was_running: bool, start_attempted: bool) -> CLIError:
+    """Re-describe a refused scoped command in the managed lane.
+
+    Only an instance this call launched is ever stopped: a peer's browser stays up
+    and is merely reported as already running.
+    """
+    if exc.code != "extension_upgrade_required":
+        return exc
+    details = dict(exc.details or {})
+    details["instance_was_running"] = bool(instance_was_running)
+    if instance_was_running or not start_attempted:
+        return CLIError(exc.code, exc.message, details)
+    stopped = False
+    try:
+        from native_host.isolation import stop_instance
+        stop_instance(paths)
+        stopped = True
+    except (ValueError, OSError):
+        stopped = False
+    details["instance_stopped"] = stopped
+    suffix = ("The isolated browser this command started was stopped" if stopped else
+              "The isolated browser this command started could not be stopped; run overseer-browser sessions stop to close it")
+    return CLIError(exc.code, f"{exc.message}. {suffix}", details)
+
+
 def request_once(command: str, params: dict[str, Any], *, timeout: float,
                  paths: RuntimePaths | None = None, request_id: str | None = None,
                  session_key: str | None = None) -> dict[str, Any]:
@@ -440,14 +488,24 @@ def request_once(command: str, params: dict[str, Any], *, timeout: float,
         # Relay lifecycle belongs to its owner: never launch or stop its host.
         return _request_once(command, params, timeout=timeout, paths=active.paths,
                              request_id=request_id, session_key=session_key,
-                             auth_token=active.auth_token)
+                             auth_token=active.auth_token, connection_mode="operator-relay")
     isolated = isolated_paths(RuntimePaths.discover())
     try:
         with lifecycle_lock(isolated) if command in {"sessions.start", "sessions.stop"} else contextlib.nullcontext():
+            # Decided before ensure_instance: only an instance this call launches is ours.
+            instance_was_running = _isolated_instance_running(isolated)
             if command == "sessions.start":
                 ensure_instance(isolated, _checked_timeout(timeout))
-            response = _request_once(command, params, timeout=timeout, paths=isolated,
-                                     request_id=request_id, session_key=session_key)
+            try:
+                response = _request_once(command, params, timeout=timeout, paths=isolated,
+                                         request_id=request_id, session_key=session_key,
+                                         connection_mode="managed-isolated")
+            except CLIError as exc:
+                failure = _managed_scope_failure(exc, isolated, instance_was_running=instance_was_running,
+                                                 start_attempted=command == "sessions.start")
+                if failure is exc:
+                    raise
+                raise failure from exc
             if command == "sessions.stop" and response.get("ok") is True:
                 active = _request_once("sessions.list", {}, timeout=timeout, paths=isolated)
                 if active.get("ok") is True and active.get("result") == []:
@@ -455,6 +513,46 @@ def request_once(command: str, params: dict[str, Any], *, timeout: float,
             return response
     except (ValueError, OSError) as exc:
         raise CLIError("isolation_unavailable", str(exc)) from exc
+
+
+_SCOPE_REMEDIATION = (
+    "reload the OverSeer Browser extension in that Chrome window (overseer-browser refresh-extension), "
+    "or select the managed isolated browser with OVERSEER_BROWSER_CONNECTION=managed, then retry"
+)
+
+
+def _scope_refusal(capability: dict[str, Any], connection_mode: str | None) -> CLIError:
+    """Name why a scoped command was refused, without relaxing the refusal itself."""
+    result = capability.get("result")
+    probe_code: str | None = None
+    if capability.get("ok") is not True:
+        # The probe itself failed: report its code rather than guessing at the extension.
+        reason = "probe_error"
+        error_value = capability.get("error")
+        code = error_value.get("code") if isinstance(error_value, dict) else None
+        probe_code = code if isinstance(code, str) and code else "invalid_response"
+    elif not isinstance(result, dict):
+        reason = "probe_unusable"
+    elif result.get("multi_session") is not True:
+        reason = "capability_not_advertised"
+    else:
+        reason = "session_key_not_echoed"
+    observed = result.get("extension_version") if isinstance(result, dict) else None
+    observed_version = observed if isinstance(observed, str) else None
+    details: dict[str, Any] = {
+        "reason": reason,
+        "observed_extension_version": observed_version,
+        "required_version": CLI_VERSION,
+        "connection_mode": connection_mode,
+    }
+    if probe_code is not None:
+        details["probe_error_code"] = probe_code
+    message = (
+        "Scoped browser control requires the updated native host and OverSeer Browser 0.4.0+ extension "
+        f"(observed extension version: {observed_version or 'unknown'}; required CLI version: {CLI_VERSION}; "
+        f"connection mode: {connection_mode or 'unknown'}); {_SCOPE_REMEDIATION}"
+    )
+    return CLIError("extension_upgrade_required", message, details)
 
 
 def _request_once(
@@ -466,6 +564,7 @@ def _request_once(
     request_id: str | None = None,
     session_key: str | None = None,
     auth_token: str | None = None,
+    connection_mode: str | None = None,
 ) -> dict[str, Any]:
     if session_key is not None:
         session_key = checked_session_key(session_key)
@@ -523,7 +622,8 @@ def _request_once(
                 capability = _validate_response(read_frame(connection, byteorder="big"), probe_id)
                 result = capability.get("result")
                 if capability.get("ok") is not True or not isinstance(result, dict) or result.get("multi_session") is not True or result.get("session_key") != session_key:
-                    raise CLIError("extension_upgrade_required", "Scoped browser control requires the updated native host and OverSeer Browser 0.4.0+ extension; reload the extension before retrying")
+                    # Same connection, same acceptance test: only the reason is explainable now.
+                    raise _scope_refusal(capability, connection_mode)
             connection.settimeout(max(0.001, deadline - time.monotonic()))
             connection.sendall(encode_frame(request, byteorder="big"))
             response = read_frame(connection, byteorder="big")
@@ -1117,6 +1217,18 @@ def _render(payload: dict[str, Any], json_output: bool, raw_json: bool = False) 
     print(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
 
 
+def _error_envelope(exc: CLIError) -> dict[str, Any]:
+    """The JSON error envelope; byte-identical to the old literal when no details exist."""
+    error: dict[str, Any] = {"code": exc.code, "message": exc.message}
+    if exc.details is not None:
+        error["details"] = exc.details
+    return {"ok": False, "error": error}
+
+
+def _render_cli_error(exc: CLIError, json_output: bool, raw_json: bool = False) -> None:
+    _render(_error_envelope(exc), json_output, raw_json)
+
+
 def main(argv: list[str] | None = None) -> int:
     raw = list(sys.argv[1:] if argv is None else argv)
     raw_json = "--raw-json" in raw
@@ -1131,7 +1243,7 @@ def main(argv: list[str] | None = None) -> int:
         command_options = _command_options(words[0], words[1:]) if words else set()
         _reject_unknown_options(raw, set(_GLOBAL_OPTIONS) | command_options)
     except CLIError as exc:
-        _render({"ok": False, "error": {"code": exc.code, "message": exc.message}}, json_output, raw_json)
+        _render_cli_error(exc, json_output, raw_json)
         return 2
     keep_outputs = "--keep" in raw
     raw = [arg for arg in raw if arg != "--keep"]
@@ -1153,7 +1265,7 @@ def main(argv: list[str] | None = None) -> int:
             del raw[index:index + 2]
         session_key = resolve_session_key(explicit_session)
     except CLIError as exc:
-        _render({"ok": False, "error": {"code": exc.code, "message": exc.message}}, json_output, raw_json)
+        _render_cli_error(exc, json_output, raw_json)
         return 2
     request_options = {"session_key": session_key} if session_key is not None else {}
     timeout = 30.0
@@ -1165,7 +1277,7 @@ def main(argv: list[str] | None = None) -> int:
             _render({"ok": False, "error": {"code": "usage", "message": "--timeout requires seconds"}}, json_output, raw_json)
             return 2
         except CLIError as exc:
-            _render({"ok": False, "error": {"code": exc.code, "message": exc.message}}, json_output, raw_json)
+            _render_cli_error(exc, json_output, raw_json)
             return 2
         del raw[index : index + 2]
     request_id: str | None = None
@@ -1177,7 +1289,7 @@ def main(argv: list[str] | None = None) -> int:
             _render({"ok": False, "error": {"code": "usage", "message": "--request-id requires an ID"}}, json_output, raw_json)
             return 2
         except CLIError as exc:
-            _render({"ok": False, "error": {"code": exc.code, "message": exc.message}}, json_output, raw_json)
+            _render_cli_error(exc, json_output, raw_json)
             return 2
         del raw[index : index + 2]
     tab_id: int | None = None
@@ -1189,7 +1301,7 @@ def main(argv: list[str] | None = None) -> int:
             _render({"ok": False, "error": {"code": "usage", "message": "--tab-id requires a tab ID"}}, json_output, raw_json)
             return 2
         except CLIError as exc:
-            _render({"ok": False, "error": {"code": exc.code, "message": exc.message}}, json_output, raw_json)
+            _render_cli_error(exc, json_output, raw_json)
             return 2
         del raw[index : index + 2]
     max_nodes: int | None = None
@@ -1201,7 +1313,7 @@ def main(argv: list[str] | None = None) -> int:
             _render({"ok": False, "error": {"code": "usage", "message": "--max-nodes requires a node count"}}, json_output, raw_json)
             return 2
         except CLIError as exc:
-            _render({"ok": False, "error": {"code": exc.code, "message": exc.message}}, json_output, raw_json)
+            _render_cli_error(exc, json_output, raw_json)
             return 2
         del raw[index : index + 2]
     wait_until: str | None = None
@@ -1391,7 +1503,7 @@ def main(argv: list[str] | None = None) -> int:
             payload = request_once(extension_command, params, timeout=timeout, request_id=request_id, **request_options)
             payload = _require_mobile_support(extension_command, params, payload)
     except CLIError as exc:
-        payload = {"ok": False, "error": {"code": exc.code, "message": exc.message}}
+        payload = _error_envelope(exc)
     except ProtocolError as exc:
         payload = {"ok": False, "error": {"code": "protocol_error", "message": "native host exchanged an invalid protocol frame"}}
     except OSError as exc:

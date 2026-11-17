@@ -1,5 +1,21 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+/**
+ * Answers both executeScript injections a capture makes: the frame freshness
+ * probe (one numeric wait arg) and the automation viewport probe. These tests
+ * never reach the viewport probe, but the frame probe must pass for any capture
+ * to be attempted at all.
+ */
+function frameProbeInjection(viewport = { width: 800, height: 600, devicePixelRatio: 1 }) {
+  return vi.fn(async (injection: { args?: unknown[] }) => {
+    const args = injection.args ?? [];
+    if (args.length === 1 && typeof args[0] === 'number') {
+      return [{ result: { visibility: 'visible', painted: true, scroll: { x: 0, y: 0 }, frame_at_ms: 1 } }];
+    }
+    return [{ result: { ok: true, value: viewport } }];
+  });
+}
+
 async function setup() {
   vi.resetModules();
   vi.useFakeTimers();
@@ -10,7 +26,7 @@ async function setup() {
     return 'invalid-image'; // Stop before bitmap decoding; capture ordering is under test.
   });
   vi.stubGlobal('browser', { tabs: { query: async ({ windowId }: { windowId: number }) => [{ id: active.get(windowId) }] } });
-  vi.stubGlobal('chrome', { tabs: { captureVisibleTab } });
+  vi.stubGlobal('chrome', { tabs: { captureVisibleTab }, scripting: { executeScript: frameProbeInjection() } });
   return { ...(await import('../src/screenshot')), calls, active };
 }
 
@@ -52,7 +68,7 @@ it('spaces retries and other callers from the end of the previous capture', asyn
     await new Promise((resolve) => setTimeout(resolve, 200));
     if (windowId === 10) throw new Error('image readback failed');
     return 'invalid-image';
-  }) } });
+  }) }, scripting: { executeScript: frameProbeInjection() } });
   const first = captureScreenshot(11, 10).catch((error) => error.code);
   const second = captureScreenshot(21, 20).catch((error) => error.code);
   await vi.runAllTimersAsync();
@@ -70,7 +86,7 @@ it('backs off quota errors and succeeds on a later capture', async () => {
     calls.push({ windowId, at: Date.now() });
     if (calls.length < 3) throw new Error('This request exceeds the MAX_CAPTURE_VISIBLE_TAB_CALLS_PER_SECOND quota.');
     return 'invalid-image';
-  }) } });
+  }) }, scripting: { executeScript: frameProbeInjection() } });
   const result = captureScreenshot(11, 10).catch((error) => error.code);
   await vi.runAllTimersAsync();
   expect(await result).toBe('screenshot_capture_failed');
@@ -85,7 +101,7 @@ it.each([false, true])('reports a persistent quota failure with readback=%s', as
     calls.push({ windowId, at: Date.now() });
     if (readback && calls.length === 1) throw new Error('image readback failed');
     throw new Error('MAX_CAPTURE_VISIBLE_TAB_CALLS_PER_SECOND quota');
-  }) } });
+  }) }, scripting: { executeScript: frameProbeInjection() } });
   const result = captureScreenshot(11, 10).catch((error) => error);
   await vi.runAllTimersAsync();
   const error = await result;

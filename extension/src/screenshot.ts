@@ -21,6 +21,21 @@ function queueCapture<T>(work: () => Promise<T>): Promise<T> {
 
 export type ScreenshotFormat = 'jpeg' | 'png';
 
+/** How long a capture waits for the tab to prove it painted a new frame. */
+export const FRAME_PROBE_WAIT_MS = 500;
+
+/**
+ * What the tab itself reports about its frame: whether the document is visible,
+ * whether two animation frames were served inside the bounded wait, and which
+ * scroll offset the next capture would represent.
+ */
+export interface ScreenshotFrameState {
+  visibility: string;
+  painted: boolean;
+  scroll: { x: number; y: number };
+  frame_at_ms: number;
+}
+
 export interface ScreenshotResult {
   format: ScreenshotFormat;
   data: string;
@@ -39,6 +54,8 @@ export interface ScreenshotResult {
   scale?: number;
   /** JPEG quality used (0..1); absent for PNG. */
   quality?: number;
+  /** The verified page state (visibility, paint evidence and scroll offset) this frame was captured at. */
+  frame?: ScreenshotFrameState;
 }
 
 export async function requireActiveScreenshotTarget(tabId: number, windowId: number): Promise<void> {
@@ -46,6 +63,98 @@ export async function requireActiveScreenshotTarget(tabId: number, windowId: num
   if (activeTab?.id !== tabId) {
     throw new ScreenshotError('screenshot_target_not_active', 'The requested tab is not active in its window.', 'Select the requested tab before capturing a screenshot.');
   }
+}
+
+/**
+ * Serialized into the target tab by chrome.scripting.executeScript; it must stay
+ * fully self-contained (no module-scope references). It reports whether the tab
+ * actually painted (two animation frames served inside a bounded wait) and which
+ * scroll offset that frame belongs to. A `waitMs` of 0 reads the current state
+ * without waiting for a new frame: paint evidence is only needed before a capture.
+ */
+async function isolatedFrameProbe(waitMs: number): Promise<{
+  visibility: string;
+  painted: boolean;
+  scroll: { x: number; y: number };
+  frame_at_ms: number;
+}> {
+  const visibility = document.visibilityState;
+  const read = (painted: boolean) => ({
+    visibility,
+    painted,
+    scroll: { x: window.scrollX, y: window.scrollY },
+    frame_at_ms: Date.now(),
+  });
+  // A hidden document serves no animation frames, so it can never have painted.
+  if (visibility !== 'visible') return read(false);
+  const wait = Number.isFinite(waitMs) ? Math.min(Math.max(waitMs, 0), 500) : 0;
+  if (wait === 0) return read(true);
+  return await new Promise<ReturnType<typeof read>>((resolve) => {
+    let frames = 0;
+    let settled = false;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const finish = (painted: boolean): void => {
+      if (settled) return;
+      settled = true;
+      if (timeout !== undefined) clearTimeout(timeout);
+      resolve(read(painted));
+    };
+    timeout = setTimeout(() => finish(false), wait);
+    const onFrame = (): void => {
+      frames += 1;
+      if (frames >= 2) finish(true);
+      else if (!settled) requestAnimationFrame(onFrame);
+    };
+    requestAnimationFrame(onFrame);
+  });
+}
+
+function isFrameState(value: unknown): value is ScreenshotFrameState {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Record<string, unknown>;
+  if (typeof candidate.visibility !== 'string' || candidate.visibility.length === 0) return false;
+  if (typeof candidate.painted !== 'boolean') return false;
+  if (typeof candidate.frame_at_ms !== 'number' || !Number.isFinite(candidate.frame_at_ms)) return false;
+  const scroll = candidate.scroll;
+  if (!scroll || typeof scroll !== 'object') return false;
+  const { x, y } = scroll as Record<string, unknown>;
+  return typeof x === 'number' && Number.isFinite(x) && typeof y === 'number' && Number.isFinite(y);
+}
+
+/** Read the tab's own frame state; `waitMs` of 0 reads the current state without waiting. */
+export async function probeScreenshotFrame(tabId: number, waitMs = 0): Promise<ScreenshotFrameState> {
+  let injection: chrome.scripting.InjectionResult<unknown> | undefined;
+  try {
+    [injection] = await chrome.scripting.executeScript({
+      target: { tabId },
+      world: 'ISOLATED',
+      func: isolatedFrameProbe,
+      args: [waitMs],
+    });
+  } catch {
+    throw new ScreenshotError(
+      'screenshot_probe_failed',
+      'The tab did not answer the screenshot frame probe.',
+      'Wait for the tab to finish loading and retry; a discarded or closed tab cannot report its frame state.',
+    );
+  }
+  const state = injection?.result;
+  if (!isFrameState(state)) {
+    throw new ScreenshotError(
+      'screenshot_probe_failed',
+      'The tab returned an invalid screenshot frame probe result.',
+      'Reload the tab and retry.',
+    );
+  }
+  return state;
+}
+
+function tabNotPaintingError(visibility: string): ScreenshotError {
+  return new ScreenshotError(
+    'screenshot_tab_not_painting',
+    `Chrome would return the last painted frame instead of the current viewport: the tab is not painting (document.visibilityState is "${visibility}").`,
+    'Bring the window that contains the tab to the front, or use the managed isolated browser via OVERSEER_BROWSER_CONNECTION=managed, then retry.',
+  );
 }
 
 export async function captureScreenshot(
@@ -59,12 +168,30 @@ export async function captureScreenshot(
     throw new ScreenshotError('screenshot_format', 'Screenshot format must be jpeg or png.');
   }
   await requireActiveScreenshotTarget(tabId, windowId);
+  // captureVisibleTab has no way to report that it re-sent a stale frame: an
+  // unoccluded-but-unpainted or hidden tab silently answers with its last
+  // painted pixels (usually the top of the page). Prove the tab is painting and
+  // pin the scroll offset before spending a capture call on it.
+  const frame = await probeScreenshotFrame(tabId, FRAME_PROBE_WAIT_MS);
+  if (frame.visibility !== 'visible' || !frame.painted) throw tabNotPaintingError(frame.visibility);
   const captureOptions = format === 'jpeg' ? { format: 'jpeg' as const, quality: 82 } : { format: 'png' as const };
   let dataUrl: string;
   try {
     dataUrl = await captureWithReadbackRetry(tabId, windowId, captureOptions, checkCancelled);
     await requireActiveScreenshotTarget(tabId, windowId);
     checkCancelled();
+    // The frame that was just read is only trustworthy if the viewport did not
+    // move underneath it; a scroll between the probe and the capture would
+    // return pixels that no longer match the page the caller is looking at.
+    const settled = await probeScreenshotFrame(tabId, 0);
+    if (settled.visibility !== 'visible') throw tabNotPaintingError(settled.visibility);
+    if (settled.scroll.x !== frame.scroll.x || settled.scroll.y !== frame.scroll.y) {
+      throw new ScreenshotError(
+        'screenshot_viewport_changed',
+        'The page scrolled while this frame was captured, so the pixels do not match the current viewport.',
+        'Wait for the page to settle after the scroll and retry.',
+      );
+    }
   } catch (error) {
     // Chrome accepts only '<all_urls>' (or an activeTab gesture) for
     // captureVisibleTab; scoped per-origin and legacy wildcard grants do not
@@ -118,6 +245,7 @@ export async function captureScreenshot(
           viewport: { width: viewport.width, height: viewport.height, devicePixelRatio: viewport.devicePixelRatio },
           source: { width: source.width, height: source.height },
           crop: { left: crop.left, top: crop.top, width: crop.width, height: crop.height },
+          frame,
           scale,
           ...(quality === undefined ? {} : { quality }),
         };

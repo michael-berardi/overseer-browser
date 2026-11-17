@@ -1,6 +1,27 @@
 import { describe, expect, it, vi } from 'vitest';
 import { calculateCrop, captureScreenshot, MAX_SCREENSHOT_FRAME_BYTES } from '../src/screenshot';
 
+/** A tab that is visible, painting and not scrolled: the frame every capture verifies. */
+const PAINTED_FRAME = { visibility: 'visible', painted: true, scroll: { x: 0, y: 0 }, frame_at_ms: 1 };
+
+/**
+ * Answers both executeScript injections a capture makes: the frame freshness
+ * probe (injected with a single numeric wait) and the automation viewport probe.
+ * `frames` is consumed in probe order; the last entry answers any later probe.
+ */
+function scriptedInjection(viewport: unknown, frames = [PAINTED_FRAME]) {
+  let probes = 0;
+  return vi.fn(async (injection: { args?: unknown[] }) => {
+    const args = injection.args ?? [];
+    if (args.length === 1 && typeof args[0] === 'number') {
+      const state = frames[Math.min(probes, frames.length - 1)]!;
+      probes += 1;
+      return [{ result: state }];
+    }
+    return [{ result: { ok: true, value: viewport } }];
+  });
+}
+
 describe('screenshot target selection', () => {
   it('rejects a borrowed tab when another tab is active in its exact window', async () => {
     const query = vi.fn(async () => [{ id: 22, windowId: 7, active: true }]);
@@ -20,7 +41,7 @@ describe('screenshot target selection', () => {
     const outputBlob = { arrayBuffer: async () => bytes.buffer };
     const query = vi.fn(async () => [{ id: 21, windowId: 7, active: true }]);
     const captureVisibleTab = vi.fn(async () => `data:${mimeType};base64,${encoded}`);
-    const executeScript = vi.fn(async () => [{ result: { ok: true, value: { width: 2, height: 2, devicePixelRatio: 1 } } }]);
+    const executeScript = scriptedInjection({ width: 2, height: 2, devicePixelRatio: 1 });
     const canvas = {
       getContext: vi.fn(() => ({ drawImage: vi.fn() })),
       convertToBlob: vi.fn(async (options: { type: string }) => {
@@ -58,7 +79,7 @@ describe('screenshot target selection', () => {
     const captureVisibleTab = vi.fn(async () => dataUrl);
     const createImageBitmap = vi.fn();
     vi.stubGlobal('browser', { tabs: { query } });
-    vi.stubGlobal('chrome', { tabs: { captureVisibleTab } });
+    vi.stubGlobal('chrome', { tabs: { captureVisibleTab }, scripting: { executeScript: scriptedInjection({ width: 2, height: 2, devicePixelRatio: 1 }) } });
     vi.stubGlobal('createImageBitmap', createImageBitmap);
 
     await expect(captureScreenshot(21, 7)).rejects.toMatchObject({ code: 'screenshot_capture_failed' });
@@ -72,7 +93,7 @@ describe('screenshot target selection', () => {
       throw new Error("Either the '<all_urls>' or 'activeTab' permission is required.");
     });
     vi.stubGlobal('browser', { tabs: { query } });
-    vi.stubGlobal('chrome', { tabs: { captureVisibleTab } });
+    vi.stubGlobal('chrome', { tabs: { captureVisibleTab }, scripting: { executeScript: scriptedInjection({ width: 2, height: 2, devicePixelRatio: 1 }) } });
 
     await expect(captureScreenshot(21, 7)).rejects.toMatchObject({
       code: 'screenshot_permission_required',
@@ -95,7 +116,7 @@ describe('screenshot geometry (P-0126)', () => {
     vi.stubGlobal('browser', { tabs: { query: vi.fn(async () => [{ id: 21, windowId: 7, active: true }]) } });
     vi.stubGlobal('chrome', {
       tabs: { captureVisibleTab: vi.fn(async () => `data:image/jpeg;base64,${btoa(String.fromCharCode(...JPEG))}`) },
-      scripting: { executeScript: vi.fn(async () => [{ result: { ok: true, value: viewport } }]) },
+      scripting: { executeScript: scriptedInjection(viewport) },
     });
     vi.stubGlobal('createImageBitmap', vi.fn(async () => ({ width: sourceWidth, height: sourceHeight, close: vi.fn() })));
     vi.stubGlobal('OffscreenCanvas', vi.fn(function (this: unknown, width: number, height: number) {

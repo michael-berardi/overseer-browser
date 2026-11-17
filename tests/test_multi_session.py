@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from cli.main import CLIError, main, request_once, resolve_session_key
+from cli.main import CLI_VERSION, CLIError, main, request_once, resolve_session_key
 from native_host.host import Client, NativeHost
 from native_host.protocol import ProtocolError, read_frame, validate_request
 from native_host.runtime import RuntimePaths
@@ -86,7 +86,7 @@ class SessionRoutingTests(unittest.TestCase):
                 connection = FakeSocket()
                 def response(*args, **kwargs):
                     sent = connection.sent[-1]
-                    result = {"multi_session": True, "session_key": advertised_key} if sent["command"] == "health.status" else {"scoped": True}
+                    result = {"multi_session": True, "session_key": advertised_key, "extension_version": "0.10.8"} if sent["command"] == "health.status" else {"scoped": True}
                     return {"version": 1, "kind": "response", "request_id": sent["request_id"], "ok": True, "result": result}
                 with patch("cli.main.socket.socket", return_value=connection), patch("cli.main.read_frame", side_effect=response):
                     if advertised_key == "agent-a":
@@ -96,6 +96,14 @@ class SessionRoutingTests(unittest.TestCase):
                         with self.assertRaises(CLIError) as raised:
                             request_once("navigate", {"url": "https://synthetic.test/"}, timeout=1, paths=paths, session_key="agent-a")
                         self.assertEqual(raised.exception.code, "extension_upgrade_required")
+                        # The refusal must also say which extension answered and how to fix it.
+                        self.assertEqual(raised.exception.details["reason"], "session_key_not_echoed")
+                        self.assertEqual(raised.exception.details["observed_extension_version"], "0.10.8")
+                        self.assertEqual(raised.exception.details["required_version"], CLI_VERSION)
+                        # This internal paths seam carries no connection mode; the CLI fills it in.
+                        self.assertIn("connection_mode", raised.exception.details)
+                        self.assertIn("refresh-extension", raised.exception.message)
+                        self.assertIn("OVERSEER_BROWSER_CONNECTION=managed", raised.exception.message)
                         self.assertEqual([item["command"] for item in connection.sent], ["health.status"])
 
     def test_host_guards_old_extension_and_preserves_scope_on_disconnect_cancellation(self):
