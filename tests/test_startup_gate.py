@@ -154,6 +154,7 @@ class StartupGateTests(unittest.TestCase):
                 patch("cli.main.find_active_runtime", return_value=None), \
                 patch("native_host.isolation.read_state", return_value={}), \
                 patch("native_host.isolation.supervisor_alive", return_value=False), \
+                patch("native_host.isolation.connected", return_value=False), \
                 patch("native_host.isolation.ensure_instance") as ensure, \
                 patch("native_host.isolation.stop_instance") as stop, \
                 patch("cli.main.socket.socket", return_value=connection), \
@@ -182,6 +183,7 @@ class StartupGateTests(unittest.TestCase):
                 patch("cli.main.find_active_runtime", return_value=None), \
                 patch("native_host.isolation.read_state", return_value={"version": 1, "started_at": 1.0}), \
                 patch("native_host.isolation.supervisor_alive", return_value=True), \
+                patch("native_host.isolation.connected", return_value=True), \
                 patch("native_host.isolation.ensure_instance") as ensure, \
                 patch("native_host.isolation.stop_instance") as stop, \
                 patch("cli.main.socket.socket", return_value=connection), \
@@ -195,6 +197,29 @@ class StartupGateTests(unittest.TestCase):
         self.assertIs(error.details["instance_was_running"], True)
         self.assertNotIn("instance_stopped", error.details)
         self.assertNotIn("was stopped", error.message)
+
+    def test_stale_launch_record_without_a_live_supervisor_is_cleaned_up(self):
+        """A supervisor killed with its terminal leaves an unterminated record, not a browser."""
+        connection = FakeSocket()
+
+        def response(*args, **kwargs):
+            return _reply(connection, {"multi_session": False, "extension_version": "0.9.3"})
+
+        with patch("cli.main.RuntimePaths.discover", return_value=self.base), \
+                patch("cli.main.find_active_runtime", return_value=None), \
+                patch("native_host.isolation.read_state", return_value={"version": 1, "started_at": 1.0}), \
+                patch("native_host.isolation.supervisor_alive", return_value=False), \
+                patch("native_host.isolation.connected", return_value=False), \
+                patch("native_host.isolation.ensure_instance") as ensure, \
+                patch("native_host.isolation.stop_instance") as stop, \
+                patch("cli.main.socket.socket", return_value=connection), \
+                patch("cli.main.read_frame", side_effect=response):
+            with self.assertRaises(CLIError) as raised:
+                request_once("sessions.start", {}, timeout=1, session_key="agent-a")
+        ensure.assert_called_once()
+        stop.assert_called_once_with(self.managed)
+        self.assertIs(raised.exception.details["instance_was_running"], False)
+        self.assertIs(raised.exception.details["instance_stopped"], True)
 
     def test_ordinary_errors_keep_the_unchanged_envelope(self):
         self.assertEqual(_error_envelope(CLIError("usage", "denied")),

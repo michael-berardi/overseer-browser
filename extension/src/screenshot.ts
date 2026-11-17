@@ -149,12 +149,30 @@ export async function probeScreenshotFrame(tabId: number, waitMs = 0): Promise<S
   return state;
 }
 
-function tabNotPaintingError(visibility: string): ScreenshotError {
+function tabNotPaintingError(visibility: string, attempts = 1): ScreenshotError {
+  const why = visibility === 'visible'
+    ? `the tab did not paint a frame within ${attempts * FRAME_PROBE_WAIT_MS} ms while document.visibilityState stayed "visible"`
+    : `the tab is not visible (document.visibilityState is "${visibility}")`;
   return new ScreenshotError(
     'screenshot_tab_not_painting',
-    `Chrome would return the last painted frame instead of the current viewport: the tab is not painting (document.visibilityState is "${visibility}").`,
+    `Chrome would return the last painted frame instead of the current viewport: ${why}.`,
     'Bring the window that contains the tab to the front, or use the managed isolated browser via OVERSEER_BROWSER_CONNECTION=managed, then retry.',
   );
+}
+
+/**
+ * The frame the capture will represent, or a refusal. A page can be busy enough
+ * to miss one bounded wait while still painting, so it gets a second one before
+ * the capture is refused; a hidden tab is refused immediately.
+ */
+async function verifiedFrameBeforeCapture(tabId: number): Promise<ScreenshotFrameState> {
+  const first = await probeScreenshotFrame(tabId, FRAME_PROBE_WAIT_MS);
+  if (first.visibility !== 'visible') throw tabNotPaintingError(first.visibility);
+  if (first.painted) return first;
+  const second = await probeScreenshotFrame(tabId, FRAME_PROBE_WAIT_MS);
+  if (second.visibility !== 'visible') throw tabNotPaintingError(second.visibility);
+  if (!second.painted) throw tabNotPaintingError(second.visibility, 2);
+  return second;
 }
 
 export async function captureScreenshot(
@@ -172,7 +190,7 @@ export async function captureScreenshot(
   // unoccluded-but-unpainted or hidden tab silently answers with its last
   // painted pixels (usually the top of the page). Prove the tab is painting and
   // pin the scroll offset before spending a capture call on it.
-  const frame = await probeScreenshotFrame(tabId, FRAME_PROBE_WAIT_MS);
+  const frame = await verifiedFrameBeforeCapture(tabId);
   if (frame.visibility !== 'visible' || !frame.painted) throw tabNotPaintingError(frame.visibility);
   const captureOptions = format === 'jpeg' ? { format: 'jpeg' as const, quality: 82 } : { format: 'png' as const };
   let dataUrl: string;

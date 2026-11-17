@@ -432,15 +432,16 @@ def _isolated_instance_running(paths: RuntimePaths) -> bool:
     is never mistaken for this command's own. A record that already ended is a
     finished launch, not a browser, and never blocks a cleanup.
     """
-    from native_host.isolation import read_state, supervisor_alive
+    from native_host.isolation import connected, supervisor_alive
     root = paths.root
-    record = read_state(root)
     supervisor = root / "supervisor.running"
     if supervisor.exists() and supervisor_alive(supervisor):
         return True
-    # An unfinished launch record whose supervisor file this call cannot see yet is
-    # still not provably ours: leaving a browser running is the safe outcome.
-    return bool(record.get("started_at")) and record.get("ended_at") is None
+    # A listening host socket proves a live browser even when the supervisor file
+    # has not been written yet. A launch record alone proves nothing: a supervisor
+    # killed with its terminal leaves an unterminated record, and treating that as
+    # a peer's browser is how a launched-but-refused instance stays behind.
+    return connected(paths)
 
 
 def _managed_scope_failure(exc: CLIError, paths: RuntimePaths, *,

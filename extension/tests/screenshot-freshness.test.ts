@@ -87,4 +87,23 @@ describe('screenshot freshness', () => {
     });
     expect(captureVisibleTab).toHaveBeenCalledTimes(1);
   });
+
+  it('gives a busy but visible page a second bounded wait before refusing it', async () => {
+    // visibilityState stays "visible" yet no frame is served: a page too busy to paint.
+    const busy = frame({ painted: false, scroll: { x: 0, y: 1753 } });
+    const { captureVisibleTab, executeScript } = stubScrolledTab([busy]);
+
+    await expect(captureScreenshot(21, 7)).rejects.toMatchObject({
+      code: 'screenshot_tab_not_painting',
+      message: expect.stringContaining('did not paint'),
+    });
+    expect(captureVisibleTab).not.toHaveBeenCalled();
+    // Two bounded waits, not one: only a page that misses both is refused.
+    expect(
+      executeScript.mock.calls.filter((call) => {
+        const args = (call[0] as { args?: unknown[] }).args ?? [];
+        return args.length === 1 && args[0] === FRAME_PROBE_WAIT_MS;
+      }),
+    ).toHaveLength(2);
+  });
 });
