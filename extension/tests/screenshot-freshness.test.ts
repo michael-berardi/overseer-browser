@@ -36,6 +36,17 @@ function stubScrolledTab(frames: ScreenshotFrameState[]) {
   return { query, captureVisibleTab, executeScript };
 }
 
+function stubJpegEncoding() {
+  const JPEG = new Uint8Array([0xff, 0xd8, 0xff, 0xe0]);
+  vi.stubGlobal('createImageBitmap', vi.fn(async () => ({ width: 800, height: 600, close: vi.fn() })));
+  vi.stubGlobal('OffscreenCanvas', vi.fn(function () {
+    return {
+      getContext: vi.fn(() => ({ drawImage: vi.fn() })),
+      convertToBlob: vi.fn(async () => ({ arrayBuffer: async () => JPEG.buffer })),
+    };
+  }));
+}
+
 describe('screenshot freshness', () => {
   it('rejects a scrolled, non-painting tab instead of returning its stale top-of-page frame', async () => {
     const stale = frame({ visibility: 'hidden', painted: false, scroll: { x: 0, y: 1753 } });
@@ -54,14 +65,7 @@ describe('screenshot freshness', () => {
   it('returns a verified frame and reports the scroll offset it was captured at', async () => {
     const verified = frame({ scroll: { x: 0, y: 1753 } });
     const { captureVisibleTab, executeScript } = stubScrolledTab([verified, verified]);
-    const JPEG = new Uint8Array([0xff, 0xd8, 0xff, 0xe0]);
-    vi.stubGlobal('createImageBitmap', vi.fn(async () => ({ width: 800, height: 600, close: vi.fn() })));
-    vi.stubGlobal('OffscreenCanvas', vi.fn(function () {
-      return {
-        getContext: vi.fn(() => ({ drawImage: vi.fn() })),
-        convertToBlob: vi.fn(async () => ({ arrayBuffer: async () => JPEG.buffer })),
-      };
-    }));
+    stubJpegEncoding();
 
     const result = await captureScreenshot(21, 7);
 
@@ -86,6 +90,27 @@ describe('screenshot freshness', () => {
       fallback: expect.stringContaining('retry'),
     });
     expect(captureVisibleTab).toHaveBeenCalledTimes(1);
+  });
+
+  it('captures a visible tab that paints on the second bounded probe', async () => {
+    const verified = frame({ scroll: { x: 0, y: 1753 } });
+    const missed = frame({ painted: false, scroll: verified.scroll });
+    const { captureVisibleTab, executeScript } = stubScrolledTab([missed, verified, verified]);
+    stubJpegEncoding();
+
+    const result = await captureScreenshot(21, 7);
+
+    const probes = executeScript.mock.calls.flatMap(([{ args }], index) =>
+      args?.length === 1 && typeof args[0] === 'number'
+        ? [{ wait: args[0], order: executeScript.mock.invocationCallOrder[index]! }]
+        : [],
+    );
+    expect(probes.map(({ wait }) => wait)).toEqual([FRAME_PROBE_WAIT_MS, FRAME_PROBE_WAIT_MS, 0]);
+    expect(captureVisibleTab).toHaveBeenCalledTimes(1);
+    const captureOrder = captureVisibleTab.mock.invocationCallOrder[0]!;
+    expect(captureOrder).toBeGreaterThan(probes[1]!.order);
+    expect(captureOrder).toBeLessThan(probes[2]!.order);
+    expect(result.frame).toEqual(verified);
   });
 
   it('gives a busy but visible page a second bounded wait before refusing it', async () => {

@@ -33,7 +33,7 @@ except ImportError:
     from cli.runtime_discovery import find_active_runtime
 from cli import evidence, recording, dom_query, temp_outputs
 
-CLI_VERSION = "0.10.9"
+CLI_VERSION = "0.10.10"
 MAX_UPLOAD_BYTES = 8 * 1024 * 1024
 MAX_UPLOAD_CHUNKS = 32
 MAX_UPLOAD_FILES = 16
@@ -455,18 +455,26 @@ def _managed_scope_failure(exc: CLIError, paths: RuntimePaths, *,
         return exc
     details = dict(exc.details or {})
     details["instance_was_running"] = bool(instance_was_running)
-    if instance_was_running or not start_attempted:
-        return CLIError(exc.code, exc.message, details)
-    stopped = False
-    try:
-        from native_host.isolation import stop_instance
-        stop_instance(paths)
-        stopped = True
-    except (ValueError, OSError):
-        stopped = False
-    details["instance_stopped"] = stopped
-    suffix = ("The isolated browser this command started was stopped" if stopped else
-              "The isolated browser this command started could not be stopped; run overseer-browser sessions stop to close it")
+    if instance_was_running:
+        suffix = ("The isolated browser was already running and was left running. "
+                  "Coordinate with its session owners before restarting the dedicated browser with an up-to-date installation")
+    elif not start_attempted:
+        suffix = ("This command did not start or stop an isolated browser. "
+                  "Check the installed browser build with overseer-browser doctor before retrying")
+    else:
+        try:
+            from native_host.isolation import connected, stop_instance
+            stop_instance(paths)
+            stopped = not connected(paths)
+        except (ValueError, OSError):
+            stopped = False
+        details["instance_stopped"] = stopped
+        if stopped:
+            suffix = ("The isolated browser this command started was stopped. "
+                      "Check the installed browser build with overseer-browser doctor before retrying the start")
+        else:
+            suffix = ("The isolated browser this command started could not be stopped automatically. "
+                      "If it is still open, have its owner quit only that dedicated Chrome instance before retrying")
     return CLIError(exc.code, f"{exc.message}. {suffix}", details)
 
 
@@ -517,8 +525,9 @@ def request_once(command: str, params: dict[str, Any], *, timeout: float,
 
 
 _SCOPE_REMEDIATION = (
-    "reload the OverSeer Browser extension in that Chrome window (overseer-browser refresh-extension), "
-    "or select the managed isolated browser with OVERSEER_BROWSER_CONNECTION=managed, then retry"
+    "no scoped action was performed. When the relay is idle, have its owner load or reload the updated "
+    "OverSeer Browser extension at chrome://extensions, then retry. To start a separate managed session, "
+    "use OVERSEER_BROWSER_CONNECTION=managed; that does not stop any relay session"
 )
 
 
@@ -551,8 +560,11 @@ def _scope_refusal(capability: dict[str, Any], connection_mode: str | None) -> C
     message = (
         "Scoped browser control requires the updated native host and OverSeer Browser 0.4.0+ extension "
         f"(observed extension version: {observed_version or 'unknown'}; required CLI version: {CLI_VERSION}; "
-        f"connection mode: {connection_mode or 'unknown'}); {_SCOPE_REMEDIATION}"
+        f"connection mode: {connection_mode or 'unknown'})"
     )
+    # The managed caller adds remediation after determining what happened to its instance.
+    if connection_mode != "managed-isolated":
+        message = f"{message}; {_SCOPE_REMEDIATION}"
     return CLIError("extension_upgrade_required", message, details)
 
 

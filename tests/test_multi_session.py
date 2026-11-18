@@ -102,7 +102,8 @@ class SessionRoutingTests(unittest.TestCase):
                         self.assertEqual(raised.exception.details["required_version"], CLI_VERSION)
                         # This internal paths seam carries no connection mode; the CLI fills it in.
                         self.assertIn("connection_mode", raised.exception.details)
-                        self.assertIn("refresh-extension", raised.exception.message)
+                        self.assertIn("chrome://extensions", raised.exception.message)
+                        self.assertNotIn("refresh-extension", raised.exception.message)
                         self.assertIn("OVERSEER_BROWSER_CONNECTION=managed", raised.exception.message)
                         self.assertEqual([item["command"] for item in connection.sent], ["health.status"])
 

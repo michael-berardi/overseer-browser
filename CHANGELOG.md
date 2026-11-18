@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.10.10
+
+- When scoped control is refused, the CLI says whether its dedicated browser was stopped, left running, or could not be stopped. It no longer suggests retrying `sessions stop` against the same rejected connection.
+- Document screenshot probe limits: Chrome pages that disallow script injection now return `screenshot_probe_failed` rather than an unverified image.
+
 ## 0.10.9
 
 - Screenshots no longer return silent stale pixels. Every capture first proves the tab is painting (visibility plus two animation frames inside a 500 ms bound, retried once so a busy but painting page is not refused) and pins the scroll offset it belongs to, then re-checks both after the capture: an unpainted or hidden tab fails fast as `screenshot_tab_not_painting` instead of returning its last painted frame (typically the top of the page, long after a scroll), a viewport that moves under the frame fails as `screenshot_viewport_changed`, and a probe that cannot run is `screenshot_probe_failed`. Successful results report the verified `frame` state. No new permission, no debugger escalation and no forced focus.

@@ -91,7 +91,7 @@ class StartupGateTests(unittest.TestCase):
         self.assertEqual(error.details["observed_extension_version"], "0.9.3")
         self.assertEqual(error.details["required_version"], CLI_VERSION)
         self.assertEqual(error.details["connection_mode"], "operator-relay")
-        for expected in ("0.9.3", CLI_VERSION, "operator-relay", "refresh-extension",
+        for expected in ("0.9.3", CLI_VERSION, "operator-relay", "chrome://extensions", "no scoped action was performed",
                          "OVERSEER_BROWSER_CONNECTION=managed"):
             self.assertIn(expected, error.message)
         # The refusal is unchanged: the scoped command was never forwarded.
@@ -144,7 +144,7 @@ class StartupGateTests(unittest.TestCase):
                 request_once("snapshot", {}, timeout=1, session_key="agent-a")
         self.assertEqual(raised.exception.details["reason"], "probe_unusable")
 
-    def test_managed_start_that_fails_the_probe_stops_the_instance_it_started(self):
+    def _refuse_managed(self, command, *, supervisor_live, socket_live, stop_error=None, socket_after_stop=False):
         connection = FakeSocket()
 
         def response(*args, **kwargs):
@@ -152,51 +152,82 @@ class StartupGateTests(unittest.TestCase):
 
         with patch("cli.main.RuntimePaths.discover", return_value=self.base), \
                 patch("cli.main.find_active_runtime", return_value=None), \
-                patch("native_host.isolation.read_state", return_value={}), \
-                patch("native_host.isolation.supervisor_alive", return_value=False), \
-                patch("native_host.isolation.connected", return_value=False), \
+                patch("native_host.isolation.supervisor_alive", return_value=supervisor_live), \
+                patch("native_host.isolation.connected", side_effect=[socket_live, socket_after_stop]), \
                 patch("native_host.isolation.ensure_instance") as ensure, \
-                patch("native_host.isolation.stop_instance") as stop, \
+                patch("native_host.isolation.stop_instance", side_effect=stop_error) as stop, \
                 patch("cli.main.socket.socket", return_value=connection), \
                 patch("cli.main.read_frame", side_effect=response):
             with self.assertRaises(CLIError) as raised:
-                request_once("sessions.start", {}, timeout=1, session_key="agent-a")
-        ensure.assert_called_once()
-        stop.assert_called_once_with(self.managed)
+                request_once(command, {}, timeout=1, session_key="agent-a")
+        if command == "sessions.start":
+            ensure.assert_called_once_with(self.managed, 1)
+        else:
+            ensure.assert_not_called()
         error = raised.exception
         self.assertEqual(error.code, "extension_upgrade_required")
-        self.assertIs(error.details["instance_was_running"], False)
-        self.assertIs(error.details["instance_stopped"], True)
         self.assertEqual(error.details["reason"], "capability_not_advertised")
         self.assertEqual(error.details["observed_extension_version"], "0.9.3")
+        self.assertEqual(error.details["required_version"], CLI_VERSION)
         self.assertEqual(error.details["connection_mode"], "managed-isolated")
+        self.assertNotIn("refresh-extension", error.message)
+        self.assertNotIn("OVERSEER_BROWSER_CONNECTION=managed", error.message)
+        self.assertNotIn("sessions stop", error.message)
+        self.assertEqual([item["command"] for item in connection.sent], ["health.status"])
+        self.assertEqual(connection.sent[0]["session_key"], "agent-a")
+        self.assertEqual(connection.sent[0]["params"], {"capabilities_only": True})
+        return error, stop
+
+    def test_managed_start_that_fails_the_probe_stops_the_instance_it_started(self):
+        error, stop = self._refuse_managed("sessions.start", supervisor_live=False, socket_live=False)
+        stop.assert_called_once_with(self.managed)
+        self.assertIs(error.details["instance_was_running"], False)
+        self.assertIs(error.details["instance_stopped"], True)
         self.assertIn("was stopped", error.message)
+        self.assertIn("before retrying the start", error.message)
 
-    def test_failure_never_stops_an_instance_that_was_already_running(self):
-        connection = FakeSocket()
+    def test_managed_start_whose_cleanup_fails_suggests_quitting_only_dedicated_chrome(self):
+        error, stop = self._refuse_managed("sessions.start", supervisor_live=False, socket_live=False,
+                                           stop_error=ValueError("Dedicated Chrome shutdown timed out"))
+        stop.assert_called_once_with(self.managed)
+        self.assertIs(error.details["instance_was_running"], False)
+        self.assertIs(error.details["instance_stopped"], False)
+        self.assertIn("could not be stopped automatically", error.message)
+        self.assertIn("quit only that dedicated Chrome instance", error.message)
+
+    def test_managed_cleanup_does_not_claim_success_while_socket_responds(self):
+        error, stop = self._refuse_managed("sessions.start", supervisor_live=False, socket_live=False,
+                                           socket_after_stop=True)
+        stop.assert_called_once_with(self.managed)
+        self.assertIs(error.details["instance_stopped"], False)
+        self.assertIn("could not be stopped", error.message)
+
+    def test_failed_managed_start_never_stops_a_preexisting_instance(self):
         (self.managed.root / "supervisor.running").write_text(json.dumps({"pid": 4321}))
+        for evidence, supervisor_live, socket_live in (("live supervisor", True, False),
+                                                       ("live socket, dead supervisor", False, True)):
+            with self.subTest(evidence=evidence):
+                error, stop = self._refuse_managed("sessions.start", supervisor_live=supervisor_live,
+                                                   socket_live=socket_live)
+                stop.assert_not_called()
+                self.assertIs(error.details["instance_was_running"], True)
+                self.assertNotIn("instance_stopped", error.details)
+                self.assertIn("was already running and was left running", error.message)
+                self.assertIn("Coordinate with its session owners", error.message)
 
-        def response(*args, **kwargs):
-            return _reply(connection, {"multi_session": False, "extension_version": "0.9.3"})
-
-        with patch("cli.main.RuntimePaths.discover", return_value=self.base), \
-                patch("cli.main.find_active_runtime", return_value=None), \
-                patch("native_host.isolation.read_state", return_value={"version": 1, "started_at": 1.0}), \
-                patch("native_host.isolation.supervisor_alive", return_value=True), \
-                patch("native_host.isolation.connected", return_value=True), \
-                patch("native_host.isolation.ensure_instance") as ensure, \
-                patch("native_host.isolation.stop_instance") as stop, \
-                patch("cli.main.socket.socket", return_value=connection), \
-                patch("cli.main.read_frame", side_effect=response):
-            with self.assertRaises(CLIError) as raised:
-                request_once("sessions.start", {}, timeout=1, session_key="agent-a")
-        ensure.assert_called_once()
+    def test_managed_stop_hits_the_same_probe_and_leaves_the_instance_running(self):
+        error, stop = self._refuse_managed("sessions.stop", supervisor_live=False, socket_live=True)
         stop.assert_not_called()
-        error = raised.exception
-        self.assertEqual(error.code, "extension_upgrade_required")
         self.assertIs(error.details["instance_was_running"], True)
         self.assertNotIn("instance_stopped", error.details)
-        self.assertNotIn("was stopped", error.message)
+        self.assertIn("was already running and was left running", error.message)
+
+    def test_refused_managed_command_without_prior_liveness_does_not_claim_cleanup(self):
+        error, stop = self._refuse_managed("snapshot", supervisor_live=False, socket_live=False)
+        stop.assert_not_called()
+        self.assertIs(error.details["instance_was_running"], False)
+        self.assertNotIn("instance_stopped", error.details)
+        self.assertIn("did not start or stop an isolated browser", error.message)
 
     def test_stale_launch_record_without_a_live_supervisor_is_cleaned_up(self):
         """A supervisor killed with its terminal leaves an unterminated record, not a browser."""
