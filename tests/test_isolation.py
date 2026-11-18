@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 from native_host.runtime import RuntimePaths
-from native_host.isolation import isolated_paths, ensure_instance, supervise
+from native_host.isolation import _chrome_version, isolated_paths, ensure_instance, start_supervisor, supervise
 from native_host.host import main as host_main
 from cli.main import request_once
 
@@ -91,6 +91,39 @@ class IsolationTests(unittest.TestCase):
         self.assertFalse(stale.exists())
         self.assertTrue((hosts / 'com.paretocybernetics.overseer_browser.json').is_file())
         self.assertIn('removed legacy manifest', ''.join(call.args[0] for call in stderr.write.call_args_list))
+
+    def test_supervisor_probe_and_browser_do_not_inherit_caller_secrets(self):
+        paths = isolated_paths(self.base)
+        paths.root.mkdir()
+        chrome, extension = Path('/synthetic/chrome'), Path('/synthetic/extension')
+        fixture = {'UNRELATED_API_TOKEN': 'synthetic-never-pass', 'HOME': '/synthetic/home'}
+        with patch.dict(os.environ, fixture), \
+             patch('native_host.isolation.coalition.spawn') as launch, \
+             patch('native_host.isolation.coalition.run_capture', return_value='Synthetic Chrome') as probe:
+            start_supervisor(paths, chrome, extension, 'load-extension')
+            (paths.root / 'quit').touch()
+            launch.return_value.poll.return_value = 0
+            launch.return_value.pid = 123
+            supervise(paths.root, str(chrome), str(extension), 'load-extension')
+            self.assertEqual(os.environ['UNRELATED_API_TOKEN'], fixture['UNRELATED_API_TOKEN'])
+        self.assertEqual(launch.call_count, 2)
+        probe.assert_called_once()
+        for call in [*launch.call_args_list, probe.call_args]:
+            self.assertNotIn('UNRELATED_API_TOKEN', call.kwargs['env'])
+            self.assertNotIn(fixture['UNRELATED_API_TOKEN'], ' '.join(call.args[0]))
+            self.assertEqual(call.kwargs['env']['HOME'], fixture['HOME'])
+        self.assertEqual(launch.call_args.kwargs['env']['OVERSEER_BROWSER_RUNTIME'], str(paths.root))
+        self.assertEqual(launch.call_args.kwargs['env']['OVERSEER_BROWSER_ISOLATED_PROFILE'],
+                         str(paths.root / 'profile'))
+
+    def test_version_probe_runs_real_fixture_without_inherited_secret(self):
+        chrome = self.base.root / 'synthetic-chrome'
+        chrome.write_text('#!/bin/sh\n'
+                          'if [ -n "$UNRELATED_API_TOKEN" ]; then exit 42; fi\n'
+                          'if [ "$1" = "--version" ]; then echo "Synthetic Chrome 1"; fi\n')
+        chrome.chmod(0o700)
+        with patch.dict(os.environ, {'UNRELATED_API_TOKEN': 'synthetic-never-pass'}):
+            self.assertEqual(_chrome_version(str(chrome), self.base.root), 'Synthetic Chrome 1')
 
     def test_launch_has_own_profile_and_shutdown_uses_child_handle(self):
         root = isolated_paths(self.base).root

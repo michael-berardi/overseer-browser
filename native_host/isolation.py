@@ -145,13 +145,28 @@ def socket_path_problem(paths: RuntimePaths) -> str | None:
             f'cannot bind {paths.socket}; use a shorter OVERSEER_BROWSER_RUNTIME than {paths.root}')
 
 
+# The local browser and its native host do not need the caller's credentials.
+# An allowlist also protects against newly introduced secret variables.
+_ISOLATION_ENV_KEYS = frozenset({
+    'HOME', 'PATH', 'TMPDIR', 'USER', 'LOGNAME', 'SHELL', 'TZ',
+    'LANG', 'LANGUAGE', 'LC_ALL', 'LC_CTYPE', 'LC_MESSAGES', '__CF_USER_TEXT_ENCODING',
+    'DISPLAY', 'WAYLAND_DISPLAY', 'XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS', 'XAUTHORITY',
+    'OVERSEER_BROWSER_COALITION', 'ULTRAVOX_VOICE_SOCKET', 'ULTRAVOX_RUNTIME_DIR',
+})
+
+
+def _isolated_launch_env() -> dict[str, str]:
+    return {key: os.environ[key] for key in _ISOLATION_ENV_KEYS if key in os.environ}
+
+
 def start_supervisor(paths: RuntimePaths, chrome: Path, extension: Path, load_mode: str) -> None:
     (paths.root / 'quit').unlink(missing_ok=True)
     # The supervisor and the browser it owns start in a fresh launchd coalition on
     # macOS, so the caller's coalition (a terminal multiplexer's, say) never holds them.
     coalition.spawn(
         [sys.executable, str(Path(__file__).resolve()), str(paths.root), str(chrome), str(extension), load_mode],
-        log=paths.root / 'chrome.log', state_dir=paths.root / 'launch', what='the isolated supervisor')
+        env=_isolated_launch_env(), log=paths.root / 'chrome.log', state_dir=paths.root / 'launch',
+        what='the isolated supervisor')
 
 
 def wait_for_connection(paths: RuntimePaths, timeout: float) -> bool:
@@ -199,7 +214,7 @@ def _chrome_version(chrome: str, state_dir: Path | None = None) -> str | None:
     """The launched build's own version, for the failure report; never stops a launch."""
     try:
         text = coalition.run_capture([chrome, '--version'], state_dir=state_dir or Path(tempfile.gettempdir()) / 'overseer-browser-launch',
-                                     timeout=10).strip()
+                                     timeout=10, env=_isolated_launch_env()).strip()
     except Exception:
         return None
     return text or None
@@ -465,7 +480,7 @@ def supervise(root: Path, chrome: str, extension: str, load_mode: str = LOAD_MOD
         'profile': str(profile),
     }
     try:
-        env = {**os.environ, 'OVERSEER_BROWSER_RUNTIME': str(root), 'OVERSEER_BROWSER_ISOLATED_PROFILE': str(profile)}
+        env = {**_isolated_launch_env(), 'OVERSEER_BROWSER_RUNTIME': str(root), 'OVERSEER_BROWSER_ISOLATED_PROFILE': str(profile)}
         process = coalition.spawn([chrome, f'--user-data-dir={profile}', *load_flags, '--no-first-run', '--no-default-browser-check', '--disable-background-mode', 'about:blank'],
                                   env=env, log=root / 'chrome.log', state_dir=root / 'launch', what='the isolated Chrome')
         with os.fdopen(fd, 'w') as state:

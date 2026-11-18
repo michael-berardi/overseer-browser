@@ -34,6 +34,8 @@ The manifest must not add history, bookmarks, `webRequest`, or required debugger
 
 A dedicated Agent Window is the default. The extension automates tabs created in that window. A normal tab is read-only until the user explicitly borrows it through the popup. Borrowed tabs are returned when requested and during session stop. The extension does not passively inventory arbitrary tabs or inject automation code into tabs that are not session-owned or borrowed.
 
+The isolated browser and its launcher receive only the environment entries needed for local operation. They do not inherit the calling shell’s API tokens or other unrelated credentials.
+
 This is an access boundary, not a claim that a webpage is trustworthy. A page can still display or receive anything the user explicitly asks the automation to display or enter. Do not use browser control with credentials or sensitive data unless that is the intended task.
 
 ## Meeting data minimization
