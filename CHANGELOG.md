@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.10.11
+
+- Isolated Chrome launches no longer inherit the caller's environment. The supervisor, Chrome and its version probe get an allowlist of runtime variables only, so credentials exported in a terminal never reach the launched browser's command line or environment.
+
 ## 0.10.10
 
 - When scoped control is refused, the CLI says whether its dedicated browser was stopped, left running, or could not be stopped. It no longer suggests retrying `sessions stop` against the same rejected connection.
