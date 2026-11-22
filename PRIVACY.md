@@ -22,7 +22,7 @@ Runtime state is bounded and local. Session state and pending meeting delivery a
 ## Permissions and access boundaries
 
 - **HTTP(S) host access:** the installed extension declares broad `<all_urls>` access for the dedicated Agent Window and screenshots. Runtime automation of borrowed operator tabs remains gated by an explicit popup grant for the current origin or every HTTP(S) origin with **Enable unlimited**; those grants can be revoked.
-- **User Scripts:** page evaluation uses Chrome’s `userScripts` API when the one-time **Allow User Scripts** setting is enabled, otherwise a bounded MAIN-world fallback on pages that permit injection. Dedicated Agent Window tabs need no popup grant; borrowed tabs require a popup site-access grant and the User Scripts setting.
+- **User Scripts:** page evaluation uses Chrome’s `userScripts` API when the one-time **Allow User Scripts** setting is enabled, otherwise a bounded MAIN-world fallback on pages that permit injection. Dedicated Agent Window tabs need no popup grant; borrowed tabs require a popup site-access grant and the evaluate capability grant. Strict-CSP pages still require the User Scripts setting.
 - **Native Messaging:** connects the extension to the local native host and is not a network permission.
 - **Storage, scripting, tabs, and windows:** support the visible popup, session ownership, content traversal, and browser actions.
 - **Debugger access:** not enabled or requested by this release. Debugger-dependent operations are unsupported; there is no automatic attachment, raw CDP passthrough, or passive debugger collection.

@@ -61,10 +61,10 @@ Ref-based actions work through the top document, open shadow roots and
 visible same-origin frames; cross-origin frame DOM stays opaque. Mutations
 report a bounded `dom_mutations` count. Use explicit tab IDs for concurrent
 clients and serialize navigation per tab. `evaluate` in the session's own Agent
-Window needs no popup grant; it uses User Scripts where available and falls
-back to MAIN-world injection on pages that permit it. Borrowed tabs need a site
-grant and the **Allow User Scripts** setting; strict sites still need that
-setting.
+Window needs no popup grant; elsewhere the tab needs a site grant and the
+evaluate capability grant. Evaluation uses User Scripts where available and
+falls back to bounded MAIN-world injection on pages that permit it;
+strict-CSP pages still require the **Allow User Scripts** setting.
 
 Keyboard events are synthetic. `press Enter` includes legacy key code 13 for
 older controls as well as the modern key and code. A cancelled keydown prevents
