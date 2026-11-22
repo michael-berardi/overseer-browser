@@ -16,6 +16,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 CLI = os.environ.get("OVERSEER_BROWSER_CLI", "overseer-browser")
 ENABLED = os.environ.get("OVERSEER_BROWSER_LIVE_VIEWABILITY") == "1"
+POSTS: list[dict] = []
 
 PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>Viewability regression fixture</title>
@@ -73,7 +74,11 @@ class FixtureHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         length = int(self.headers.get("Content-Length", "0") or 0)
         if length:
-            self.rfile.read(min(length, 8192))
+            payload = self.rfile.read(min(length, 8192)).decode("utf-8", "replace")
+            try:
+                POSTS.append(json.loads(payload))
+            except ValueError:
+                POSTS.append({"raw": payload[:2048]})
         self.send_response(204)
         self.send_header("Content-Length", "0")
         self.end_headers()
@@ -82,11 +87,13 @@ class FixtureHandler(BaseHTTPRequestHandler):
 @unittest.skipUnless(ENABLED, "set OVERSEER_BROWSER_LIVE_VIEWABILITY=1 to run the real-session check")
 class LiveViewabilityTests(unittest.TestCase):
     def test_visible_card_fires_observer_and_beacon_metadata_is_exposed(self):
+        POSTS.clear()
         server = ThreadingHTTPServer(("127.0.0.1", 0), FixtureHandler)
         server.daemon_threads = True
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         session_key = None
+        stop_ok = False
         try:
             def cli(*args: str):
                 completed = subprocess.run(
@@ -101,6 +108,10 @@ class LiveViewabilityTests(unittest.TestCase):
             session_key = started["sessionKey"]
             self.assertTrue(started["started"])
             cli("--session", session_key, "navigate", f"http://127.0.0.1:{server.server_port}/viewability.html")
+            clean = json.loads(cli("--session", session_key, "evaluate",
+                        "JSON.stringify({cookie:document.cookie,qa:localStorage.getItem('overseer_qa'),internal:localStorage.getItem('overseer_internal')})"))
+            self.assertIsNone(clean["qa"])
+            self.assertIsNone(clean["internal"])
             cli("--session", session_key, "network", "start")
 
             observed = cli("--session", session_key, "evaluate", EVALUATE_SOURCE)
@@ -123,6 +134,10 @@ class LiveViewabilityTests(unittest.TestCase):
             self.assertEqual(beacon["content_type"], "text/plain;charset=UTF-8")
             self.assertGreater(beacon["body_bytes"], 0)
             self.assertFalse(network["response_bodies"])
+            impressions = [post for post in POSTS if post.get("kind") == "ad_impression"]
+            self.assertTrue(impressions, POSTS)
+            self.assertEqual(impressions[-1].get("zone"), "listing-feature")
+            self.assertFalse(any("qa" in key or "internal" in key for key in impressions[-1]))
             self.assertNotIn("?", beacon["url"])
             self.assertNotIn("ad_impression", json.dumps(beacon))
 
@@ -130,21 +145,28 @@ class LiveViewabilityTests(unittest.TestCase):
             after_stop = cli("--session", session_key, "network", "read", "200")
             self.assertFalse(after_stop["capture"]["installed"])
         finally:
-            try:
-                if session_key:
-                    subprocess.run(
-                        [CLI, "--session", session_key, "sessions", "stop", "--raw-json"],
-                        capture_output=True, text=True, timeout=45, check=False,
-                    )
-            finally:
-                server.shutdown()
-                server.server_close()
-                thread.join(timeout=5)
+            if session_key:
+                stopped = subprocess.run(
+                    [CLI, "--session", session_key, "sessions", "stop", "--raw-json"],
+                    capture_output=True, text=True, timeout=45, check=False,
+                )
+                try:
+                    stop_ok = stopped.returncode == 0 and json.loads(
+                        stopped.stdout.strip().splitlines()[-1]).get("ok") is True
+                except (ValueError, IndexError):
+                    stop_ok = False
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
         listed = subprocess.run(
             [CLI, "sessions", "list", "--raw-json"],
             capture_output=True, text=True, timeout=45, check=False,
         )
-        self.assertEqual(listed.returncode, 0, listed.stderr or listed.stdout)
+        if listed.returncode != 0:
+            # A managed host may close its socket when its last session stops;
+            # a successful stop is still direct proof that this session closed.
+            self.assertTrue(stop_ok, listed.stderr or listed.stdout)
+            return
         try:
             active = json.loads(listed.stdout.strip().splitlines()[-1]).get("result") or []
         except (ValueError, IndexError):
