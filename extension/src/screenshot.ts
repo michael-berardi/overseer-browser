@@ -201,9 +201,12 @@ async function withUncoveredOwnedWindow<T>(tabId: number, windowId: number, chec
   const first = await probeScreenshotFrame(tabId, 0);
   if (first.visibility === 'visible') return work();
   const original = await browser.windows.get(windowId);
-  if (original.state !== undefined && original.state !== 'normal') throw tabNotPaintingError(first.visibility);
+  // A window sized to fill the display is reported as maximized; it can be moved only as a normal window and is re-maximized afterwards.
+  const wasMaximized = original.state === 'maximized';
+  if (original.state !== undefined && original.state !== 'normal' && !wasMaximized) throw tabNotPaintingError(first.visibility);
   const restore = async (): Promise<void> => {
-    const back: { left?: number; top?: number } = {};
+    const back: chrome.windows.UpdateInfo = {};
+    if (wasMaximized) back.state = 'maximized';
     if (original.left !== undefined) back.left = original.left;
     if (original.top !== undefined) back.top = original.top;
     await browser.windows.update(windowId, back);
@@ -215,7 +218,7 @@ async function withUncoveredOwnedWindow<T>(tabId: number, windowId: number, chec
       moved = true;
       // Chrome refuses positions that put a large window off the display; try the next one.
       try {
-        await browser.windows.update(windowId, { left: position.left, top: position.top });
+        await browser.windows.update(windowId, wasMaximized ? { state: 'normal', left: position.left, top: position.top } : { left: position.left, top: position.top });
       } catch {
         continue;
       }

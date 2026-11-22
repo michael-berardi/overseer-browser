@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.10.14
+
+- Hidden Agent Window screenshots now also work for a window Chrome reports as maximized (a 1920x1080 window on a 1920x1080 display): it is moved as a normal window for the capture and maximized again afterwards. Minimized and fullscreen windows are still refused.
+
 ## 0.10.13
 
 - Hidden Agent Window screenshots: when Chrome refuses one of the positions tried (a large window cannot be placed there), the extension skips it and tries the next, so a 1920x1080 Agent Window is captured as well as a mobile one.

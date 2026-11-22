@@ -134,20 +134,22 @@ describe('screenshot freshness', () => {
 
   describe('hidden owned Agent Window', () => {
     /** A window the OS reports as covered at its origin but visible once moved clear of the cover. */
-    function stubHiddenWindow(visibleAt: (left: number, top: number) => boolean, rejectAt: (left: number, top: number) => boolean = () => false) {
+    function stubHiddenWindow(visibleAt: (left: number, top: number) => boolean, rejectAt: (left: number, top: number) => boolean = () => false, initialState = 'normal') {
       let pos = { left: 0, top: 0 };
+      let state = initialState;
       const verified = frame({ scroll: { x: 0, y: 40 } });
       const hidden = frame({ visibility: 'hidden', painted: false, scroll: verified.scroll });
       const query = vi.fn(async () => [{ id: 21, windowId: 7, active: true }]);
       const captureVisibleTab = vi.fn(async () => TOP_OF_PAGE_JPEG);
-      const update = vi.fn(async (_id: number, info: { left?: number; top?: number; focused?: boolean }) => {
+      const update = vi.fn(async (_id: number, info: { left?: number; top?: number; focused?: boolean; state?: string }) => {
+        if (info.state) state = info.state;
         if (rejectAt(info.left ?? pos.left, info.top ?? pos.top)) throw new Error('Invalid value for bounds');
         pos = { left: info.left ?? pos.left, top: info.top ?? pos.top };
         return { id: 7, ...pos };
       });
       let getDelay = 0;
       const get = vi.fn(async () => {
-        const snapshot = { id: 7, ...pos, width: 800, height: 600, state: 'normal' };
+        const snapshot = { id: 7, ...pos, width: 800, height: 600, state };
         if (getDelay) await new Promise<void>((resolve) => setTimeout(resolve, getDelay));
         return snapshot;
       });
@@ -158,7 +160,7 @@ describe('screenshot freshness', () => {
       });
       vi.stubGlobal('browser', { tabs: { query }, windows: { get, update } });
       vi.stubGlobal('chrome', { tabs: { captureVisibleTab }, scripting: { executeScript } });
-      return { captureVisibleTab, update, get, verified, position: () => pos, setPosition: (next: { left: number; top: number }) => { pos = next; }, delayGet: (ms: number) => { getDelay = ms; } };
+      return { captureVisibleTab, update, get, verified, position: () => pos, state: () => state, setPosition: (next: { left: number; top: number }) => { pos = next; }, delayGet: (ms: number) => { getDelay = ms; } };
     }
 
     it('moves the owned window clear of its cover without focusing it, captures, and restores its position', async () => {
@@ -225,6 +227,26 @@ describe('screenshot freshness', () => {
       // The second capture reads the window's position only after the first has restored it.
       const firstRestore = update.mock.invocationCallOrder.find((_, index) => update.mock.calls[index]![1].left === 120)!;
       expect(get.mock.invocationCallOrder[1]!).toBeGreaterThan(firstRestore);
+    });
+
+    it('moves a maximized owned window as a normal window and maximizes it again afterwards', async () => {
+      const { captureVisibleTab, position, state } = stubHiddenWindow((left) => left >= 1000, () => false, 'maximized');
+      stubJpegEncoding();
+
+      await captureScreenshot(21, 7, undefined, 'jpeg', () => undefined, { ownedWindow: true });
+
+      expect(captureVisibleTab).toHaveBeenCalledTimes(1);
+      expect(state()).toBe('maximized');
+      expect(position()).toEqual({ left: 0, top: 0 });
+    });
+
+    it('refuses a minimized or fullscreen owned window without moving it', async () => {
+      for (const initial of ['minimized', 'fullscreen']) {
+        const { captureVisibleTab, update } = stubHiddenWindow((left) => left >= 1000, () => false, initial);
+        await expect(captureScreenshot(21, 7, undefined, 'jpeg', () => undefined, { ownedWindow: true })).rejects.toMatchObject({ code: 'screenshot_tab_not_painting' });
+        expect(update).not.toHaveBeenCalled();
+        expect(captureVisibleTab).not.toHaveBeenCalled();
+      }
     });
 
     it('never moves a window that is not an owned Agent Window', async () => {

@@ -1,6 +1,6 @@
 {
   "name": "overseer-browser-extension",
-  "version": "0.10.13",
+  "version": "0.10.14",
   "description": "Chromium extension for local browser automation",
   "private": true,
   "license": "MIT",
