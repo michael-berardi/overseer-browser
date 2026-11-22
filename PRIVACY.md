@@ -22,7 +22,7 @@ Runtime state is bounded and local. Session state and pending meeting delivery a
 ## Permissions and access boundaries
 
 - **HTTP(S) host access:** the installed extension declares broad `<all_urls>` access for the dedicated Agent Window and screenshots. Runtime automation of borrowed operator tabs remains gated by an explicit popup grant for the current origin or every HTTP(S) origin with **Enable unlimited**; those grants can be revoked.
-- **User Scripts:** CSP-safe page evaluation uses Chrome’s `userScripts` API after Chrome’s one-time **Allow User Scripts** setting is enabled. Dedicated Agent Window tabs use the installed host permission; borrowed tabs additionally require a popup site-access grant.
+- **User Scripts:** page evaluation uses Chrome’s `userScripts` API when the one-time **Allow User Scripts** setting is enabled, otherwise a bounded MAIN-world fallback on pages that permit injection. Dedicated Agent Window tabs need no popup grant; borrowed tabs require a popup site-access grant and the User Scripts setting.
 - **Native Messaging:** connects the extension to the local native host and is not a network permission.
 - **Storage, scripting, tabs, and windows:** support the visible popup, session ownership, content traversal, and browser actions.
 - **Debugger access:** not enabled or requested by this release. Debugger-dependent operations are unsupported; there is no automatic attachment, raw CDP passthrough, or passive debugger collection.
@@ -50,7 +50,7 @@ The raw URL, query string, meeting ID, title, page content, participant list, cr
 | --- | --- | --- |
 | CLI → host | random token, framed messages, user-only socket, peer-UID check where supported | another process running as the same user may access local IPC or state |
 | Host → extension | Chrome Native Messaging, exact extension identity in `allowed_origins`, versioned frames | a user who can modify the browser profile or host registration can alter the trust chain |
-| Extension → page | active session, Agent Window/borrow ownership, explicit current-origin or unlimited HTTP(S) grant, CSP-exempt User Scripts evaluation | explicitly controlled pages can observe actions and values sent to them; unlimited access widens the set of reachable pages |
+| Extension → page | active session, Agent Window/borrow ownership, explicit current-origin or unlimited HTTP(S) grant for borrowed tabs, User Scripts or bounded MAIN-world evaluation | explicitly controlled pages can observe actions and values sent to them; unlimited access widens the set of reachable pages |
 | Meeting page → reminder | exact host matches, parser, opaque salted key, bounded deduplication | a compromised page or browser can present false UI |
 | Local files → privacy | per-user paths, restrictive modes, no external upload by default | backups, shell history, browser sync, malware, or an administrator may expose local files |
 

@@ -60,9 +60,11 @@ afterwards; if nothing opens a picker within 5 seconds it fails with
 Ref-based actions work through the top document, open shadow roots and
 visible same-origin frames; cross-origin frame DOM stays opaque. Mutations
 report a bounded `dom_mutations` count. Use explicit tab IDs for concurrent
-clients and serialize navigation per tab. `evaluate` needs a site grant and
-Chrome's **Allow User Scripts** setting, and runs in the CSP-exempt User Scripts
-world, so strict sites do not need `unsafe-eval`.
+clients and serialize navigation per tab. `evaluate` in the session's own Agent
+Window needs no popup grant; it uses User Scripts where available and falls
+back to MAIN-world injection on pages that permit it. Borrowed tabs need a site
+grant and the **Allow User Scripts** setting; strict sites still need that
+setting.
 
 Keyboard events are synthetic. `press Enter` includes legacy key code 13 for
 older controls as well as the modern key and code. A cancelled keydown prevents

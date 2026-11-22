@@ -89,7 +89,7 @@ The required command families are:
 - `snapshot` / `observe` with stable element references; `observe` can return a bounded per-document delta
 - event-driven bounded `wait.for` conditions
 - `click`, `hover`, `fill`, `type`, `select`, `press`, `scroll`
-- site-scope- and capability-gated `evaluate`, executed through Chrome User Scripts so page CSP does not require `unsafe-eval`
+- `evaluate` in the session's own Agent Window needs no popup grant; it uses Chrome User Scripts where available and falls back to bounded MAIN-world injection on pages that permit it. Borrowed tabs remain site-scope- and capability-gated.
 - visible-tab or element screenshots
 - bounded chunked upload of 1–16 files
 - opt-in bounded console capture and redacted Resource Timing metadata

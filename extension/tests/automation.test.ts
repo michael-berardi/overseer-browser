@@ -157,6 +157,18 @@ describe('isolated automation contracts', () => {
     }));
   });
 
+  it('reports a stable error when both evaluation routes are unavailable', async () => {
+    vi.stubGlobal('chrome', {
+      userScripts: { execute: vi.fn(async () => { throw new Error('user scripts blocked'); }) },
+      scripting: { executeScript: vi.fn(async () => { throw new Error('injection blocked'); }) },
+    });
+
+    await expect(runPageEvaluation(7, '1 + 1')).rejects.toMatchObject({
+      code: 'user_scripts_required',
+      message: 'Page evaluation is unavailable in this tab.',
+    });
+  });
+
   it('returns a structured error for page evaluation failures', async () => {
     vi.stubGlobal('chrome', {
       userScripts: {
