@@ -134,17 +134,23 @@ describe('screenshot freshness', () => {
 
   describe('hidden owned Agent Window', () => {
     /** A window the OS reports as covered at its origin but visible once moved clear of the cover. */
-    function stubHiddenWindow(visibleAt: (left: number, top: number) => boolean) {
+    function stubHiddenWindow(visibleAt: (left: number, top: number) => boolean, rejectAt: (left: number, top: number) => boolean = () => false) {
       let pos = { left: 0, top: 0 };
       const verified = frame({ scroll: { x: 0, y: 40 } });
       const hidden = frame({ visibility: 'hidden', painted: false, scroll: verified.scroll });
       const query = vi.fn(async () => [{ id: 21, windowId: 7, active: true }]);
       const captureVisibleTab = vi.fn(async () => TOP_OF_PAGE_JPEG);
       const update = vi.fn(async (_id: number, info: { left?: number; top?: number; focused?: boolean }) => {
+        if (rejectAt(info.left ?? pos.left, info.top ?? pos.top)) throw new Error('Invalid value for bounds');
         pos = { left: info.left ?? pos.left, top: info.top ?? pos.top };
         return { id: 7, ...pos };
       });
-      const get = vi.fn(async () => ({ id: 7, ...pos, width: 800, height: 600, state: 'normal' }));
+      let getDelay = 0;
+      const get = vi.fn(async () => {
+        const snapshot = { id: 7, ...pos, width: 800, height: 600, state: 'normal' };
+        if (getDelay) await new Promise<void>((resolve) => setTimeout(resolve, getDelay));
+        return snapshot;
+      });
       const executeScript = vi.fn(async (injection: { args?: unknown[] }) => {
         const args = injection.args ?? [];
         if (args.length === 1 && typeof args[0] === 'number') return [{ result: visibleAt(pos.left, pos.top) ? verified : hidden }];
@@ -152,7 +158,7 @@ describe('screenshot freshness', () => {
       });
       vi.stubGlobal('browser', { tabs: { query }, windows: { get, update } });
       vi.stubGlobal('chrome', { tabs: { captureVisibleTab }, scripting: { executeScript } });
-      return { captureVisibleTab, update, get, verified, position: () => pos };
+      return { captureVisibleTab, update, get, verified, position: () => pos, setPosition: (next: { left: number; top: number }) => { pos = next; }, delayGet: (ms: number) => { getDelay = ms; } };
     }
 
     it('moves the owned window clear of its cover without focusing it, captures, and restores its position', async () => {
@@ -164,6 +170,17 @@ describe('screenshot freshness', () => {
       expect(result.frame).toEqual(verified);
       expect(captureVisibleTab).toHaveBeenCalledTimes(1);
       expect(update.mock.calls.every(([, info]) => info.focused === undefined && !('width' in info) && !('height' in info))).toBe(true);
+      expect(position()).toEqual({ left: 0, top: 0 });
+    });
+
+    it('skips positions Chrome refuses for a large window and uses the next one', async () => {
+      const { captureVisibleTab, position } = stubHiddenWindow((left, top) => left === 1500 && top === 600, (left, top) => left === 3000 || top === 800);
+      stubJpegEncoding();
+
+      const result = await captureScreenshot(21, 7, undefined, 'jpeg', () => undefined, { ownedWindow: true });
+
+      expect(result.frame?.visibility).toBe('visible');
+      expect(captureVisibleTab).toHaveBeenCalledTimes(1);
       expect(position()).toEqual({ left: 0, top: 0 });
     });
 
@@ -189,13 +206,25 @@ describe('screenshot freshness', () => {
     });
 
     it('serializes concurrent captures so the original position is restored exactly', async () => {
-      const { position } = stubHiddenWindow((left) => left >= 1000);
+      // The window needs 300 ms at the cleared position before it reports visible, as Chrome's occlusion tracking does.
+      let movedAt = 0;
+      let lastLeft = 120;
+      const { position, setPosition, get, update } = stubHiddenWindow((left) => {
+        if (left !== lastLeft) { lastLeft = left; movedAt = Date.now(); }
+        return left >= 1000 && Date.now() - movedAt >= 300;
+      });
+      setPosition({ left: 120, top: 80 });
       stubJpegEncoding();
-      await Promise.all([
-        captureScreenshot(21, 7, undefined, 'jpeg', () => undefined, { ownedWindow: true }),
-        captureScreenshot(21, 7, undefined, 'jpeg', () => undefined, { ownedWindow: true }),
-      ]);
-      expect(position()).toEqual({ left: 0, top: 0 });
+      const first = captureScreenshot(21, 7, undefined, 'jpeg', () => undefined, { ownedWindow: true });
+      // The second capture starts after the first has already moved the window.
+      await new Promise<void>((resolve) => setTimeout(resolve, 60));
+      const second = captureScreenshot(21, 7, undefined, 'jpeg', () => undefined, { ownedWindow: true });
+      await Promise.all([first, second]);
+      // Without serialization the second capture reads the first one's temporary position as the original.
+      expect(position()).toEqual({ left: 120, top: 80 });
+      // The second capture reads the window's position only after the first has restored it.
+      const firstRestore = update.mock.invocationCallOrder.find((_, index) => update.mock.calls[index]![1].left === 120)!;
+      expect(get.mock.invocationCallOrder[1]!).toBeGreaterThan(firstRestore);
     });
 
     it('never moves a window that is not an owned Agent Window', async () => {

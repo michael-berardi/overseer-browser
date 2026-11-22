@@ -213,7 +213,12 @@ async function withUncoveredOwnedWindow<T>(tabId: number, windowId: number, chec
     for (const position of UNCOVER_POSITIONS) {
       checkCancelled();
       moved = true;
-      await browser.windows.update(windowId, { left: position.left, top: position.top });
+      // Chrome refuses positions that put a large window off the display; try the next one.
+      try {
+        await browser.windows.update(windowId, { left: position.left, top: position.top });
+      } catch {
+        continue;
+      }
       for (let poll = 0; poll < UNCOVER_SETTLE_POLLS; poll += 1) {
         checkCancelled();
         await new Promise<void>((resolve) => setTimeout(resolve, UNCOVER_SETTLE_MS));

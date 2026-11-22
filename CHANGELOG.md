@@ -1,8 +1,12 @@
 # Changelog
 
+## 0.10.13
+
+- Hidden Agent Window screenshots: when Chrome refuses one of the positions tried (a large window cannot be placed there), the extension skips it and tries the next, so a 1920x1080 Agent Window is captured as well as a mobile one.
+
 ## 0.10.12
 
-- Screenshots of an Agent Window that Chrome reports as hidden (covered by another window, so `document.visibilityState` is `hidden`) now work. For the session's own Agent Window only, the extension moves it by `left`/`top` to a position where it is visible, waits for the document to report visible, runs the usual paint and scroll checks, captures, and puts the window back. It never focuses, raises or resizes the window, never touches the operator's windows or borrowed tabs, and keeps the operator's authenticated session. A window that stays hidden at every position, or is minimized or maximized, still fails with `screenshot_tab_not_painting`; the stale-frame guard is unchanged.
+- Screenshots of an Agent Window that Chrome reports as hidden (covered by another window, so `document.visibilityState` is `hidden`) now work. For the session's own Agent Window only, the extension moves it by `left`/`top` to a position where it is visible, waits for the document to report visible, runs the usual paint and scroll checks, captures, and puts the window back. It never focuses, raises or resizes the window, never touches the operator's windows or borrowed tabs, and keeps the operator's authenticated session. A window that stays hidden at every position, or is minimized, maximized or fullscreen, still fails with `screenshot_tab_not_painting`; the stale-frame guard is unchanged.
 
 ## 0.10.11
 
