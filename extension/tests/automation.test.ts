@@ -142,6 +142,21 @@ describe('isolated automation contracts', () => {
     expect(program).not.toContain('Function(');
   });
 
+  it('falls back to MAIN-world scripting when user scripts are not granted', async () => {
+    const executeScript = vi.fn(async () => [{ result: { ok: true, value: 2 } }]);
+    vi.stubGlobal('chrome', {
+      userScripts: { execute: vi.fn(async () => { throw new Error('user scripts blocked'); }) },
+      scripting: { executeScript },
+    });
+
+    await expect(runPageEvaluation(7, '1 + 1')).resolves.toBe(2);
+    expect(executeScript).toHaveBeenCalledWith(expect.objectContaining({
+      target: { tabId: 7 },
+      world: 'MAIN',
+      args: [expect.stringContaining('await (1 + 1)')],
+    }));
+  });
+
   it('returns a structured error for page evaluation failures', async () => {
     vi.stubGlobal('chrome', {
       userScripts: {

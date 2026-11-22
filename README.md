@@ -63,8 +63,9 @@ overseer-browser sessions stop
 
 `sessions start` launches a dedicated browser. On first launch, approve the
 extension and enable its native connection and site access in its popup, then
-retry if startup timed out. `evaluate` also needs Chrome's **Allow User Scripts**
-setting. Your personal profile's permissions are not copied.
+retry if startup timed out. `evaluate` uses Chrome's **Allow User Scripts** setting where available and
+falls back to MAIN-world injection on pages that permit it. Strict-CSP pages
+still need that setting. Your personal profile's permissions are not copied.
 
 Screenshots retry Chrome capture-rate limits. A covered Agent Window is moved
 clear of its cover for the capture (never focused or resized) and put back;

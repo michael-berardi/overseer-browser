@@ -1045,8 +1045,8 @@ async function dispatchCommand(request: NativeRequest, state: InflightRequest): 
     return results[0].result;
   }
   if (command === 'evaluate') {
-    if (!evaluateEnabled) throw new DispatchError('capability_required', 'Evaluate is disabled. Grant this site or enable unlimited access in the popup.', 'Open the popup and choose the intended access scope.');
     const tabId = await targetTab(params, state);
+    if (!evaluateEnabled && !(await isOwnedAgentWindowTab(tabId, state))) throw new DispatchError('capability_required', 'Evaluate is disabled. Grant this site or enable unlimited access in the popup.', 'Open the popup and choose the intended access scope.');
     return withVisibleOwnedWindowIfNeeded(tabId, state, () => enqueueTabMutation(tabId, () => {
       assertNotCancelled(state);
       return runPageEvaluation(tabId, readString(params, 'source', 32_000));
@@ -1154,6 +1154,12 @@ export async function borrowExistingTab(tabId: number, sessionKey?: string): Pro
     throw new DispatchError('operator_approval_required', 'Borrowing a normal browser tab requires confirmation in the extension popup.', 'Use the popup to borrow the active tab.');
   }
   return sessionRegistry.borrow(sessionKey, tabId);
+}
+
+async function isOwnedAgentWindowTab(tabId: number, state: InflightRequest): Promise<boolean> {
+  const sessions = await sessionRegistry.get(state.sessionKey);
+  const tab = await browser.tabs.get(tabId);
+  return tab.windowId !== undefined && tab.windowId === (await sessions.requireState()).agentWindowId;
 }
 
 /**

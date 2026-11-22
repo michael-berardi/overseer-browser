@@ -159,7 +159,7 @@ export async function runPageEvaluation(tabId: number, source: string): Promise<
     }
     return { ok: true, value: JSON.parse(serialized) };
   })()`;
-  let injections: chrome.userScripts.InjectionResult[];
+  let injections: Array<{ result?: unknown }>;
   try {
     injections = await chrome.userScripts.execute({
       target: { tabId },
@@ -167,11 +167,23 @@ export async function runPageEvaluation(tabId: number, source: string): Promise<
       js: [{ code: program }],
     });
   } catch {
-    throw new AutomationError(
-      'user_scripts_required',
-      'Page evaluation requires Chrome user-script access.',
-      'Enable Allow User Scripts for OverSeer Browser in Chrome extension settings.',
-    );
+    // A managed owned window may have no User Scripts grant. MAIN-world
+    // scripting is the bounded fallback for pages that permit script
+    // injection; strict-CSP pages still need the popup grant.
+    try {
+      injections = await chrome.scripting.executeScript({
+        target: { tabId },
+        world: 'MAIN',
+        func: (source: string): unknown => (0, eval)(source),
+        args: [program],
+      });
+    } catch {
+      throw new AutomationError(
+        'user_scripts_required',
+        'Page evaluation is unavailable in this tab.',
+        'Enable Allow User Scripts for OverSeer Browser in Chrome extension settings, or use a page that permits script injection.',
+      );
+    }
   }
   const envelope = injections[0]?.result;
   if (!isExecutionEnvelope(envelope)) {

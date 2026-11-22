@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.10.17
+
+- Page evaluation now works in the session's own Agent Window without a popup capability grant and falls back to bounded MAIN-world script injection when Chrome has no User Scripts grant, so clean managed owned sessions can run viewability checks without an operator gesture. Borrowed tabs still require the popup grant, and strict-CSP pages still require User Scripts.
+
 ## 0.10.16
 
 - Post-load `evaluate` and `scroll` in a session-owned, active, normal Agent Window now briefly move that window clear of any cover, so IntersectionObserver callbacks and rendering-dependent page work run while the document is visible. Operator windows, borrowed tabs, inactive tabs and non-normal windows are untouched; original bounds are restored. If the window cannot be made visible, the command runs in place instead of failing.
