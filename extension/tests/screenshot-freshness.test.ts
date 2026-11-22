@@ -131,4 +131,79 @@ describe('screenshot freshness', () => {
       }),
     ).toHaveLength(2);
   });
+
+  describe('hidden owned Agent Window', () => {
+    /** A window the OS reports as covered at its origin but visible once moved clear of the cover. */
+    function stubHiddenWindow(visibleAt: (left: number, top: number) => boolean) {
+      let pos = { left: 0, top: 0 };
+      const verified = frame({ scroll: { x: 0, y: 40 } });
+      const hidden = frame({ visibility: 'hidden', painted: false, scroll: verified.scroll });
+      const query = vi.fn(async () => [{ id: 21, windowId: 7, active: true }]);
+      const captureVisibleTab = vi.fn(async () => TOP_OF_PAGE_JPEG);
+      const update = vi.fn(async (_id: number, info: { left?: number; top?: number; focused?: boolean }) => {
+        pos = { left: info.left ?? pos.left, top: info.top ?? pos.top };
+        return { id: 7, ...pos };
+      });
+      const get = vi.fn(async () => ({ id: 7, ...pos, width: 800, height: 600, state: 'normal' }));
+      const executeScript = vi.fn(async (injection: { args?: unknown[] }) => {
+        const args = injection.args ?? [];
+        if (args.length === 1 && typeof args[0] === 'number') return [{ result: visibleAt(pos.left, pos.top) ? verified : hidden }];
+        return [{ result: { ok: true, value: { width: 800, height: 600, devicePixelRatio: 1 } } }];
+      });
+      vi.stubGlobal('browser', { tabs: { query }, windows: { get, update } });
+      vi.stubGlobal('chrome', { tabs: { captureVisibleTab }, scripting: { executeScript } });
+      return { captureVisibleTab, update, get, verified, position: () => pos };
+    }
+
+    it('moves the owned window clear of its cover without focusing it, captures, and restores its position', async () => {
+      const { captureVisibleTab, update, verified, position } = stubHiddenWindow((left) => left >= 1000);
+      stubJpegEncoding();
+
+      const result = await captureScreenshot(21, 7, undefined, 'jpeg', () => undefined, { ownedWindow: true });
+
+      expect(result.frame).toEqual(verified);
+      expect(captureVisibleTab).toHaveBeenCalledTimes(1);
+      expect(update.mock.calls.every(([, info]) => info.focused === undefined && !('width' in info) && !('height' in info))).toBe(true);
+      expect(position()).toEqual({ left: 0, top: 0 });
+    });
+
+    it('still refuses an owned window that stays hidden everywhere, and restores its position', async () => {
+      const { captureVisibleTab, position } = stubHiddenWindow(() => false);
+
+      await expect(captureScreenshot(21, 7, undefined, 'jpeg', () => undefined, { ownedWindow: true })).rejects.toMatchObject({
+        code: 'screenshot_tab_not_painting',
+        message: expect.stringContaining('hidden'),
+      });
+      expect(captureVisibleTab).not.toHaveBeenCalled();
+      expect(position()).toEqual({ left: 0, top: 0 });
+    }, 20_000);
+
+    it('stops moving the window when the request is cancelled, and restores it', async () => {
+      const { position } = stubHiddenWindow(() => false);
+      let cancelled = false;
+      const check = () => { if (cancelled) throw new Error('cancelled'); };
+      const pending = captureScreenshot(21, 7, undefined, 'jpeg', check, { ownedWindow: true });
+      setTimeout(() => { cancelled = true; }, 200);
+      await expect(pending).rejects.toThrow('cancelled');
+      expect(position()).toEqual({ left: 0, top: 0 });
+    });
+
+    it('serializes concurrent captures so the original position is restored exactly', async () => {
+      const { position } = stubHiddenWindow((left) => left >= 1000);
+      stubJpegEncoding();
+      await Promise.all([
+        captureScreenshot(21, 7, undefined, 'jpeg', () => undefined, { ownedWindow: true }),
+        captureScreenshot(21, 7, undefined, 'jpeg', () => undefined, { ownedWindow: true }),
+      ]);
+      expect(position()).toEqual({ left: 0, top: 0 });
+    });
+
+    it('never moves a window that is not an owned Agent Window', async () => {
+      const { captureVisibleTab, update } = stubHiddenWindow((left) => left >= 1000);
+
+      await expect(captureScreenshot(21, 7)).rejects.toMatchObject({ code: 'screenshot_tab_not_painting' });
+      expect(update).not.toHaveBeenCalled();
+      expect(captureVisibleTab).not.toHaveBeenCalled();
+    });
+  });
 });

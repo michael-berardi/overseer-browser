@@ -175,12 +175,84 @@ async function verifiedFrameBeforeCapture(tabId: number): Promise<ScreenshotFram
   return second;
 }
 
+export interface CaptureOptions {
+  /** The window is this session's own Agent Window, so it may be repositioned (never focused or resized) to get painted. */
+  ownedWindow?: boolean;
+}
+
+/** Positions tried, in order, when an owned Agent Window reports a hidden document. */
+export const UNCOVER_POSITIONS: ReadonlyArray<{ left: number; top: number }> = [
+  { left: 3000, top: 200 },
+  { left: 0, top: 800 },
+  { left: 1500, top: 600 },
+  { left: 200, top: 200 },
+];
+const UNCOVER_SETTLE_POLLS = 8;
+const UNCOVER_SETTLE_MS = 150;
+
+/**
+ * Runs `work` while an owned Agent Window that Chrome reports as hidden (covered by
+ * another window) sits at a position where its document is visible and painting.
+ * Only left/top change: the window is never focused, raised or resized, the
+ * operator's windows are untouched, and the original position is always restored.
+ * A window that stays hidden at every position fails closed as before.
+ */
+async function withUncoveredOwnedWindow<T>(tabId: number, windowId: number, checkCancelled: () => void, work: () => Promise<T>): Promise<T> {
+  const first = await probeScreenshotFrame(tabId, 0);
+  if (first.visibility === 'visible') return work();
+  const original = await browser.windows.get(windowId);
+  if (original.state !== undefined && original.state !== 'normal') throw tabNotPaintingError(first.visibility);
+  const restore = async (): Promise<void> => {
+    const back: { left?: number; top?: number } = {};
+    if (original.left !== undefined) back.left = original.left;
+    if (original.top !== undefined) back.top = original.top;
+    await browser.windows.update(windowId, back);
+  };
+  let moved = false;
+  try {
+    for (const position of UNCOVER_POSITIONS) {
+      checkCancelled();
+      moved = true;
+      await browser.windows.update(windowId, { left: position.left, top: position.top });
+      for (let poll = 0; poll < UNCOVER_SETTLE_POLLS; poll += 1) {
+        checkCancelled();
+        await new Promise<void>((resolve) => setTimeout(resolve, UNCOVER_SETTLE_MS));
+        if ((await probeScreenshotFrame(tabId, 0)).visibility === 'visible') return await work();
+      }
+    }
+    throw tabNotPaintingError(first.visibility);
+  } finally {
+    if (moved) await restore().catch((error: unknown) => console.warn('screenshot: could not restore the Agent Window position', error));
+  }
+}
+
 export async function captureScreenshot(
   tabId: number,
   windowId: number,
   rect?: RectResult,
   format: ScreenshotFormat = 'jpeg',
   checkCancelled: () => void = () => undefined,
+  options: CaptureOptions = {},
+): Promise<ScreenshotResult> {
+  if (!options.ownedWindow) return captureVerifiedScreenshot(tabId, windowId, rect, format, checkCancelled);
+  await requireActiveScreenshotTarget(tabId, windowId);
+  // One uncover at a time per window: a concurrent capture must not read another's temporary position as the original.
+  const run = () => withUncoveredOwnedWindow(tabId, windowId, checkCancelled, () => captureVerifiedScreenshot(tabId, windowId, rect, format, checkCancelled));
+  const previous = uncoverTails.get(windowId) ?? Promise.resolve();
+  const result = previous.then(run, run);
+  const tail = result.then(() => undefined, () => undefined);
+  uncoverTails.set(windowId, tail);
+  void tail.then(() => { if (uncoverTails.get(windowId) === tail) uncoverTails.delete(windowId); });
+  return result;
+}
+const uncoverTails = new Map<number, Promise<void>>();
+
+async function captureVerifiedScreenshot(
+  tabId: number,
+  windowId: number,
+  rect: RectResult | undefined,
+  format: ScreenshotFormat,
+  checkCancelled: () => void,
 ): Promise<ScreenshotResult> {
   if (format !== 'jpeg' && format !== 'png') {
     throw new ScreenshotError('screenshot_format', 'Screenshot format must be jpeg or png.');
@@ -288,10 +360,10 @@ function isCaptureQuotaFailure(error: unknown): boolean {
   return error instanceof Error && /MAX_CAPTURE_VISIBLE_TAB_CALLS_PER_SECOND/i.test(error.message);
 }
 
-type CaptureOptions = { format?: 'jpeg' | 'png'; quality?: number };
+type ApiCaptureOptions = { format?: 'jpeg' | 'png'; quality?: number };
 
 /** Each API attempt, including retries, shares the extension service worker's queue. */
-async function captureWithReadbackRetry(tabId: number, windowId: number, options: CaptureOptions, checkCancelled: () => void): Promise<string> {
+async function captureWithReadbackRetry(tabId: number, windowId: number, options: ApiCaptureOptions, checkCancelled: () => void): Promise<string> {
   let readbackRetries = 0;
   let quotaRetries = 0;
   let readbackError: unknown;
@@ -302,7 +374,7 @@ async function captureWithReadbackRetry(tabId: number, windowId: number, options
         await requireActiveScreenshotTarget(tabId, windowId);
         checkCancelled();
         try {
-          return await (chrome.tabs.captureVisibleTab as (windowId: number, options: CaptureOptions) => Promise<string>)(windowId, options);
+          return await (chrome.tabs.captureVisibleTab as (windowId: number, options: ApiCaptureOptions) => Promise<string>)(windowId, options);
         } finally {
           // Chrome's budget is shared across windows. Start spacing only after
           // the prior API call has settled, including rejected attempts.

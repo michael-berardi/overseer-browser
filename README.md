@@ -66,8 +66,9 @@ extension and enable its native connection and site access in its popup, then
 retry if startup timed out. `evaluate` also needs Chrome's **Allow User Scripts**
 setting. Your personal profile's permissions are not copied.
 
-Screenshots retry Chrome capture-rate limits; persistent limits or a covered
-Agent Window return an actionable error.
+Screenshots retry Chrome capture-rate limits. A covered Agent Window is moved
+clear of its cover for the capture (never focused or resized) and put back;
+persistent limits or a window that stays hidden return an actionable error.
 
 Use refs returned by `observe` for actions such as `click osr-12`.
 Use a distinct `--session KEY` or `OVERSEER_BROWSER_SESSION` for each concurrent

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.10.12
+
+- Screenshots of an Agent Window that Chrome reports as hidden (covered by another window, so `document.visibilityState` is `hidden`) now work. For the session's own Agent Window only, the extension moves it by `left`/`top` to a position where it is visible, waits for the document to report visible, runs the usual paint and scroll checks, captures, and puts the window back. It never focuses, raises or resizes the window, never touches the operator's windows or borrowed tabs, and keeps the operator's authenticated session. A window that stays hidden at every position, or is minimized or maximized, still fails with `screenshot_tab_not_painting`; the stale-frame guard is unchanged.
+
 ## 0.10.11
 
 - Isolated Chrome launches no longer inherit the caller's environment. The supervisor, Chrome and its version probe get an allowlist of runtime variables only, so credentials exported in a terminal never reach the launched browser's command line or environment.

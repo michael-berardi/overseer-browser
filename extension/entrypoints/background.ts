@@ -1061,7 +1061,8 @@ async function dispatchCommand(request: NativeRequest, state: InflightRequest): 
       await requireActiveScreenshotTarget(tabId, tab.windowId);
     }
     const rect = command === 'screenshot.element' ? (await runAction(params, { kind: 'element_rect', ref: readString(params, 'ref', 128) }, state) as { left: number; top: number; width: number; height: number }) : undefined;
-    return captureScreenshot(tabId, tab.windowId, rect, requestedFormat, () => assertNotCancelled(state));
+    const ownedWindow = tab.windowId === (await sessions.requireState()).agentWindowId;
+    return captureScreenshot(tabId, tab.windowId, rect, requestedFormat, () => assertNotCancelled(state), { ownedWindow });
   }
   if (command === 'upload') return runUpload(params, state);
   if (command === 'batch') return runBatch(params, state);
