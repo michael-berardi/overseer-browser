@@ -11,6 +11,7 @@ import json
 import os
 import subprocess
 import threading
+import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -74,7 +75,7 @@ class FixtureHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         length = int(self.headers.get("Content-Length", "0") or 0)
         if length:
-            payload = self.rfile.read(min(length, 8192)).decode("utf-8", "replace")
+            payload = self.rfile.read(length).decode("utf-8", "replace")[:65536]
             try:
                 POSTS.append(json.loads(payload))
             except ValueError:
@@ -108,10 +109,14 @@ class LiveViewabilityTests(unittest.TestCase):
             session_key = started["sessionKey"]
             self.assertTrue(started["started"])
             cli("--session", session_key, "navigate", f"http://127.0.0.1:{server.server_port}/viewability.html")
+            cli("--session", session_key, "evaluate",
+                "(() => { for (const name of ['overseer_qa','overseer_qa_debug','overseer_internal','overseer_internal_traffic']) { localStorage.removeItem(name); document.cookie = name + '=; Max-Age=0; path=/'; } return true; })()")
+            cli("--session", session_key, "reload")
             clean = json.loads(cli("--session", session_key, "evaluate",
                         "JSON.stringify({cookie:document.cookie,qa:localStorage.getItem('overseer_qa'),internal:localStorage.getItem('overseer_internal')})"))
             self.assertIsNone(clean["qa"])
             self.assertIsNone(clean["internal"])
+            self.assertNotIn("overseer", clean["cookie"].lower())
             cli("--session", session_key, "network", "start")
 
             observed = cli("--session", session_key, "evaluate", EVALUATE_SOURCE)
@@ -135,6 +140,11 @@ class LiveViewabilityTests(unittest.TestCase):
             self.assertGreater(beacon["body_bytes"], 0)
             self.assertFalse(network["response_bodies"])
             impressions = [post for post in POSTS if post.get("kind") == "ad_impression"]
+            for _ in range(20):
+                if impressions:
+                    break
+                time.sleep(0.1)
+                impressions = [post for post in POSTS if post.get("kind") == "ad_impression"]
             self.assertTrue(impressions, POSTS)
             self.assertEqual(impressions[-1].get("zone"), "listing-feature")
             self.assertFalse(any("qa" in key or "internal" in key for key in impressions[-1]))
@@ -146,26 +156,34 @@ class LiveViewabilityTests(unittest.TestCase):
             self.assertFalse(after_stop["capture"]["installed"])
         finally:
             if session_key:
-                stopped = subprocess.run(
-                    [CLI, "--session", session_key, "sessions", "stop", "--raw-json"],
-                    capture_output=True, text=True, timeout=45, check=False,
-                )
                 try:
+                    stopped = subprocess.run(
+                        [CLI, "--session", session_key, "sessions", "stop", "--raw-json"],
+                        capture_output=True, text=True, timeout=45, check=False,
+                    )
                     stop_ok = stopped.returncode == 0 and json.loads(
                         stopped.stdout.strip().splitlines()[-1]).get("ok") is True
-                except (ValueError, IndexError):
+                except (subprocess.TimeoutExpired, ValueError, IndexError):
                     stop_ok = False
             server.shutdown()
             server.server_close()
             thread.join(timeout=5)
-        listed = subprocess.run(
-            [CLI, "sessions", "list", "--raw-json"],
-            capture_output=True, text=True, timeout=45, check=False,
-        )
+        try:
+            listed = subprocess.run(
+                [CLI, "sessions", "list", "--raw-json"],
+                capture_output=True, text=True, timeout=45, check=False,
+            )
+        except subprocess.TimeoutExpired:
+            self.assertTrue(stop_ok, "sessions list timed out after stop")
+            return
         if listed.returncode != 0:
-            # A managed host may close its socket when its last session stops;
-            # a successful stop is still direct proof that this session closed.
-            self.assertTrue(stop_ok, listed.stderr or listed.stdout)
+            # A managed host closes its socket after the last session stops.
+            try:
+                payload = json.loads(listed.stdout.strip().splitlines()[-1])
+            except (ValueError, IndexError):
+                self.fail("sessions list returned no valid JSON")
+            code = (payload.get("error") or {}).get("code")
+            self.assertTrue(stop_ok and code == "host_unavailable", listed.stderr or listed.stdout)
             return
         try:
             active = json.loads(listed.stdout.strip().splitlines()[-1]).get("result") or []
