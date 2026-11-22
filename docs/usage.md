@@ -164,7 +164,9 @@ overseer-browser --session qa sessions stop
 `qa pack DIR` writes snapshot JSON, a screenshot with its metadata, console
 JSON, network JSON and `manifest.json` into a new private directory. Console
 evidence only covers activity after `console start`. Network evidence is
-redacted Resource Timing metadata, not response bodies. Artifacts are captured
+redacted Resource Timing metadata, plus bounded `sendBeacon` metadata when
+`network start` was used; bodies, headers and query values are never returned.
+Artifacts are captured
 one after another, so the page can change between them; failures are recorded
 in the manifest and a partial pack exits nonzero.
 

@@ -11,7 +11,7 @@ export const COMMANDS = [
   'tabs.list', 'tabs.create', 'tabs.select', 'tabs.close', 'tabs.borrow', 'tabs.return',
   'navigate', 'back', 'forward', 'reload', 'snapshot', 'observe', 'click', 'hover', 'fill',
   'type', 'select', 'press', 'scroll', 'evaluate', 'screenshot.visible', 'screenshot.element',
-  'upload', 'batch', 'console.start', 'console.read', 'console.stop', 'network.read',
+  'upload', 'batch', 'console.start', 'console.read', 'console.stop', 'network.start', 'network.stop', 'network.read',
   'takeover.prompt', 'takeover.resume', 'cancel', 'capture.start', 'capture.stop',
   'record.start', 'record.restart', 'record.status', 'record.stop', 'record.chunk', 'record.clear',
   'wait.for', 'dom.query', 'extension.reload',

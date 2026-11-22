@@ -236,6 +236,62 @@ async function withUncoveredOwnedWindow<T>(tabId: number, windowId: number, chec
   }
 }
 
+export interface VisibleWindowOptions {
+  /** An element rectangle was measured at the current size; un-maximizing would invalidate it. */
+  elementCapture?: boolean;
+}
+
+/**
+ * Runs work while a session-owned Agent Window is actually visible. Only
+ * left/top change, except that screenshot captures temporarily show a maximized
+ * window as normal and maximize it again. The window is never focused or
+ * raised, operator windows are never touched, and concurrent users of one
+ * window are serialized so each restores the position it found.
+ */
+export async function runWithVisibleOwnedWindow<T>(
+  tabId: number,
+  windowId: number,
+  checkCancelled: () => void,
+  options: VisibleWindowOptions,
+  work: () => Promise<T>,
+): Promise<T> {
+  const run = () => withUncoveredOwnedWindow(tabId, windowId, checkCancelled, options.elementCapture === true, work);
+  const previous = uncoverTails.get(windowId) ?? Promise.resolve();
+  const result = previous.then(run, run);
+  const tail = result.then(() => undefined, () => undefined);
+  uncoverTails.set(windowId, tail);
+  void tail.then(() => { if (uncoverTails.get(windowId) === tail) uncoverTails.delete(windowId); });
+  return result;
+}
+
+const uncoverTails = new Map<number, Promise<void>>();
+
+/**
+ * Page work must keep working when Chrome will not make an owned window visible
+ * (minimized/fullscreen window, inactive tab, unresponsive probe). Only the
+ * screenshot-style visibility errors are swallowed; an error from `work` is
+ * always propagated and the work is never run twice.
+ */
+export async function runWithVisibleOwnedWindowBestEffort<T>(
+  tabId: number,
+  windowId: number,
+  checkCancelled: () => void,
+  work: () => Promise<T>,
+): Promise<T> {
+  let started = false;
+  try {
+    return await runWithVisibleOwnedWindow(tabId, windowId, checkCancelled, {}, async () => {
+      started = true;
+      return work();
+    });
+  } catch (error) {
+    const visibilityRefusal = error instanceof ScreenshotError &&
+      ['screenshot_tab_not_painting', 'screenshot_probe_failed'].includes(error.code);
+    if (!started && visibilityRefusal) return work();
+    throw error;
+  }
+}
+
 export async function captureScreenshot(
   tabId: number,
   windowId: number,
@@ -246,16 +302,8 @@ export async function captureScreenshot(
 ): Promise<ScreenshotResult> {
   if (!options.ownedWindow) return captureVerifiedScreenshot(tabId, windowId, rect, format, checkCancelled);
   await requireActiveScreenshotTarget(tabId, windowId);
-  // One uncover at a time per window: a concurrent capture must not read another's temporary position as the original.
-  const run = () => withUncoveredOwnedWindow(tabId, windowId, checkCancelled, rect !== undefined, () => captureVerifiedScreenshot(tabId, windowId, rect, format, checkCancelled));
-  const previous = uncoverTails.get(windowId) ?? Promise.resolve();
-  const result = previous.then(run, run);
-  const tail = result.then(() => undefined, () => undefined);
-  uncoverTails.set(windowId, tail);
-  void tail.then(() => { if (uncoverTails.get(windowId) === tail) uncoverTails.delete(windowId); });
-  return result;
+  return runWithVisibleOwnedWindow(tabId, windowId, checkCancelled, { elementCapture: rect !== undefined }, () => captureVerifiedScreenshot(tabId, windowId, rect, format, checkCancelled));
 }
-const uncoverTails = new Map<number, Promise<void>>();
 
 async function captureVerifiedScreenshot(
   tabId: number,

@@ -33,7 +33,7 @@ except ImportError:
     from cli.runtime_discovery import find_active_runtime
 from cli import evidence, recording, dom_query, temp_outputs
 
-CLI_VERSION = "0.10.15"
+CLI_VERSION = "0.10.16"
 MAX_UPLOAD_BYTES = 8 * 1024 * 1024
 MAX_UPLOAD_CHUNKS = 32
 MAX_UPLOAD_FILES = 16
@@ -109,7 +109,8 @@ CLI_USAGE = {
     "evaluate": "evaluate SOURCE", "eval": "eval SOURCE",
     "console": "console start|read [--clear]|stop",
     "console start": "console start", "console read": "console read [--clear]",
-    "console stop": "console stop", "network": "network read [LIMIT]",
+    "console stop": "console stop", "network": "network start|stop|read [LIMIT]",
+    "network start": "network start", "network stop": "network stop",
     "network read": "network read [LIMIT]", "batch": "batch JSON",
     "capture": "capture start|stop", "capture start": "capture start",
     "capture stop": "capture stop", "screenshot": "screenshot [PATH]",
@@ -234,7 +235,8 @@ _TAB_TARGETED_COMMANDS = {
     "navigate", "back", "forward", "reload", "snapshot", "observe", "wait.for",
     "click", "hover", "fill", "type", "select", "press", "scroll", "evaluate",
     "screenshot.visible", "screenshot.element", "upload",
-    "console.start", "console.read", "console.stop", "network.read",
+    "console.start", "console.read", "console.stop",
+    "network.start", "network.stop", "network.read",
 }
 
 
@@ -894,8 +896,11 @@ def _command_request(command: str, args: list[str], *,
             return "console.read", {"clear": True}
         raise CLIError("unknown_command", f"unknown command: {command}.{action}")
     if command == "network":
-        _require(args, 1, "network read [LIMIT]")
+        _require(args, 1, "network start|stop|read [LIMIT]")
         action = args[0]
+        if action in {"start", "stop"}:
+            _exact(args, 1, f"network {action}")
+            return f"network.{action}", {}
         if action != "read":
             raise CLIError("unknown_command", f"unknown command: {command}.{action}")
         if len(args) > 2:

@@ -44,7 +44,7 @@ def doctor(request, version):
                        'capture': {'qa_pack': True, 'screenshot_timelapse': True,
                                    'video_recording': 'user-consented native tab capture; source capability, not live verification',
                                    'recording_preflight': __import__('cli.recording', fromlist=['doctor']).doctor(),
-                                   'network': 'Resource Timing metadata, not response bodies',
+                                   'network': 'Resource Timing metadata plus bounded sendBeacon metadata after network start; no bodies',
                                    'console': 'Only entries captured after console start'}}}
 
 
@@ -76,7 +76,7 @@ def collect(directory, request, materialize, version, session_key, *, tab_id=Non
                 'artifacts': [], 'errors': [], 'complete': False,
                 'limitations': ['Sequential, not an atomic page capture',
                                 'Visible viewport only; console requires prior console start',
-                                'Network is Resource Timing metadata, not response bodies']}
+                                'Network is Resource Timing metadata, plus sendBeacon metadata only when network start was used; no bodies']}
     if frames:
         manifest.update(requested_frames=frames, minimum_interval_seconds=interval)
     save(directory / 'manifest.json', manifest)

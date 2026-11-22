@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.10.16
+
+- Post-load `evaluate` and `scroll` in a session-owned, active, normal Agent Window now briefly move that window clear of any cover, so IntersectionObserver callbacks and rendering-dependent page work run while the document is visible. Operator windows, borrowed tabs, inactive tabs and non-normal windows are untouched; original bounds are restored. If the window cannot be made visible, the command runs in place instead of failing.
+- `network start` captures bounded `navigator.sendBeacon` metadata for 60 seconds; `network read` reports it beside Resource Timing entries (method, redacted URL, content type and body size only), and `network stop` restores the page immediately.
+
 ## 0.10.15
 
 - Hidden maximized Agent Window screenshots: the window is moved back first and maximized in a second step (Chrome rejects a maximized state combined with bounds), and element screenshots in a hidden maximized window are refused rather than captured against a changed layout. Full-viewport captures are unchanged.

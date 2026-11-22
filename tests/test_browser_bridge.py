@@ -609,7 +609,13 @@ class CLIMappingTests(unittest.TestCase):
         self.assertEqual(_command_request("console", ["start"]), ("console.start", {}))
         self.assertEqual(_command_request("console", ["read", "--clear"]), ("console.read", {"clear": True}))
         self.assertEqual(_command_request("console", ["stop"]), ("console.stop", {}))
+        self.assertEqual(_command_request("network", ["start"]), ("network.start", {}))
+        self.assertEqual(_command_request("network", ["stop"]), ("network.stop", {}))
         self.assertEqual(_command_request("network", ["read", "25"]), ("network.read", {"limit": 25}))
+        self.assertEqual(
+            cli_main_module._apply_targeting("network.start", {}, 42, None),
+            {"tab_id": 42},
+        )
         self.assertEqual(
             _command_request("batch", ['{"actions":[{"command":"snapshot"}],"stop_on_error":false}']),
             ("batch", {"actions": [{"command": "snapshot"}], "stop_on_error": False}),

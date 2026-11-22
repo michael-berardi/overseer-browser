@@ -17,7 +17,7 @@ SUBCOMMANDS = {
     "windows": ("resize",),
     "tabs": ("list", "create", "select", "close", "borrow", "return"),
     "console": ("start", "read", "stop"),
-    "network": ("read",),
+    "network": ("start", "stop", "read"),
     "capture": ("start", "stop"),
     "record": ("start", "restart", "status", "stop", "clear"),
     "qa": ("pack",),

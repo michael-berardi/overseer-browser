@@ -27,7 +27,7 @@ overseer-browser screenshot-element <ref> [path]
 overseer-browser upload [--via] <ref> <path> [path...]
 overseer-browser dom find LOCATOR | get QUERY LOCATOR [NAMES...] | is STATE LOCATOR
 overseer-browser console start | read | stop
-overseer-browser network read [limit]
+overseer-browser network start | stop | read [limit]
 overseer-browser batch '<json-actions>'
 overseer-browser qa pack <dir>
 overseer-browser timelapse <dir> <frames> <interval-seconds>
@@ -41,6 +41,13 @@ overseer-browser help
 Automation results are minified JSON on stdout, including errors with stable
 codes. Help and the default `status` view are human-readable; use `status --json`
 for JSON status. `--json` and `--raw-json` are accepted as aliases.
+
+`network read` shows Resource Timing entries. After `network start`, it also
+shows bounded `navigator.sendBeacon` metadata (method, redacted URL, content
+type and body size) captured for 60 seconds; bodies, headers and query values
+are never returned. `network stop` restores the page immediately. On a borrowed
+tab the page is temporarily patched, so use it only for pages you intend to
+instrument.
 
 `upload --via <ref>` is for sites that open the file picker from a button
 (for example, a media composer) instead of exposing an `<input type=file>`.

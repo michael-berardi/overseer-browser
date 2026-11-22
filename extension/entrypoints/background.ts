@@ -25,7 +25,7 @@ import { getPermissionState, isNavigableUrl, normalizeSiteAccess } from '../src/
 import { MeetingDeduper, PendingMeetingQueue } from '../src/meeting';
 import { SessionError, normalizeMobileWindow, type MobileWindowRequest } from '../src/session';
 import { SessionRegistry, normalizeSessionKey } from '../src/session_registry';
-import { captureScreenshot, requireActiveScreenshotTarget, ScreenshotError } from '../src/screenshot';
+import { captureScreenshot, requireActiveScreenshotTarget, runWithVisibleOwnedWindowBestEffort, ScreenshotError } from '../src/screenshot';
 
 const COMMAND_TIMEOUT_MS = 45_000;
 const NATIVE_HANDSHAKE_TIMEOUT_MS = 5_000;
@@ -40,6 +40,8 @@ export const MAX_INCOMPLETE_UPLOAD_BYTES = 32 * 1024 * 1024;
 const UPLOAD_TTL_MS = 60_000;
 const MEETING_RETRY_MS = 5_000;
 const CONSOLE_LEASE_MS = 60_000;
+export const NETWORK_LEASE_MS = 60_000;
+export const MAX_BEACON_ENTRIES = 100;
 const CAPABILITY_STORAGE_KEY = 'overseer.capability.evaluate.v1';
 const CONNECTION_STORAGE_KEY = 'overseer.connection.enabled.v1';
 const NATIVE_RECONNECT_ALARM = 'overseer.native.reconnect.v1';
@@ -50,6 +52,7 @@ const BATCHABLE_COMMANDS: ReadonlySet<Command> = new Set([
   'type', 'select', 'press', 'scroll', 'evaluate', 'console.start', 'console.read',
   'console.stop', 'network.read', 'screenshot.visible', 'screenshot.element',
 ]);
+// network.start and network.stop are session-scoped setup, not batchable page actions.
 const PARALLEL_BATCH_COMMANDS: ReadonlySet<Command> = new Set([
   'tabs.list', 'snapshot', 'observe', 'network.read',
 ]);
@@ -297,12 +300,19 @@ function encodeBase64(bytes: Uint8Array): string {
 // or navigation may leave a stale entry, which costs one harmless no-op
 // cleanup call and is then removed.
 const consoleCaptureTabs = new Set<number>();
+const networkCaptureTabs = new Set<number>();
 const sessionRegistry = new SessionRegistry(async (tabId) => {
   await debuggerBridge.revoke(tabId);
   uploads.dropTab(tabId);
   observeDeltas.drop(tabId);
-  if (!consoleCaptureTabs.delete(tabId)) return;
-  await restorePageConsole(tabId);
+  const hadConsole = consoleCaptureTabs.delete(tabId);
+  const hadNetwork = networkCaptureTabs.delete(tabId);
+  if (!hadConsole && !hadNetwork) return;
+  try {
+    if (hadConsole) await restorePageConsole(tabId);
+  } finally {
+    if (hadNetwork) await restorePageNetwork(tabId);
+  }
 });
 // Disabled until the operator approves Chrome's required installation permission.
 const debuggerBridge = new DebuggerBridge(async (session, tabId) => (await sessionRegistry.get(session)).ownsTab(tabId));
@@ -386,6 +396,8 @@ const COMMAND_PARAM_KEYS: Record<Command | 'debugger.input' | 'debugger.network'
   'console.start': ['tab_id', 'clear'],
   'console.read': ['tab_id', 'clear'],
   'console.stop': ['tab_id', 'clear'],
+  'network.start': ['tab_id'],
+  'network.stop': ['tab_id'],
   'network.read': ['tab_id', 'limit'],
   'takeover.prompt': [],
   'takeover.resume': [],
@@ -487,6 +499,7 @@ function startBackground(): void {
     observeDeltas.drop(removedTabId);
     void recordingCleanup(removedTabId).catch(() => {});
     consoleCaptureTabs.delete(removedTabId);
+    networkCaptureTabs.delete(removedTabId);
   });
   chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) => {
     if (!message || typeof message !== 'object') return false;
@@ -594,7 +607,7 @@ async function setConnectionEnabled(enabled: boolean): Promise<void> {
   nativeEnabled = enabled;
   configureReconnectAlarm(enabled);
   if (!enabled) {
-    await cleanupSessionConsoles();
+    await cleanupSessionCaptures();
     if (reconnectTimer !== undefined) {
       clearTimeout(reconnectTimer);
       reconnectTimer = undefined;
@@ -619,7 +632,7 @@ async function setConnectionEnabled(enabled: boolean): Promise<void> {
 async function setTakeoverRequested(enabled: boolean): Promise<void> {
   if (enabled) {
     takeoverRequested = true;
-    await cleanupSessionConsoles();
+    await cleanupSessionCaptures();
     try {
       await browser.storage.session.set({ [TAKEOVER_STORAGE_KEY]: true });
     } catch {
@@ -1015,7 +1028,10 @@ async function dispatchCommand(request: NativeRequest, state: InflightRequest): 
   if (command === 'type') return runAction(params, { kind: 'type', ref: readString(params, 'ref', 128), text: readString(params, 'text', 32_000) }, state);
   if (command === 'select') return runAction(params, { kind: 'select', ref: readString(params, 'ref', 128), value: readString(params, 'value', 2_000) }, state);
   if (command === 'press') return runAction(params, { kind: 'press', ref: optionalString(params, 'ref'), key: readString(params, 'key', 64), code: optionalString(params, 'code') }, state);
-  if (command === 'scroll') return runAction(params, { kind: 'scroll', ref: optionalString(params, 'ref'), x: optionalInteger(params, 'x'), y: optionalInteger(params, 'y') }, state);
+  if (command === 'scroll') {
+    const tabId = await targetTab(params, state);
+    return withVisibleOwnedWindowIfNeeded(tabId, state, () => runAction(params, { kind: 'scroll', ref: optionalString(params, 'ref'), x: optionalInteger(params, 'x'), y: optionalInteger(params, 'y') }, state));
+  }
   if (command === 'dom.query') {
     if (request.session_key === undefined) throw new DispatchError('invalid_params', 'dom.query requires an explicit session_key.');
     let query;
@@ -1031,10 +1047,17 @@ async function dispatchCommand(request: NativeRequest, state: InflightRequest): 
   if (command === 'evaluate') {
     if (!evaluateEnabled) throw new DispatchError('capability_required', 'Evaluate is disabled. Grant this site or enable unlimited access in the popup.', 'Open the popup and choose the intended access scope.');
     const tabId = await targetTab(params, state);
-    return enqueueTabMutation(tabId, () => {
+    return withVisibleOwnedWindowIfNeeded(tabId, state, () => enqueueTabMutation(tabId, () => {
       assertNotCancelled(state);
       return runPageEvaluation(tabId, readString(params, 'source', 32_000));
-    });
+    }));
+  }
+  if (command === 'network.start' || command === 'network.stop') {
+    const tabId = await targetTab(params, state);
+    const result = await runNetworkCommand(tabId, command);
+    if (command === 'network.start') networkCaptureTabs.add(tabId);
+    else networkCaptureTabs.delete(tabId);
+    return result;
   }
   if (command === 'console.start' || command === 'console.read' || command === 'console.stop') {
     const tabId = await targetTab(params, state);
@@ -1108,7 +1131,8 @@ function isPausedCommand(command: Command): boolean {
     command === 'snapshot' || command === 'observe' || command === 'click' || command === 'hover' ||
     command === 'fill' || command === 'type' || command === 'select' || command === 'press' ||
     command === 'scroll' || command === 'dom.query' || command === 'evaluate' || command === 'console.start' ||
-    command === 'console.read' || command === 'console.stop' || command === 'network.read' ||
+    command === 'console.read' || command === 'console.stop' || command === 'network.start' ||
+    command === 'network.stop' || command === 'network.read' ||
     command === 'screenshot.visible' || command === 'screenshot.element' || command === 'upload' ||
     command === 'batch' || command === 'wait.for';
 }
@@ -1130,6 +1154,21 @@ export async function borrowExistingTab(tabId: number, sessionKey?: string): Pro
     throw new DispatchError('operator_approval_required', 'Borrowing a normal browser tab requires confirmation in the extension popup.', 'Use the popup to borrow the active tab.');
   }
   return sessionRegistry.borrow(sessionKey, tabId);
+}
+
+/**
+ * Try to make only the session's own, active, normal Agent Window visible for
+ * page work. Other windows, inactive tabs and non-normal windows keep their
+ * existing visibility and layout; if uncovering fails, the work still runs.
+ */
+async function withVisibleOwnedWindowIfNeeded<T>(tabId: number, state: InflightRequest, work: () => Promise<T>): Promise<T> {
+  const sessions = await sessionRegistry.get(state.sessionKey);
+  const tab = await browser.tabs.get(tabId);
+  if (tab.windowId === undefined || tab.windowId !== (await sessions.requireState()).agentWindowId || tab.active !== true) return work();
+  const window = await browser.windows.get(tab.windowId);
+  if (window.state !== undefined && window.state !== 'normal') return work();
+  assertNotCancelled(state);
+  return runWithVisibleOwnedWindowBestEffort(tabId, tab.windowId, () => assertNotCancelled(state), work);
 }
 
 async function targetTab(params: Record<string, unknown>, state: InflightRequest): Promise<number> {
@@ -1568,12 +1607,123 @@ async function restorePageConsole(tabId: number): Promise<void> {
   await runConsoleCommand(tabId, 'console.stop', false);
 }
 
-async function cleanupSessionConsoles(): Promise<void> {
+async function cleanupSessionCaptures(): Promise<void> {
   try {
     await sessionRegistry.cleanupConsoles();
   } catch {
-    // Console restoration is best effort during connection or takeover changes.
+    // Console restoration is best effort here; beacon restoration is handled by the session registry cleanup callback.
   }
+}
+
+export async function runNetworkCommand(tabId: number, command: 'network.start' | 'network.read' | 'network.stop'): Promise<unknown> {
+  const [result] = await chrome.scripting.executeScript({
+    target: { tabId },
+    world: 'MAIN',
+    func: (operation: string, leaseMs: number, maxEntries: number): unknown => {
+      type BeaconEntry = {
+        timestamp: number;
+        kind: 'beacon';
+        method: 'POST';
+        url: string;
+        content_type: string;
+        body_bytes: number;
+        source: 'navigator.sendBeacon';
+      };
+      type NetworkState = {
+        beacons: BeaconEntry[];
+        original: typeof navigator.sendBeacon;
+        wrapper: typeof navigator.sendBeacon;
+        ownProperty: boolean;
+        expiresAt: number;
+        dropped: number;
+        timer?: ReturnType<typeof setTimeout>;
+      };
+      const root = globalThis as typeof globalThis & { __overseerNetworkV1?: NetworkState };
+      const restore = (state: NetworkState): void => {
+        if (root.__overseerNetworkV1 !== state) return;
+        clearTimeout(state.timer);
+        state.timer = undefined;
+        // Restore only our own wrapper; a later page override is left alone.
+        if (navigator.sendBeacon === state.wrapper) {
+          if (state.ownProperty) navigator.sendBeacon = state.original;
+          else Reflect.deleteProperty(navigator, 'sendBeacon');
+        }
+        delete root.__overseerNetworkV1;
+      };
+      const safeUrl = (raw: unknown): string => {
+        try {
+          const url = new URL(String(raw), location.href);
+          if (url.protocol !== 'http:' && url.protocol !== 'https:') return '[redacted]';
+          return `${url.origin}${url.pathname}`.slice(0, 2_000);
+        } catch {
+          return '[invalid-url]';
+        }
+      };
+      const contentType = (data: unknown): string => {
+        if (typeof data === 'string') return 'text/plain;charset=UTF-8';
+        if (typeof Blob !== 'undefined' && data instanceof Blob) return (data.type || 'application/octet-stream').slice(0, 128);
+        if (typeof URLSearchParams !== 'undefined' && data instanceof URLSearchParams) return 'application/x-www-form-urlencoded;charset=UTF-8';
+        if (typeof FormData !== 'undefined' && data instanceof FormData) return 'multipart/form-data';
+        if (data instanceof ArrayBuffer || ArrayBuffer.isView(data)) return 'application/octet-stream';
+        return 'none';
+      };
+      const bodyBytes = (data: unknown): number => {
+        try {
+          if (typeof data === 'string') return new TextEncoder().encode(data).length;
+          if (typeof Blob !== 'undefined' && data instanceof Blob) return data.size;
+          if (typeof URLSearchParams !== 'undefined' && data instanceof URLSearchParams) return new TextEncoder().encode(data.toString()).length;
+          if (data instanceof ArrayBuffer) return data.byteLength;
+          if (ArrayBuffer.isView(data)) return data.byteLength;
+        } catch { /* Metadata only; an unreadable body is reported as zero bytes. */ }
+        return 0;
+      };
+      if (operation === 'network.start') {
+        const existing = root.__overseerNetworkV1;
+        if (existing && existing.expiresAt > Date.now()) return { installed: true, beacons: existing.beacons.length, dropped: existing.dropped };
+        if (existing) restore(existing);
+        const original = navigator.sendBeacon;
+        if (typeof original !== 'function') throw new Error('navigator.sendBeacon is unavailable in this page');
+        const ownProperty = Object.prototype.hasOwnProperty.call(navigator, 'sendBeacon');
+        let state!: NetworkState;
+        const wrapper = function (this: Navigator, url: string | URL, data?: unknown): boolean {
+          const entry: BeaconEntry = {
+            timestamp: Date.now(), kind: 'beacon', method: 'POST', url: safeUrl(url),
+            content_type: contentType(data), body_bytes: bodyBytes(data), source: 'navigator.sendBeacon',
+          };
+          state.beacons.push(entry);
+          if (state.beacons.length > maxEntries) {
+            state.dropped += state.beacons.length - maxEntries;
+            state.beacons.splice(0, state.beacons.length - maxEntries);
+          }
+          return original.call(this, url, data as BodyInit | null | undefined);
+        } as typeof navigator.sendBeacon;
+        state = { beacons: [], original, wrapper, ownProperty, expiresAt: Date.now() + leaseMs, dropped: 0 };
+        navigator.sendBeacon = wrapper;
+        root.__overseerNetworkV1 = state;
+        state.timer = setTimeout(() => restore(state), leaseMs);
+        return { installed: true, beacons: 0, dropped: 0 };
+      }
+      const state = root.__overseerNetworkV1;
+      if (operation === 'network.read') {
+        if (!state || state.expiresAt <= Date.now()) {
+          if (state) restore(state);
+          return { installed: false, beacons: [], dropped: state?.dropped ?? 0 };
+        }
+        return { installed: true, beacons: state.beacons.slice(), dropped: state.dropped };
+      }
+      const beacons = state?.beacons.slice() ?? [];
+      const dropped = state?.dropped ?? 0;
+      const stopped = Boolean(state);
+      if (state) restore(state);
+      return { installed: false, stopped, beacons, dropped };
+    },
+    args: [command, NETWORK_LEASE_MS, MAX_BEACON_ENTRIES],
+  });
+  return result?.result;
+}
+
+async function restorePageNetwork(tabId: number): Promise<void> {
+  await runNetworkCommand(tabId, 'network.stop');
 }
 
 export function redactNetworkResourceUrl(rawUrl: string): string {
@@ -1591,28 +1741,49 @@ async function readNetworkMetadata(tabId: number, requestedLimit: number): Promi
   const [result] = await chrome.scripting.executeScript({
     target: { tabId },
     world: 'MAIN',
-    func: (entryLimit: number): unknown => performance.getEntriesByType('resource')
-      .slice(-entryLimit)
-      .map((entry) => {
-        const resource = entry as PerformanceResourceTiming;
-        return {
-          url: resource.name.slice(0, 8_000),
-          initiator_type: resource.initiatorType.slice(0, 64),
-          start_time_ms: Math.round(resource.startTime * 100) / 100,
-          duration_ms: Math.round(resource.duration * 100) / 100,
-          transfer_size: Number.isFinite(resource.transferSize) ? resource.transferSize : 0,
-          decoded_body_size: Number.isFinite(resource.decodedBodySize) ? resource.decodedBodySize : 0,
-        };
-      }),
-    args: [limit],
+    func: (entryLimit: number, beaconLimit: number): unknown => {
+      const entries = performance.getEntriesByType('resource')
+        .slice(-entryLimit)
+        .map((entry) => {
+          const resource = entry as PerformanceResourceTiming;
+          return {
+            url: resource.name.slice(0, 8_000),
+            initiator_type: resource.initiatorType.slice(0, 64),
+            start_time_ms: Math.round(resource.startTime * 100) / 100,
+            duration_ms: Math.round(resource.duration * 100) / 100,
+            transfer_size: Number.isFinite(resource.transferSize) ? resource.transferSize : 0,
+            decoded_body_size: Number.isFinite(resource.decodedBodySize) ? resource.decodedBodySize : 0,
+          };
+        });
+      const state = (globalThis as typeof globalThis & { __overseerNetworkV1?: { beacons: unknown[]; dropped: number; expiresAt: number } }).__overseerNetworkV1;
+      const live = Boolean(state && state.expiresAt > Date.now());
+      return { entries, beacons: live ? state!.beacons.slice(-beaconLimit) : [], installed: live, dropped: state?.dropped ?? 0 };
+    },
+    args: [limit, MAX_BEACON_ENTRIES],
   });
-  const entries = Array.isArray(result?.result) ? result.result.map((entry: unknown) => {
+  const raw = (result as { result?: { entries?: unknown; beacons?: unknown; dropped?: unknown; installed?: unknown } } | undefined)?.result;
+  const entries = Array.isArray(raw?.entries) ? raw.entries.map((entry: unknown) => {
     if (!entry || typeof entry !== 'object') return null;
     const value = entry as Record<string, unknown>;
     if (typeof value.url !== 'string') return null;
     return { ...value, url: redactNetworkResourceUrl(value.url) };
   }).filter((entry) => entry !== null) : [];
-  return { entries, redaction: 'query_fragment_and_non_http_content_removed', response_bodies: false };
+  const beacons = Array.isArray(raw?.beacons) ? raw.beacons.map((entry: unknown) => {
+    if (!entry || typeof entry !== 'object') return null;
+    const value = entry as Record<string, unknown>;
+    if (typeof value.url !== 'string') return null;
+    return {
+      timestamp: typeof value.timestamp === 'number' ? value.timestamp : 0,
+      kind: 'beacon',
+      method: 'POST',
+      url: redactNetworkResourceUrl(value.url),
+      content_type: typeof value.content_type === 'string' ? value.content_type.slice(0, 128) : 'none',
+      body_bytes: typeof value.body_bytes === 'number' && Number.isFinite(value.body_bytes) ? Math.max(0, Math.round(value.body_bytes)) : 0,
+      source: 'navigator.sendBeacon',
+    };
+  }).filter((entry) => entry !== null) : [];
+  const dropped = typeof raw?.dropped === 'number' && Number.isFinite(raw.dropped) ? Math.max(0, Math.round(raw.dropped)) : 0;
+  return { entries, beacons, capture: { installed: raw?.installed === true, entries: beacons.length, dropped }, redaction: 'query_fragment_and_non_http_payload_values_and_headers_removed', response_bodies: false };
 }
 
 async function runBatch(params: Record<string, unknown>, state: InflightRequest): Promise<unknown> {
