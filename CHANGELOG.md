@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.10.15
+
+- Hidden maximized Agent Window screenshots: the window is moved back first and maximized in a second step (Chrome rejects a maximized state combined with bounds), and element screenshots in a hidden maximized window are refused rather than captured against a changed layout. Full-viewport captures are unchanged.
+
 ## 0.10.14
 
 - Hidden Agent Window screenshots now also work for a window Chrome reports as maximized (a 1920x1080 window on a 1920x1080 display): it is moved as a normal window for the capture and maximized again afterwards. Minimized and fullscreen windows are still refused.

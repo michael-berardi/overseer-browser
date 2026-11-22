@@ -193,23 +193,25 @@ const UNCOVER_SETTLE_MS = 150;
 /**
  * Runs `work` while an owned Agent Window that Chrome reports as hidden (covered by
  * another window) sits at a position where its document is visible and painting.
- * Only left/top change: the window is never focused, raised or resized, the
+ * Only left/top change (a maximized window is shown as normal for the capture and maximized again): the window is never focused or raised, the
  * operator's windows are untouched, and the original position is always restored.
  * A window that stays hidden at every position fails closed as before.
  */
-async function withUncoveredOwnedWindow<T>(tabId: number, windowId: number, checkCancelled: () => void, work: () => Promise<T>): Promise<T> {
+async function withUncoveredOwnedWindow<T>(tabId: number, windowId: number, checkCancelled: () => void, elementCapture: boolean, work: () => Promise<T>): Promise<T> {
   const first = await probeScreenshotFrame(tabId, 0);
   if (first.visibility === 'visible') return work();
   const original = await browser.windows.get(windowId);
   // A window sized to fill the display is reported as maximized; it can be moved only as a normal window and is re-maximized afterwards.
   const wasMaximized = original.state === 'maximized';
-  if (original.state !== undefined && original.state !== 'normal' && !wasMaximized) throw tabNotPaintingError(first.visibility);
+  // An element rectangle was measured at the maximized size; un-maximizing would change the layout under it, so that capture fails closed.
+  if (original.state !== undefined && original.state !== 'normal' && (!wasMaximized || elementCapture)) throw tabNotPaintingError(first.visibility);
   const restore = async (): Promise<void> => {
     const back: chrome.windows.UpdateInfo = {};
-    if (wasMaximized) back.state = 'maximized';
     if (original.left !== undefined) back.left = original.left;
     if (original.top !== undefined) back.top = original.top;
+    // Chrome does not accept a maximized state together with bounds: move back first, then maximize.
     await browser.windows.update(windowId, back);
+    if (wasMaximized) await browser.windows.update(windowId, { state: 'maximized' });
   };
   let moved = false;
   try {
@@ -245,7 +247,7 @@ export async function captureScreenshot(
   if (!options.ownedWindow) return captureVerifiedScreenshot(tabId, windowId, rect, format, checkCancelled);
   await requireActiveScreenshotTarget(tabId, windowId);
   // One uncover at a time per window: a concurrent capture must not read another's temporary position as the original.
-  const run = () => withUncoveredOwnedWindow(tabId, windowId, checkCancelled, () => captureVerifiedScreenshot(tabId, windowId, rect, format, checkCancelled));
+  const run = () => withUncoveredOwnedWindow(tabId, windowId, checkCancelled, rect !== undefined, () => captureVerifiedScreenshot(tabId, windowId, rect, format, checkCancelled));
   const previous = uncoverTails.get(windowId) ?? Promise.resolve();
   const result = previous.then(run, run);
   const tail = result.then(() => undefined, () => undefined);

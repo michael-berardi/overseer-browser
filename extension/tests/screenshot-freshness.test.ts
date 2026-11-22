@@ -142,6 +142,8 @@ describe('screenshot freshness', () => {
       const query = vi.fn(async () => [{ id: 21, windowId: 7, active: true }]);
       const captureVisibleTab = vi.fn(async () => TOP_OF_PAGE_JPEG);
       const update = vi.fn(async (_id: number, info: { left?: number; top?: number; focused?: boolean; state?: string }) => {
+        // Real Chrome rejects a maximized state combined with bounds.
+        if (info.state === 'maximized' && (info.left !== undefined || info.top !== undefined)) throw new Error('Invalid value for state');
         if (info.state) state = info.state;
         if (rejectAt(info.left ?? pos.left, info.top ?? pos.top)) throw new Error('Invalid value for bounds');
         pos = { left: info.left ?? pos.left, top: info.top ?? pos.top };
@@ -238,6 +240,13 @@ describe('screenshot freshness', () => {
       expect(captureVisibleTab).toHaveBeenCalledTimes(1);
       expect(state()).toBe('maximized');
       expect(position()).toEqual({ left: 0, top: 0 });
+    });
+
+    it('refuses an element capture in a hidden maximized window instead of changing its layout', async () => {
+      const { captureVisibleTab, update } = stubHiddenWindow((left) => left >= 1000, () => false, 'maximized');
+      await expect(captureScreenshot(21, 7, { left: 1, top: 1, width: 10, height: 10 }, 'jpeg', () => undefined, { ownedWindow: true })).rejects.toMatchObject({ code: 'screenshot_tab_not_painting' });
+      expect(update).not.toHaveBeenCalled();
+      expect(captureVisibleTab).not.toHaveBeenCalled();
     });
 
     it('refuses a minimized or fullscreen owned window without moving it', async () => {
