@@ -884,7 +884,12 @@ class CLIMappingTests(unittest.TestCase):
     def test_upload_via_flag_is_accepted_and_documented(self) -> None:
         from cli import main as cli_main
         self.assertIn("--via", cli_main._COMMAND_OPTIONS["upload"])
-        self.assertIn("--via", cli_main.HELP_USAGE["upload"] if hasattr(cli_main, "HELP_USAGE") else json.dumps(cli_main.__dict__.get("_USAGE", {})) + open(cli_main.__file__).read())
+        if hasattr(cli_main, "HELP_USAGE"):
+            help_text = cli_main.HELP_USAGE["upload"]
+        else:
+            with open(cli_main.__file__, encoding="utf-8") as handle:
+                help_text = json.dumps(cli_main.__dict__.get("_USAGE", {})) + handle.read()
+        self.assertIn("--via", help_text)
 
     def test_upload_accepts_spaces_unicode_and_parentheses_in_basename(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
