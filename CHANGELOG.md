@@ -4,6 +4,8 @@
 
 - Added a short README Privacy section and corrected PRIVACY.md statements about local deletion, browser-session state, and the optional local meeting adapter.
 - Added regression tests that reject telemetry/analytics clients, endpoints, and outbound network calls in the default configuration. Release builds now disable npm audit/funding requests and honor `DO_NOT_TRACK`.
+- The isolated Chrome launch log (`chrome.log`) is now created owner-only and trimmed to its newest 256 KiB once it passes 1 MiB, instead of growing without bound.
+- SECURITY.md no longer says `activeTab` is absent; it is declared only for the popup-consented recording workflow.
 
 ## 0.10.17
 

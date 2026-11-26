@@ -91,7 +91,7 @@ project.
 
 Locally, the extension keeps session, permission, and short-lived meeting state
 in the browser profile. The host keeps its token and a bounded, `0600`
-`host.log` in a `0700` runtime directory (macOS `~/Library/Application Support/OverSeer/browser`,
+`host.log` (and, for the isolated Agent Window, a `0600` `chrome.log` trimmed past 1 MiB) in a `0700` runtime directory (macOS `~/Library/Application Support/OverSeer/browser`,
 Linux `$XDG_RUNTIME_DIR/overseer-browser`, Windows `%LOCALAPPDATA%\OverSeer\browser`).
 Screenshots, QA packs, timelapses, and recordings are written only when you ask
 for them and can contain page content. OS-temp copies expire; files you keep or
