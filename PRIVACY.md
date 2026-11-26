@@ -19,7 +19,7 @@ The extension, native host, and CLI may keep bounded local state needed to execu
 
 The extension and native host do not independently upload these values. A calling client may deliberately forward returned observations, screenshots, uploads, or action results to another service; that transfer is outside this repository and must be evaluated under the client's privacy policy. Shell history, browser profiles, operating-system logs, backups, browser sync, and user-selected upload destinations can also retain data independently.
 
-Runtime state is bounded and local. Session state and pending meeting delivery are cleared when the browser restarts or the connection/session ends. Uninstalling removes the native host registration and this application's local runtime files; it does not delete shared browser data.
+Runtime state is bounded and local. Session, permission, and pending meeting state live in Chrome's `storage.session`, which Chrome clears when the browser session ends; queued meeting events also expire after 90 seconds. On macOS, `overseer-browser uninstall` removes the native host registration, CLI, and token; on other platforms use the manual removal steps in [docs/install.md](docs/install.md). Uninstalling does not delete the runtime directory, exported evidence, or shared browser data.
 
 ## Explicit QA evidence (0.5.0)
 
@@ -32,7 +32,7 @@ Runtime state is bounded and local. Session state and pending meeting delivery a
 - **Native Messaging:** connects the extension to the local native host and is not a network permission.
 - **Storage, scripting, tabs, and windows:** support the visible popup, session ownership, content traversal, and browser actions.
 - **Debugger access:** not enabled or requested by this release. Debugger-dependent operations are unsupported; there is no automatic attachment, raw CDP passthrough, or passive debugger collection.
-- **Meeting detection:** local reminder detection uses the supported Meet and Zoom hosts. No persistent general-site content script is registered; the broader installed permission supports explicit automation.
+- **Meeting detection:** local reminder detection uses a content script scoped to the documented Meet and Zoom hosts. No general-site content script is registered; the broader installed permission supports explicit automation.
 
 The manifest must not add history, bookmarks, `webRequest`, or required debugger access. `activeTab`, `tabCapture`, and `offscreen` support only the explicit, popup-consented recording workflow. Do not add debugger permission until the installation-permission decision above is explicitly approved. Its required `<all_urls>` host permission is intentional for the isolated Agent Window and screenshot implementation. Uninstalling or disabling the extension revokes its browser access.
 
@@ -48,7 +48,7 @@ This is an access boundary, not a claim that a webpage is trustworthy. A page ca
 
 Meeting reminders support only the hosts documented by the current build. A detector emits a versioned event containing a detection ID, provider, timestamp, and a 64-character lowercase hexadecimal opaque salted SHA-256 `meeting_key`.
 
-The raw URL, query string, meeting ID, title, page content, participant list, credentials, cookies, and recording data are not included. The native host may deliver the same minimized event over same-user local IPC to an optional adapter. Adapters must preserve the schema, keep the opaque key, bound retention, and never add page data. Meeting detection never starts recording; explicit video recording requires separate visible popup consent.
+The raw URL, query string, meeting ID, title, page content, participant list, credentials, cookies, and recording data are not included. The native host can deliver the same minimized event over same-user local IPC to an optional UltraVox adapter: it uses `ULTRAVOX_VOICE_SOCKET` or `ULTRAVOX_RUNTIME_DIR` when set, and on macOS also checks `<system temp>/com.paretocybernetics.ultravox/voice-v1.sock` when that private socket exists. Only a same-user socket with private permissions is accepted; no network endpoint is involved. Adapters must preserve the schema, keep the opaque key, bound retention, and never add page data. Meeting detection never starts recording; explicit video recording requires separate visible popup consent.
 
 ## Threat boundaries
 
@@ -64,7 +64,7 @@ No browser extension can protect against a compromised browser, operating system
 
 ## Security invariants
 
-A release or local build must fail review if it adds required or non-consensual debugger access, passive browsing collection, broad external control, required all-site access, unbounded frames, or raw meeting data to a host/adapter message. Optional current-origin and unlimited HTTP(S) grants must remain visible, user-initiated, and revocable. Debugger-only capabilities must fail explicitly when permission or tab consent is missing; never silently substitute weaker input. See [SECURITY.md](SECURITY.md) for the vulnerability-reporting process and release checklist.
+A release or local build must fail review if it adds required or non-consensual debugger access, passive browsing collection, broad external control, a required all-site content script or unconditional borrowed-tab grant, unbounded frames, or raw meeting data to a host/adapter message. Optional current-origin and unlimited HTTP(S) grants must remain visible, user-initiated, and revocable. Debugger-only capabilities must fail explicitly when permission or tab consent is missing; never silently substitute weaker input. See [SECURITY.md](SECURITY.md) for the vulnerability-reporting process and release checklist.
 
 ## User-approved video (0.6.0)
 

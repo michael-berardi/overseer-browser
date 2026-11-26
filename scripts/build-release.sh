@@ -25,6 +25,10 @@ printf '%s\n' "$slug" | grep -Eq '^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$' ||
   { echo "build-release: cannot tell the GitHub owner/repo; set OVERSEER_BROWSER_RELEASE_REPO=owner/repo (or add a GitHub origin remote)" >&2; exit 1; }
 
 echo "build-release: building the extension (npm ci + npm run build)"
+# Build-time telemetry and registry audit/funding requests are disabled.
+export DO_NOT_TRACK=1
+export npm_config_audit=false
+export npm_config_fund=false
 npm ci --prefix extension
 npm run build --prefix extension
 [ -f extension/.output/chrome-mv3/manifest.json ] || { echo "build-release: the extension build did not produce extension/.output/chrome-mv3/manifest.json" >&2; exit 1; }
