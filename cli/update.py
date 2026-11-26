@@ -33,7 +33,8 @@ RELEASE_SLUG = CANONICAL_REPOSITORY.removeprefix("https://github.com/")
 USER_AGENT = "overseer-browser-update-check"
 CHECK_INTERVAL_SECONDS = 24 * 60 * 60
 # The exclusive marker is removed when the check finishes; this bound only
-# recovers a missing marker. The cached start timestamp itself gates for 24 h.
+# recovers a missing marker. A completed check gates for 24 h; an unfinished
+# one can be retried after this bound.
 CHECK_CLAIM_SECONDS = 60.0
 HTTP_TIMEOUT_SECONDS = 3.0
 MAX_RESPONSE_BYTES = 1024 * 1024
