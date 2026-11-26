@@ -5,7 +5,9 @@
 OverSeer Browser checks for a newer release itself, but only in an interactive
 terminal and only when you have not turned checks off. The check is one
 anonymous HTTPS GET to this repository's public GitHub "latest release" record
-(`/repos/<owner>/<repo>/releases/latest`). It sends a fixed
+(`/repos/<owner>/<repo>/releases/latest`). Source checkouts and released
+installs use this project's real repository; there is no placeholder owner in
+the shipped sources and no build-time owner rewrite. It sends a fixed
 `overseer-browser-update-check` User-Agent and no account, version, usage,
 machine, session, or browser data. Nothing is sent to any other endpoint.
 Only stable `x.y.z` releases count; drafts, prereleases and unparseable tags
@@ -15,8 +17,12 @@ The check runs in a background thread with a 3-second timeout and never blocks
 your command. It runs at most once per 24 hours; the timestamp, the newest tag,
 and any failure cause are stored in an owner-only cache file under the platform
 cache directory (override test state with `OVERSEER_BROWSER_UPDATE_STATE_DIR`).
-A failed check is never printed as noise and is never retried in a loop;
-`overseer-browser update --check` reports the recorded cause.
+Before the GET is sent, the check records its start time in a private in-flight
+claim, so an invocation launched while the request is running — or right after
+a fast command exits, before the result is cached — reuses that state instead
+of sending a second request. A claim left by a process that dies before cleanup
+expires after 60 seconds. A failed check is never printed as noise and is never
+retried in a loop; `overseer-browser update --check` reports the recorded cause.
 
 Checks are off automatically when stdout or stderr is not a TTY, `CI`,
 `GITHUB_ACTIONS`, `BUILD_NUMBER` or an agent marker (`ULTRATERM_SLOT`,
@@ -33,7 +39,7 @@ When a new version is found you see at most one notice per version per 24 hours
 on stderr, after the command finishes:
 
 ```
-overseer-browser 0.10.20 available (you have 0.10.19) · run: overseer-browser update
+overseer-browser 0.10.21 available (you have 0.10.20) · run: overseer-browser update
 turn on automatic updates: overseer-browser update --auto on · skip: overseer-browser update --skip
 ```
 

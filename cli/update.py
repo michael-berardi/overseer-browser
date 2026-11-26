@@ -23,11 +23,16 @@ from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 TOOL = "overseer-browser"
-# Neutral source placeholder. scripts/build-release.sh replaces it with the
-# release repository's own owner/repo before the bundle is published.
-RELEASE_SLUG = "example-user/overseer-browser"
+# A source checkout must check the project's own repository, not a build-time
+# placeholder. Kept as the canonical URL so the shipped-source neutrality
+# guard only has to allowlist that one documented form.
+CANONICAL_REPOSITORY = "https://github.com/michael-berardi/overseer-browser"
+RELEASE_SLUG = CANONICAL_REPOSITORY.removeprefix("https://github.com/")
 USER_AGENT = "overseer-browser-update-check"
 CHECK_INTERVAL_SECONDS = 24 * 60 * 60
+# An in-flight marker is removed when the check finishes; this bound recovers
+# from a process that dies before cleanup without allowing a second GET.
+CHECK_CLAIM_SECONDS = 60.0
 HTTP_TIMEOUT_SECONDS = 3.0
 MAX_RESPONSE_BYTES = 1024 * 1024
 STATE_DIR_ENV = "OVERSEER_BROWSER_UPDATE_STATE_DIR"
@@ -41,6 +46,7 @@ SLUG_RE = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
 CACHE_DEFAULTS: dict[str, Any] = {
     "version": 1,
     "checked_at": 0.0,
+    "checking_at": 0.0,
     "latest": None,
     "error": None,
     "shown": {},
@@ -79,6 +85,10 @@ def state_root() -> Path:
 
 def cache_path() -> Path:
     return state_root() / "update-check.json"
+
+
+def claim_path() -> Path:
+    return state_root() / "update-check.inflight"
 
 
 def settings_path() -> Path:
@@ -187,6 +197,70 @@ def _cause(exc: BaseException) -> str:
     return (type(exc).__name__ + ": " + text if text else type(exc).__name__)[:240]
 
 
+def _clear_claim() -> None:
+    try:
+        claim_path().unlink()
+    except (FileNotFoundError, OSError):
+        pass
+
+
+def _claim_check(instant: float) -> bool:
+    """Record the start time before any GET; only one invoker owns the check."""
+    path = claim_path()
+    _private_dir(path.parent)
+    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+    try:
+        fd = os.open(path, flags, 0o600)
+    except FileExistsError:
+        try:
+            text = path.read_text(encoding="utf-8").strip()
+            started = float(text) if text else path.stat().st_mtime
+        except (OSError, ValueError):
+            started = 0.0
+        if 0 <= instant - started < CHECK_CLAIM_SECONDS:
+            return False
+        try:
+            path.unlink()
+        except (FileNotFoundError, OSError):
+            return False
+        try:
+            fd = os.open(path, flags, 0o600)
+        except FileExistsError:
+            return False
+    try:
+        cache = read_cache()
+        cache["checking_at"] = instant
+        write_cache(cache)
+    except OSError:
+        _clear_claim()
+        return False
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write(str(instant) + "\n")
+    return True
+
+
+def _fresh_check(instant: float, cache: dict[str, Any]) -> bool:
+    checked = float(cache.get("checked_at") or 0.0)
+    checking = float(cache.get("checking_at") or 0.0)
+    return ((checked > 0 and 0 <= instant - checked < CHECK_INTERVAL_SECONDS) or
+            (checking > 0 and 0 <= instant - checking < CHECK_CLAIM_SECONDS))
+
+
+def _finish_check(instant: float, latest: Optional[str], error: Optional[str],
+                  assets: dict[str, str], ok: bool) -> dict[str, Any]:
+    cache = read_cache()
+    cache.update({"checked_at": instant, "checking_at": 0.0, "latest": latest,
+                  "error": error, "assets": assets})
+    try:
+        write_cache(cache)
+    except OSError as exc:
+        error = _cause(exc)
+        ok = False
+    finally:
+        _clear_claim()
+    return {"ok": ok, "checked": True, "latest": latest, "error": error, "assets": assets}
+
+
 def fetch_latest(get: Optional[Callable[[str, float], bytes]] = None) -> dict[str, Any]:
     """One anonymous GET; returns the stable tag and install asset URLs."""
     slug = release_slug()
@@ -218,22 +292,26 @@ def fetch_latest(get: Optional[Callable[[str, float], bytes]] = None) -> dict[st
 
 def check(current: str, force: bool = False, get: Optional[Callable[[str, float], bytes]] = None,
           now: Optional[float] = None) -> dict[str, Any]:
-    """Perform or reuse the at-most-daily check; always record failures locally."""
+    """Perform or reuse the at-most-daily check; always record failures locally.
+
+    The claim (with its start time) is committed before the GET, so a fast CLI
+    that exits before this thread finishes cannot let another invocation start
+    a second request.
+    """
     instant = time.time() if now is None else now
     cache = read_cache()
-    if not force and cache["checked_at"] and 0 <= instant - cache["checked_at"] < CHECK_INTERVAL_SECONDS:
+    if not force and _fresh_check(instant, cache):
         return {"ok": True, "checked": False, "latest": cache["latest"],
                 "error": cache["error"], "assets": cache["assets"]}
+    if not _claim_check(instant):
+        return {"ok": True, "checked": False, "latest": cache["latest"],
+                "error": cache["error"], "assets": cache["assets"],
+                "in_progress": True}
     try:
         release = fetch_latest(get)
     except (OSError, ValueError, URLError) as exc:
-        cause = _cause(exc)
-        cache.update({"checked_at": instant, "latest": None, "error": cause, "assets": {}})
-        write_cache(cache)
-        return {"ok": False, "checked": True, "latest": None, "error": cause, "assets": {}}
-    cache.update({"checked_at": instant, "latest": release["tag"], "error": None, "assets": release["assets"]})
-    write_cache(cache)
-    return {"ok": True, "checked": True, "latest": release["tag"], "error": None, "assets": release["assets"]}
+        return _finish_check(instant, None, _cause(exc), {}, False)
+    return _finish_check(instant, release["tag"], None, release["assets"], True)
 
 
 def skip_version(version: Optional[str] = None) -> str:
@@ -303,7 +381,7 @@ class BackgroundChecker:
 
     def start(self) -> None:
         cache = read_cache()
-        if cache["checked_at"] and 0 <= time.time() - cache["checked_at"] < CHECK_INTERVAL_SECONDS:
+        if _fresh_check(time.time(), cache):
             self.result = {"ok": True, "checked": False, "latest": cache["latest"],
                            "error": cache["error"], "assets": cache["assets"]}
             self.done.set()

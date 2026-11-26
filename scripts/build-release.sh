@@ -31,19 +31,17 @@ mkdir -p "$stage/extension/.output"
 cp -R extension/.output/chrome-mv3 "$stage/extension/.output/chrome-mv3"
 printf '%s\n' "$commit" > "$stage/COMMIT"
 
-# The shipped sources keep a neutral placeholder owner (tests/test_neutrality.py); the released
-# code gets the real GitHub owner/repo, from OVERSEER_BROWSER_RELEASE_REPO or the origin remote.
-PLACEHOLDER="example-user/overseer-browser"
-slug="${OVERSEER_BROWSER_RELEASE_REPO:-}"
-if [ -z "$slug" ]; then
-  slug=$(git remote get-url origin 2>/dev/null | sed -E -n 's#^(git@github\.com:|https://github\.com/)([A-Za-z0-9._-]+)/([A-Za-z0-9._-]+)$#\2/\3#p' | sed 's#\.git$##')
-fi
-printf '%s\n' "$slug" | grep -Eq '^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$' ||
-  { echo "build-release: cannot tell the GitHub owner/repo; set OVERSEER_BROWSER_RELEASE_REPO=owner/repo (or add a GitHub origin remote)" >&2; exit 1; }
-# The bundled update checker must query the same repository the installers download from.
-sed "s#$PLACEHOLDER#$slug#g" "$stage/cli/update.py" > "$stage/cli/update.py.new"
-mv "$stage/cli/update.py.new" "$stage/cli/update.py"
-grep -q "$PLACEHOLDER" "$stage/cli/update.py" && { echo "build-release: update checker still has the placeholder owner" >&2; exit 1; }
+# The checker and both installers already name the project's own repository;
+# there is no owner substitution at build time. Fail loudly if a placeholder
+# or an unrelated owner is shipped, since source installs use these files too.
+for f in cli/update.py scripts/install.sh scripts/install.ps1; do
+  if grep -q 'example-user' "$f"; then
+    echo "build-release: $f still has the placeholder owner" >&2; exit 1
+  fi
+  if ! grep -q 'https://github.com/michael-berardi/overseer-browser' "$f"; then
+    echo "build-release: $f does not name the project repository" >&2; exit 1
+  fi
+done
 
 # Deterministic: sorted names, fixed owner and times (1980-01-01 is the zip epoch floor).
 ( cd "$stage" && find . -mindepth 1 | LC_ALL=C sort | sed 's|^\./||' > "$stage.list" )
@@ -56,11 +54,10 @@ fi
 ( cd "$stage" && zip -X -q "$OUT_ABS/overseer-browser.zip" -@ < "$stage.list" )
 rm -f "$stage.list"
 for f in install.sh install.ps1; do
-  sed "s#$PLACEHOLDER#$slug#g" "scripts/$f" > "$OUT/$f"
+  cp "scripts/$f" "$OUT/$f"
   chmod 755 "$OUT/$f"
-  grep -q "$PLACEHOLDER" "$OUT/$f" && { echo "build-release: $f still has the placeholder owner" >&2; exit 1; }
 done
-echo "build-release: release URLs point at github.com/$slug"
+echo "build-release: release URLs point at the project repository"
 ( cd "$OUT" && if command -v sha256sum >/dev/null 2>&1; then sha256sum overseer-browser.tar.gz overseer-browser.zip install.sh install.ps1; else shasum -a 256 overseer-browser.tar.gz overseer-browser.zip install.sh install.ps1; fi > SHA256SUMS )
 echo "built $OUT for $commit"
 ls -l "$OUT"

@@ -19,9 +19,9 @@ echo "== build release assets =="
 scripts/build-release.sh "$DIST"
 
 echo "== release stamping =="
-if grep -q 'example-user' "$DIST/install.sh" "$DIST/install.ps1"; then echo "released installers still have the placeholder owner" >&2; exit 1; fi
-grep -q 'REPO="[A-Za-z0-9._-]*/overseer-browser"' "$DIST/install.sh" || { echo "released install.sh has no owner/repo" >&2; exit 1; }
-echo "ok - released installers name a real owner/repo and no placeholder"
+if grep -q 'example-user' "$DIST/install.sh" "$DIST/install.ps1" "cli/update.py"; then echo "shipped files still have the placeholder owner" >&2; exit 1; fi
+grep -q 'https://github.com/michael-berardi/overseer-browser' "$DIST/install.sh" "$DIST/install.ps1" "cli/update.py" || { echo "shipped files do not name the project repository" >&2; exit 1; }
+echo "ok - shipped checker and installers name the project repository and no placeholder"
 
 echo "== macOS (throwaway HOME) =="
 OVERSEER_BROWSER_TEST_DIST="$DIST" python3 -m unittest tests.test_release_install -v

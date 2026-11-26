@@ -12,6 +12,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -20,6 +21,11 @@ from cli import update
 from cli.main import main
 
 ROOT = Path(__file__).resolve().parents[1]
+# Canonical URL form is the one allowlisted spelling of the owner in the
+# shipped-source neutrality guard.
+CANONICAL_REPOSITORY = "https://github.com/michael-berardi/overseer-browser"
+EXPECTED_SLUG = CANONICAL_REPOSITORY.removeprefix("https://github.com/")
+EXPECTED_API_URL = "https://api.github.com/repos/" + EXPECTED_SLUG + "/releases/latest"
 
 
 def release_payload(tag="v0.10.20", draft=False, prerelease=False):
@@ -39,7 +45,8 @@ class UpdateContractTests(unittest.TestCase):
         self.base = Path(self.temporary.name)
         self.env = dict(os.environ, **{update.STATE_DIR_ENV: str(self.base / "state")})
         for name in (update.OPT_OUT_ENV, "CI", "GITHUB_ACTIONS", "BUILD_NUMBER", "TERM",
-                     "ULTRATERM_SLOT", "ULTRATERM_TMUX_SESSION", update.AUTO_MARKER_ENV):
+                     "ULTRATERM_SLOT", "ULTRATERM_TMUX_SESSION", update.AUTO_MARKER_ENV,
+                     "OVERSEER_BROWSER_RELEASE_REPO"):
             self.env.pop(name, None)
         stack = patch.dict(os.environ, self.env, clear=True)
         stack.start()
@@ -85,7 +92,7 @@ class UpdateContractTests(unittest.TestCase):
         with patch.object(update, "urlopen", urlopen):
             result = update.fetch_latest()
         request = captured["request"]
-        self.assertEqual(request.full_url, "https://api.github.com/repos/example-user/overseer-browser/releases/latest")
+        self.assertEqual(request.full_url, EXPECTED_API_URL)
         self.assertEqual(request.get_header("User-agent"), update.USER_AGENT)
         self.assertLessEqual(captured["timeout"], 4)
         self.assertEqual(result["tag"], "0.10.20")
@@ -110,6 +117,70 @@ class UpdateContractTests(unittest.TestCase):
         self.assertIn("network offline", failed["error"])
         self.assertIn("network offline", update.read_cache()["error"])
         self.assertIsNone(update.read_cache()["latest"])
+
+    def test_start_time_is_recorded_before_get_and_blocks_repeat_checks(self):
+        """A fast CLI exiting before the daemon writes its result must not re-GET."""
+        entered = threading.Event()
+        proceed = threading.Event()
+        calls = []
+
+        def slow_get(url, timeout):
+            calls.append((url, timeout))
+            entered.set()
+            if not proceed.wait(3):
+                raise AssertionError("blocked check was never released")
+            return release_payload()
+
+        result: dict[str, object] = {}
+        errors: list[BaseException] = []
+
+        def run():
+            try:
+                result.update(update.check("0.10.19", get=slow_get, now=1000.0))
+            except BaseException as exc:
+                errors.append(exc)
+
+        worker = threading.Thread(target=run, name="update-check-test")
+        worker.start()
+        try:
+            self.assertTrue(entered.wait(3), "the first check did not start")
+            cache = update.read_cache()
+            self.assertEqual(cache["checking_at"], 1000.0)
+            self.assertIsNone(cache["latest"])
+            # While the GET is in flight, a second invocation must not send one.
+            second = update.check("0.10.19", get=self.getting(release_payload(), calls), now=1000.05)
+            self.assertFalse(second["checked"])
+            # An explicit re-check also respects the in-flight claim.
+            forced = update.check("0.10.19", force=True,
+                                  get=self.getting(release_payload(), calls), now=1000.06)
+            self.assertFalse(forced["checked"])
+            self.assertTrue(forced["in_progress"])
+            self.assertEqual(len(calls), 1)
+        finally:
+            proceed.set()
+            worker.join(3)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(errors, [])
+        self.assertTrue(result["ok"] and result["checked"])
+        cache = update.read_cache()
+        self.assertEqual(cache["checked_at"], 1000.0)
+        self.assertEqual(cache["checking_at"], 0.0)
+        self.assertFalse(update.claim_path().exists())
+        # Immediately after the first check finished, the daily cache still wins.
+        later = []
+        third = update.check("0.10.19", get=self.getting(release_payload(), later), now=1000.1)
+        self.assertFalse(third["checked"])
+        self.assertEqual(later, [])
+
+    def test_stale_in_flight_marker_does_not_suppress_checks_forever(self):
+        claim = update.claim_path()
+        update._private_dir(claim.parent)
+        claim.write_text("1000.0\n", encoding="utf-8")
+        calls = []
+        result = update.check("0.10.19", get=self.getting(release_payload(), calls),
+                              now=1000.0 + update.CHECK_CLAIM_SECONDS + 1)
+        self.assertTrue(result["checked"])
+        self.assertEqual(len(calls), 1)
 
     def test_notice_once_per_version_per_day_and_skip(self):
         payload = release_payload()
@@ -167,7 +238,7 @@ class UpdateContractTests(unittest.TestCase):
             self.assertEqual(main(["update", "--auto", "status"]), 0)
             self.assertEqual(main(["update", "--checks", "off"]), 0)
         self.assertFalse(update.read_settings()["checks_enabled"])
-        payload = {"ok": True, "checked": True, "latest": "0.10.20", "error": None, "assets": {}}
+        payload = {"ok": True, "checked": True, "latest": "0.10.21", "error": None, "assets": {}}
         with patch.object(update, "check", return_value=payload), \
              contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()) as err:
             status = main(["update", "--check", "--json"])
@@ -245,10 +316,18 @@ class UpdateContractTests(unittest.TestCase):
         self.assertTrue((home / "extension" / "manifest.json").is_file())
         self.assertTrue((self.base / "bin" / "overseer-browser").is_file())
 
-    def test_shipped_source_placeholder_is_replaced_at_release_time(self):
-        self.assertIn('RELEASE_SLUG = "example-user/overseer-browser"', (ROOT / "cli" / "update.py").read_text())
+    def test_shipped_sources_use_the_project_release_repository(self):
+        for relative in ("cli/update.py", "scripts/install.sh", "scripts/install.ps1"):
+            self.assertNotIn("example-user", (ROOT / relative).read_text(), relative)
+        # The build script only mentions the old slug in its negative guard.
+        self.assertNotIn("example-user/overseer-browser", (ROOT / "scripts" / "build-release.sh").read_text())
+        self.assertEqual(update.RELEASE_SLUG, EXPECTED_SLUG)
+        self.assertEqual(update.release_url(), EXPECTED_API_URL)
+        for relative in ("cli/update.py", "scripts/install.sh", "scripts/install.ps1"):
+            self.assertIn(CANONICAL_REPOSITORY, (ROOT / relative).read_text(), relative)
         build = (ROOT / "scripts" / "build-release.sh").read_text()
-        self.assertIn('sed "s#$PLACEHOLDER#$slug#g" "$stage/cli/update.py"', build)
+        self.assertNotIn("PLACEHOLDER=", build)
+        self.assertNotIn("sed \"s#$PLACEHOLDER#$slug#g\"", build)
         self.assertIn("<!-- update-contract: v1 -->", (ROOT / "docs" / "updates.md").read_text())
         privacy = (ROOT / "README.md").read_text()
         self.assertIn("anonymous HTTPS GET", privacy)

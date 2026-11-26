@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.10.20
+
+- The daily check now records its start time in a private in-flight claim **before** sending the HTTPS GET. A second CLI invoked while the request is running — or immediately after a fast command exits, before the result is cached — reuses the in-progress state instead of sending another request. A marker left by a dead process expires after 60 seconds.
+- Source checkouts, release bundles and both one-step installers now point at this project's own GitHub repository. The build-time owner placeholder and its source rewrite are gone; `OVERSEER_BROWSER_RELEASE_REPO` remains an explicit operator override. The check stays anonymous, daily, opt-outable and non-blocking.
+
 ## 0.10.19
 
 - Added an anonymous, at-most-daily release check in interactive CLI use: one GET to the public GitHub latest-release record with a fixed update-check User-Agent, a 3-second background timeout, and a private local cache that records failures for `update --check`. Checks are off in CI, agents, non-TTY/JSON use, and via env or persistent config opt-outs; one notice per version per 24 hours goes to stderr after the command.
