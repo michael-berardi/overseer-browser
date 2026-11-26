@@ -80,11 +80,14 @@ agent. Video recording requires a fresh approval click in the extension popup.
 ## Privacy
 
 There is no telemetry, analytics, or crash reporting. In an interactive terminal
-the CLI makes one anonymous HTTPS GET per day to this repository's public GitHub
-"latest release" record, with a fixed `overseer-browser-update-check`
-User-Agent and no account, version, usage, or machine data. An unfinished check
-still counts toward that day, even if the process exits before it finishes. It
-is off in CI, agents, non-TTY/JSON use, and with
+the CLI normally makes one anonymous HTTPS GET per day to this repository's
+public GitHub "latest release" record (an interrupted check may be retried after
+its brief claim expires), with a fixed `overseer-browser-update-check`
+User-Agent and no account, version, usage, or machine data. The check runs in a
+detached low-priority child process so it survives a fast CLI exit and records
+its result or failure; a claim left by a dead worker is recoverable after 60
+seconds instead of suppressing checks for a day. It is off in CI, agents,
+non-TTY/JSON use, and with
 `OVERSEER_BROWSER_NO_UPDATE_CHECK=1` or `overseer-browser update --checks off`;
 automatic installation is opt-in and its log is capped at 256 KiB. The
 extension and native host make no network requests. Installing or updating a

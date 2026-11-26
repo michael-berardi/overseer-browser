@@ -13,18 +13,21 @@ machine, session, or browser data. Nothing is sent to any other endpoint.
 Only stable `x.y.z` releases count; drafts, prereleases and unparseable tags
 are ignored.
 
-The check runs in a background thread with a 3-second timeout and never blocks
-your command. It runs at most once per 24 hours; the timestamp, the newest tag,
-and any failure cause are stored in an owner-only cache file under the platform
-cache directory (override test state with `OVERSEER_BROWSER_UPDATE_STATE_DIR`).
-Before the GET is sent, the check records its start time in the owner-only cache
-and a private in-flight claim. Only a finished check replaces that start with a
-completed result: if the process dies mid-request, the persisted start still
-suppresses every later check — including `update --check` — for a full 24 hours.
-The exclusive claim file is recoverable after 60 seconds, but its expiry alone
-never authorizes a second GET. A failed check is never printed as noise and is
-never retried in a loop; `overseer-browser update --check` reports the recorded
-cause.
+The check runs once in a detached, low-priority child process with a 3-second
+HTTP timeout, so it never blocks your command and keeps running after a fast
+CLI exits. A completed result gates automatic checks for 24 hours; the
+timestamp, the newest tag, and any failure cause are stored in an owner-only
+cache file under the platform cache directory (override test state with
+`OVERSEER_BROWSER_UPDATE_STATE_DIR`). An interrupted check may be retried once
+its brief claim expires.
+Before the GET is sent, the worker records its start time in the owner-only
+cache and a private in-flight claim. It clears the claim and writes a completed
+result or failure when it finishes. The claim is only a short in-flight guard:
+after 60 seconds a claim left by a dead worker is recoverable, and the old
+start no longer suppresses a later check for 24 hours, so `update --check`
+never reports "current" from an unfinished check. A failed check is never
+printed as noise and is never retried in a loop; `overseer-browser update
+--check` reports the recorded cause.
 
 Checks are off automatically when stdout or stderr is not a TTY, `CI`,
 `GITHUB_ACTIONS`, `BUILD_NUMBER` or an agent marker (`ULTRATERM_SLOT`,
@@ -41,7 +44,7 @@ When a new version is found you see at most one notice per version per 24 hours
 on stderr, after the command finishes:
 
 ```
-overseer-browser 0.10.22 available (you have 0.10.21) · run: overseer-browser update
+overseer-browser 0.11.2 available (you have 0.11.1) · run: overseer-browser update
 turn on automatic updates: overseer-browser update --auto on · skip: overseer-browser update --skip
 ```
 
@@ -54,7 +57,17 @@ release, verifies its SHA-256 against that release's `SHA256SUMS` before
 installing, swaps the release atomically, and keeps the previous release under
 `<install>/rollback/previous`. `overseer-browser update --rollback` restores it
 and re-registers the local host; it reports plainly when no previous release
-was kept. An explicit update installs without questions and never overwrites a
+was kept.
+
+Only one rollback copy is retained. Each update replaces that single copy with
+the release it displaced; it has no expiry and stays on disk until the next
+update replaces it, so clearing it sooner means it must be removed manually.
+`overseer-browser update --auto off` only stops future automatic installs — it
+does not delete the retained copy. Remove `<install>/rollback/previous`
+manually if you no longer want it (after which `--rollback` reports that no
+previous release was kept).
+
+An explicit update installs without questions and never overwrites a
 package manager's files: this project ships its own per-user release bundles
 and native-host registration, with no Homebrew, npm, pip or cargo formula
 owning them. Source checkouts update with `git pull --ff-only` followed by

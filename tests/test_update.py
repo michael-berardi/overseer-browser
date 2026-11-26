@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -172,40 +173,90 @@ class UpdateContractTests(unittest.TestCase):
         self.assertFalse(third["checked"])
         self.assertEqual(later, [])
 
-    def test_incomplete_check_is_a_24_hour_gate_even_after_the_claim_expires(self):
-        """A CLI killed before the result is cached must not send a second GET."""
+    def test_abandoned_start_is_retried_after_the_brief_claim_expires(self):
+        """A killed child must not leave a 24 h false 'current' record."""
         started = 1000.0
         self.assertTrue(update._claim_check(started))
         cache = update.read_cache()
         self.assertEqual(cache["checking_at"], started)
         self.assertEqual(cache["checked_at"], 0.0)
-        # Simulate a worker dying before _finish_check: no completed record is
-        # written, but its start is persisted and gates every later invocation.
-        for instant in (started + update.CHECK_CLAIM_SECONDS + 1,
-                        started + 23 * 3600,
-                        started + 24 * 3600 - 1):
-            calls = []
-            result = update.check("0.10.19", get=self.getting(release_payload(), calls), now=instant)
-            self.assertFalse(result["checked"], instant)
-            self.assertEqual(calls, [], instant)
-            self.assertEqual(update.read_cache()["checking_at"], started)
-            forced = update.check("0.10.19", force=True,
-                                  get=self.getting(release_payload(), calls), now=instant)
-            self.assertFalse(forced["checked"], instant)
-            self.assertEqual(calls, [], instant)
-        checker = update.BackgroundChecker("0.10.19")
-        with patch.object(update.time, "time", return_value=started + 24 * 3600 - 1):
-            checker.start()
-        self.assertIsNone(checker.thread)
-        self.assertTrue(checker.done.is_set())
+        # The live claim still prevents a duplicate GET.
+        live = []
+        self.assertFalse(update.check("0.10.19", get=self.getting(release_payload(), live),
+                                      now=started + 1)["checked"])
+        self.assertEqual(live, [])
+        # After the short claim window an abandoned start is not a daily gate.
+        instant = started + update.CHECK_CLAIM_SECONDS + 1
         calls = []
-        result = update.check("0.10.19", get=self.getting(release_payload(), calls),
-                              now=started + 24 * 3600)
+        result = update.check("0.10.19", get=self.getting(release_payload(), calls), now=instant)
         self.assertTrue(result["checked"])
         self.assertEqual(len(calls), 1)
         cache = update.read_cache()
-        self.assertEqual(cache["checked_at"], started + 24 * 3600)
+        self.assertEqual(cache["checked_at"], instant)
         self.assertEqual(cache["checking_at"], 0.0)
+        self.assertFalse(update.claim_path().exists())
+        # A completed result now gates automatic repeats for a full day.
+        repeat = []
+        self.assertFalse(update.check("0.10.19", get=self.getting(release_payload(), repeat),
+                                      now=instant + 60)["checked"])
+        self.assertEqual(repeat, [])
+        # An explicit update --check bypasses the completed cache, and a
+        # failure produces a recorded cause instead of a silent false current.
+        forced = []
+        retried = update.check("0.10.19", force=True,
+                               get=self.getting(OSError("network offline"), forced),
+                               now=instant + 120)
+        self.assertFalse(retried["ok"])
+        self.assertEqual(len(forced), 1)
+        self.assertIn("network offline", update.read_cache()["error"])
+        self.assertFalse(update.claim_path().exists())
+
+    def test_background_check_spawns_detached_low_priority_one_shot_child(self):
+        with patch.object(update.subprocess, "Popen") as popen:
+            popen.return_value.poll.return_value = None
+            checker = update.BackgroundChecker("0.10.19")
+            checker.start()
+        self.assertTrue(popen.called)
+        args, kwargs = popen.call_args
+        command = args[0]
+        self.assertIn("--check-once", command)
+        self.assertIn("0.10.19", command)
+        if os.name == "posix" and shutil.which("nice"):
+            self.assertEqual(command[:3], ["nice", "-n", "10"])
+        self.assertIs(kwargs["stdin"], subprocess.DEVNULL)
+        self.assertIs(kwargs["stdout"], subprocess.DEVNULL)
+        self.assertIs(kwargs["stderr"], subprocess.DEVNULL)
+        self.assertTrue(kwargs["close_fds"])
+        self.assertEqual(kwargs["start_new_session"], os.name == "posix")
+        self.assertEqual(kwargs["env"][update.OPT_OUT_ENV], "1")
+        self.assertEqual(checker.notices(), [], "no notice while the child runs")
+        popen.return_value.poll.return_value = 0
+        with patch.object(update, "notice_lines", return_value=["done"]):
+            self.assertEqual(checker.notices(), ["done"])
+
+    def test_real_worker_exits_after_one_check_and_leaves_no_claim(self):
+        cache = update.read_cache()
+        cache.update({"checked_at": time.time(), "checking_at": 0.0,
+                      "latest": "0.10.20", "error": None})
+        update.write_cache(cache)
+        checker = update.BackgroundChecker("0.10.19")
+        # Force one spawn in the parent; the child sees the fresh cache and
+        # exits after its single (network-free) check.
+        with patch.object(update, "_fresh_check", return_value=False):
+            checker.start()
+        self.assertIsNotNone(checker.process)
+        deadline = time.monotonic() + 15
+        while checker.process.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertEqual(checker.process.poll(), 0)
+        self.assertFalse(update.claim_path().exists())
+
+    def test_worker_records_unexpected_failure_and_clears_claim(self):
+        with patch.object(update, "check", side_effect=RuntimeError("worker exploded")):
+            result = update.BackgroundChecker("0.10.19")._run()
+        self.assertFalse(result["ok"])
+        self.assertIn("worker exploded", update.read_cache()["error"])
+        self.assertFalse(update.claim_path().exists())
 
     def test_stale_claim_without_cached_start_recovers_after_claim_window(self):
         claim = update.claim_path()
@@ -286,6 +337,16 @@ class UpdateContractTests(unittest.TestCase):
         update.bound_install_log(log)
         self.assertEqual(log.stat().st_size, update.INSTALL_LOG_MAX_BYTES)
         self.assertEqual(log.read_bytes(), b"x" * update.INSTALL_LOG_MAX_BYTES)
+
+    def test_branch_version_is_above_the_published_release(self):
+        self.assertGreater(update.stable_version(CLI_VERSION), (0, 11, 0))
+
+    def test_rollback_retention_gap_is_documented(self):
+        text = (ROOT / "docs" / "updates.md").read_text(encoding="utf-8")
+        self.assertIn("removed manually", text)
+        self.assertIn("--auto off", text)
+        self.assertIn("detached", text)
+        self.assertNotIn("background thread", text)
 
     def test_settings_persist_and_check_exit_codes(self):
         with contextlib.redirect_stdout(io.StringIO()):

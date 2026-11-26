@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.11.1
+
+- The automatic release check now runs in a detached, low-priority one-shot child process instead of a Python thread. It survives fast CLI exits, writes its completed result or failure to the private cache, and keeps the in-flight claim only for the request; an abandoned claim is recoverable after 60 seconds instead of suppressing `update --check` for 24 hours. The 24-hour gate for completed checks, fixed User-Agent, opt-outs, checksum verification, rollback and bounded logs are unchanged.
+- Documented that one rollback copy is retained indefinitely (replaced on the next update) and must be removed manually; `update --auto off` does not delete it. Bumped the version past published 0.11.0.
+
 ## 0.10.21
 
 - An unfinished daily check no longer permits a second GET after the 60-second in-flight marker expires. Its persisted start time now gates later invocations — including `update --check` — for 24 hours, until the background check finishes and replaces it with a completed record.

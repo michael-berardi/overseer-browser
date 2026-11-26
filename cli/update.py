@@ -13,11 +13,11 @@ import json
 import os
 import re
 import shutil
+import signal
 import stat
 import subprocess
 import sys
 import tempfile
-import threading
 import time
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -208,6 +208,25 @@ def _clear_claim() -> None:
         pass
 
 
+def _live_claim(instant: float) -> Optional[float]:
+    """Return the start of a claim still inside its short in-flight window.
+
+    A claim left by a dead worker is not a 24-hour gate: after the claim
+    window it is stale and another invocation may start a fresh check.
+    """
+    try:
+        started = float(claim_path().read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return None
+    return started if 0 <= instant - started < CHECK_CLAIM_SECONDS else None
+
+
+def _in_progress(cache: dict[str, Any]) -> dict[str, Any]:
+    return {"ok": True, "checked": False, "latest": cache["latest"],
+            "error": cache["error"], "assets": cache["assets"],
+            "in_progress": True}
+
+
 def _claim_check(instant: float) -> bool:
     """Record the start time before any GET; only one invoker owns the check."""
     path = claim_path()
@@ -244,14 +263,15 @@ def _claim_check(instant: float) -> bool:
 
 
 def _fresh_check(instant: float, cache: dict[str, Any], force: bool = False) -> bool:
-    """A recorded start suppresses checks for 24 h, even if the worker died.
+    """A completed result gates for 24 h; a live claim gates only briefly.
 
-    The exclusive claim may be recovered after 60 s, but only a completed
-    result clears ``checking_at``; an incomplete record remains a daily gate.
-    An explicit re-check bypasses a completed cache, never an unfinished one.
+    The detached worker owns the claim from just before its GET until it
+    records success or failure. A persisted start whose claim is gone (for
+    example, a worker killed before it could write) is abandoned and must
+    not make a later invocation — including ``update --check`` — report a
+    false "current" state for 24 hours.
     """
-    checking = float(cache.get("checking_at") or 0.0)
-    if checking > 0 and 0 <= instant - checking < CHECK_INTERVAL_SECONDS:
+    if _live_claim(instant) is not None:
         return True
     if force:
         return False
@@ -307,23 +327,20 @@ def check(current: str, force: bool = False, get: Optional[Callable[[str, float]
           now: Optional[float] = None) -> dict[str, Any]:
     """Perform or reuse the at-most-daily check; always record failures locally.
 
-    The start time is committed before the GET, so a fast CLI that exits before
-    this thread finishes cannot let another invocation send a second request:
-    the unfinished record gates for 24 h until a completed result replaces it.
+    The start is claimed before the GET so concurrent invocations do not send
+    a second request. The claim is short-lived: the detached worker writes a
+    completed result or failure, and an abandoned claim can be retried.
     """
     instant = time.time() if now is None else now
     cache = read_cache()
     if _fresh_check(instant, cache, force=force):
         result = {"ok": True, "checked": False, "latest": cache["latest"],
                   "error": cache["error"], "assets": cache["assets"]}
-        checking = float(cache.get("checking_at") or 0.0)
-        if checking > 0 and 0 <= instant - checking < CHECK_INTERVAL_SECONDS:
+        if _live_claim(instant) is not None:
             result["in_progress"] = True
         return result
     if not _claim_check(instant):
-        return {"ok": True, "checked": False, "latest": cache["latest"],
-                "error": cache["error"], "assets": cache["assets"],
-                "in_progress": True}
+        return _in_progress(cache)
     try:
         release = fetch_latest(get)
     except (OSError, ValueError, URLError) as exc:
@@ -420,33 +437,75 @@ def bound_install_log(log: Path, max_bytes: int = INSTALL_LOG_MAX_BYTES) -> None
 
 
 class BackgroundChecker:
-    """Starts the bounded check off the command path; never blocks the command."""
+    """Starts one check in a detached child; the CLI may exit immediately.
+
+    A Python thread died with a fast command and left only a pre-request claim,
+    so no result was ever cached. The child is a separate, low-priority,
+    one-shot process: it owns the brief claim and writes success or failure to
+    the private cache itself, whether or not the invoking CLI is still alive.
+    """
 
     def __init__(self, current: str):
         self.current = current
         self.result: dict[str, Any] | None = None
-        self.done = threading.Event()
-        self.thread: threading.Thread | None = None
+        self.process: subprocess.Popen[bytes] | None = None
+        self.spawn_error: str | None = None
 
     def start(self) -> None:
         cache = read_cache()
         if _fresh_check(time.time(), cache):
             self.result = {"ok": True, "checked": False, "latest": cache["latest"],
                            "error": cache["error"], "assets": cache["assets"]}
-            self.done.set()
             return
-        self.thread = threading.Thread(target=self._run, name="update-check", daemon=True)
-        self.thread.start()
-
-    def _run(self) -> None:
+        script = Path(__file__).with_name("update.py")
+        command = [sys.executable, str(script), "--check-once", self.current]
+        if os.name == "posix" and shutil.which("nice"):
+            command = ["nice", "-n", "10", *command]
+        creationflags = 0
+        if os.name == "nt":
+            # DETACHED_PROCESS | CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS
+            creationflags = 0x00000008 | 0x00000200 | 0x00004000
+        environment = dict(os.environ, **{OPT_OUT_ENV: "1"})
         try:
-            self.result = check(self.current)
-            if self.result.get("ok") and self.settings()["auto_install"] and is_newer(self.result.get("latest"), self.current):
-                self.auto_install()
-        except Exception as exc:  # the check must never break a user command
-            self.result = {"ok": False, "error": _cause(exc)}
-        finally:
-            self.done.set()
+            self.process = subprocess.Popen(command, stdin=subprocess.DEVNULL,
+                                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                            env=environment, close_fds=True,
+                                            start_new_session=(os.name == "posix"),
+                                            creationflags=creationflags)
+        except OSError as exc:
+            # A spawn failure is recorded locally; no claim is left behind.
+            self.spawn_error = _cause(exc)
+            self.result = _finish_check(time.time(), None,
+                                        "background check could not start: " + self.spawn_error, {}, False)
+
+    def _run(self) -> dict[str, Any]:
+        """One-shot worker body; used only by the detached child (and tests)."""
+        try:
+            result = check(self.current)
+        except BaseException as exc:  # record even an unexpected worker failure
+            result = _finish_check(time.time(), None, _cause(exc), {}, False)
+        self.result = result
+        if result.get("ok") and is_newer(result.get("latest"), self.current):
+            try:
+                if self.settings()["auto_install"]:
+                    self.auto_install()
+            except Exception as exc:
+                self._record_install_failure(exc)
+        return result
+
+    @staticmethod
+    def _record_install_failure(exc: BaseException) -> None:
+        log = state_root() / "update-install.log"
+        try:
+            _private_dir(log.parent)
+            bound_install_log(log)
+            with open(log, "ab") as output:
+                with contextlib.suppress(OSError):
+                    os.chmod(log, 0o600)
+                output.write(("auto-install failed: " + _cause(exc) + "\n").encode("utf-8"))
+            bound_install_log(log)
+        except OSError:
+            pass
 
     @staticmethod
     def settings() -> dict[str, Any]:
@@ -487,9 +546,32 @@ class BackgroundChecker:
         return {"ok": True, "started": True, "log": str(log)}
 
     def notices(self, dim: bool = False) -> list[str]:
-        if not self.done.is_set():
+        # A fast command usually exits before the child finishes; the next
+        # command reads the completed cache and emits the one daily notice.
+        if self.process is not None and self.process.poll() is None:
             return []
         return notice_lines(self.current, dim=dim)
+
+
+def _worker_signal(signum: int, _frame: Any) -> None:
+    """A terminated worker records a failure if it still owns the check."""
+    cache = read_cache()
+    if float(cache.get("checking_at") or 0.0) > 0:
+        _finish_check(time.time(), None, "check interrupted by signal " + str(signum), {}, False)
+    raise SystemExit(1)
+
+
+def _worker_main(argv: list[str]) -> int:
+    if len(argv) != 3 or argv[1] != "--check-once":
+        print("usage: update.py --check-once VERSION", file=sys.stderr)
+        return 2
+    for name in ("SIGTERM", "SIGINT"):
+        number = getattr(signal, name, None)
+        if number is not None:
+            with contextlib.suppress(ValueError, OSError):
+                signal.signal(number, _worker_signal)
+    BackgroundChecker(argv[2])._run()
+    return 0
 
 
 def verify_sha256(archive: Path, sums: str, name: str) -> bool:
@@ -507,3 +589,7 @@ def verify_sha256(archive: Path, sums: str, name: str) -> bool:
         for block in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest() == wanted
+
+
+if __name__ == "__main__":
+    raise SystemExit(_worker_main(sys.argv))
