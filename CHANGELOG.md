@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.10.21
+
+- An unfinished daily check no longer permits a second GET after the 60-second in-flight marker expires. Its persisted start time now gates later invocations — including `update --check` — for 24 hours, until the background check finishes and replaces it with a completed record.
+- The opt-in auto-install log (`update-install.log`) is owner-only and capped to its newest 256 KiB, matching the other bounded CLI logs.
+
 ## 0.10.20
 
 - The daily check now records its start time in a private in-flight claim **before** sending the HTTPS GET. A second CLI invoked while the request is running — or immediately after a fast command exits, before the result is cached — reuses the in-progress state instead of sending another request. A marker left by a dead process expires after 60 seconds.

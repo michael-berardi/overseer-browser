@@ -18,7 +18,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from cli import update
-from cli.main import main
+from cli.main import CLI_VERSION, main
 
 ROOT = Path(__file__).resolve().parents[1]
 # Canonical URL form is the one allowlisted spelling of the owner in the
@@ -172,7 +172,42 @@ class UpdateContractTests(unittest.TestCase):
         self.assertFalse(third["checked"])
         self.assertEqual(later, [])
 
-    def test_stale_in_flight_marker_does_not_suppress_checks_forever(self):
+    def test_incomplete_check_is_a_24_hour_gate_even_after_the_claim_expires(self):
+        """A CLI killed before the result is cached must not send a second GET."""
+        started = 1000.0
+        self.assertTrue(update._claim_check(started))
+        cache = update.read_cache()
+        self.assertEqual(cache["checking_at"], started)
+        self.assertEqual(cache["checked_at"], 0.0)
+        # Simulate a worker dying before _finish_check: no completed record is
+        # written, but its start is persisted and gates every later invocation.
+        for instant in (started + update.CHECK_CLAIM_SECONDS + 1,
+                        started + 23 * 3600,
+                        started + 24 * 3600 - 1):
+            calls = []
+            result = update.check("0.10.19", get=self.getting(release_payload(), calls), now=instant)
+            self.assertFalse(result["checked"], instant)
+            self.assertEqual(calls, [], instant)
+            self.assertEqual(update.read_cache()["checking_at"], started)
+            forced = update.check("0.10.19", force=True,
+                                  get=self.getting(release_payload(), calls), now=instant)
+            self.assertFalse(forced["checked"], instant)
+            self.assertEqual(calls, [], instant)
+        checker = update.BackgroundChecker("0.10.19")
+        with patch.object(update.time, "time", return_value=started + 24 * 3600 - 1):
+            checker.start()
+        self.assertIsNone(checker.thread)
+        self.assertTrue(checker.done.is_set())
+        calls = []
+        result = update.check("0.10.19", get=self.getting(release_payload(), calls),
+                              now=started + 24 * 3600)
+        self.assertTrue(result["checked"])
+        self.assertEqual(len(calls), 1)
+        cache = update.read_cache()
+        self.assertEqual(cache["checked_at"], started + 24 * 3600)
+        self.assertEqual(cache["checking_at"], 0.0)
+
+    def test_stale_claim_without_cached_start_recovers_after_claim_window(self):
         claim = update.claim_path()
         update._private_dir(claim.parent)
         claim.write_text("1000.0\n", encoding="utf-8")
@@ -229,6 +264,29 @@ class UpdateContractTests(unittest.TestCase):
             checker._run()
             install.assert_called_once_with()
 
+    def test_auto_install_log_is_capped_at_256_kib(self):
+        log = update.state_root() / "update-install.log"
+        update._private_dir(log.parent)
+        log.write_bytes(b"old line\n" * 40_000)  # ~360 KiB, past the cap
+        os.chmod(log, 0o600)
+        with patch.object(update.subprocess, "Popen") as popen:
+            result = update.BackgroundChecker.auto_install()
+        self.assertTrue(result["ok"])
+        self.assertTrue(popen.called)
+        data = log.read_bytes()
+        self.assertEqual(update.INSTALL_LOG_MAX_BYTES, 256 * 1024)
+        self.assertLessEqual(len(data), update.INSTALL_LOG_MAX_BYTES)
+        self.assertTrue(data.endswith(b"old line\n"))
+        self.assertEqual(log.stat().st_mode & 0o777, 0o600)
+        with patch.object(update.subprocess, "Popen", side_effect=OSError("spawn failed")):
+            failed = update.BackgroundChecker.auto_install()
+        self.assertFalse(failed["ok"])
+        self.assertLessEqual(log.stat().st_size, update.INSTALL_LOG_MAX_BYTES)
+        log.write_bytes(b"x" * (update.INSTALL_LOG_MAX_BYTES + 10))
+        update.bound_install_log(log)
+        self.assertEqual(log.stat().st_size, update.INSTALL_LOG_MAX_BYTES)
+        self.assertEqual(log.read_bytes(), b"x" * update.INSTALL_LOG_MAX_BYTES)
+
     def test_settings_persist_and_check_exit_codes(self):
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(main(["update", "--auto", "on"]), 0)
@@ -238,7 +296,9 @@ class UpdateContractTests(unittest.TestCase):
             self.assertEqual(main(["update", "--auto", "status"]), 0)
             self.assertEqual(main(["update", "--checks", "off"]), 0)
         self.assertFalse(update.read_settings()["checks_enabled"])
-        payload = {"ok": True, "checked": True, "latest": "0.10.21", "error": None, "assets": {}}
+        major, minor, patch_number = CLI_VERSION.split(".")
+        newer = f"{major}.{minor}.{int(patch_number) + 1}"
+        payload = {"ok": True, "checked": True, "latest": newer, "error": None, "assets": {}}
         with patch.object(update, "check", return_value=payload), \
              contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()) as err:
             status = main(["update", "--check", "--json"])

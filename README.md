@@ -82,9 +82,11 @@ agent. Video recording requires a fresh approval click in the extension popup.
 There is no telemetry, analytics, or crash reporting. In an interactive terminal
 the CLI makes one anonymous HTTPS GET per day to this repository's public GitHub
 "latest release" record, with a fixed `overseer-browser-update-check`
-User-Agent and no account, version, usage, or machine data. It is off in CI,
-agents, non-TTY/JSON use, and with `OVERSEER_BROWSER_NO_UPDATE_CHECK=1` or
-`overseer-browser update --checks off`; automatic installation is opt-in. The
+User-Agent and no account, version, usage, or machine data. An unfinished check
+still counts toward that day, even if the process exits before it finishes. It
+is off in CI, agents, non-TTY/JSON use, and with
+`OVERSEER_BROWSER_NO_UPDATE_CHECK=1` or `overseer-browser update --checks off`;
+automatic installation is opt-in and its log is capped at 256 KiB. The
 extension and native host make no network requests. Installing or updating a
 release fetches only the release archive and its checksum file from GitHub by
 HTTPS. Building from source also downloads npm packages from the npm registry,

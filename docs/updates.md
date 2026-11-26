@@ -17,12 +17,14 @@ The check runs in a background thread with a 3-second timeout and never blocks
 your command. It runs at most once per 24 hours; the timestamp, the newest tag,
 and any failure cause are stored in an owner-only cache file under the platform
 cache directory (override test state with `OVERSEER_BROWSER_UPDATE_STATE_DIR`).
-Before the GET is sent, the check records its start time in a private in-flight
-claim, so an invocation launched while the request is running — or right after
-a fast command exits, before the result is cached — reuses that state instead
-of sending a second request. A claim left by a process that dies before cleanup
-expires after 60 seconds. A failed check is never printed as noise and is never
-retried in a loop; `overseer-browser update --check` reports the recorded cause.
+Before the GET is sent, the check records its start time in the owner-only cache
+and a private in-flight claim. Only a finished check replaces that start with a
+completed result: if the process dies mid-request, the persisted start still
+suppresses every later check — including `update --check` — for a full 24 hours.
+The exclusive claim file is recoverable after 60 seconds, but its expiry alone
+never authorizes a second GET. A failed check is never printed as noise and is
+never retried in a loop; `overseer-browser update --check` reports the recorded
+cause.
 
 Checks are off automatically when stdout or stderr is not a TTY, `CI`,
 `GITHUB_ACTIONS`, `BUILD_NUMBER` or an agent marker (`ULTRATERM_SLOT`,
@@ -39,7 +41,7 @@ When a new version is found you see at most one notice per version per 24 hours
 on stderr, after the command finishes:
 
 ```
-overseer-browser 0.10.21 available (you have 0.10.20) · run: overseer-browser update
+overseer-browser 0.10.22 available (you have 0.10.21) · run: overseer-browser update
 turn on automatic updates: overseer-browser update --auto on · skip: overseer-browser update --skip
 ```
 
@@ -65,7 +67,8 @@ Off by default. `overseer-browser update --auto on` (or `--auto off` / `--auto s
 stores the choice in per-user config next to the update settings, so it survives
 updates. When it is on, a detected release is installed in a detached,
 low-priority background process that logs to `update-install.log` beside the
-cache and applies to the next command. A failed install leaves the current
+cache and applies to the next command. That owner-only log is capped to its
+newest 256 KiB. A failed install leaves the current
 version working, records the cause in that log, and you can fall back to the
 notice and `overseer-browser update`. Automatic installation is for release
 installs only: a source checkout has no verified artifact to swap, so it logs

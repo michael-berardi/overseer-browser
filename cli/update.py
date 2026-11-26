@@ -7,11 +7,13 @@ install helpers. The extension and native host never call this module.
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -30,11 +32,13 @@ CANONICAL_REPOSITORY = "https://github.com/michael-berardi/overseer-browser"
 RELEASE_SLUG = CANONICAL_REPOSITORY.removeprefix("https://github.com/")
 USER_AGENT = "overseer-browser-update-check"
 CHECK_INTERVAL_SECONDS = 24 * 60 * 60
-# An in-flight marker is removed when the check finishes; this bound recovers
-# from a process that dies before cleanup without allowing a second GET.
+# The exclusive marker is removed when the check finishes; this bound only
+# recovers a missing marker. The cached start timestamp itself gates for 24 h.
 CHECK_CLAIM_SECONDS = 60.0
 HTTP_TIMEOUT_SECONDS = 3.0
 MAX_RESPONSE_BYTES = 1024 * 1024
+# Detached update-install output is capped to its newest 256 KiB.
+INSTALL_LOG_MAX_BYTES = 256 * 1024
 STATE_DIR_ENV = "OVERSEER_BROWSER_UPDATE_STATE_DIR"
 OPT_OUT_ENV = "OVERSEER_BROWSER_NO_UPDATE_CHECK"
 AUTO_MARKER_ENV = "OVERSEER_BROWSER_AGENT"
@@ -239,11 +243,20 @@ def _claim_check(instant: float) -> bool:
     return True
 
 
-def _fresh_check(instant: float, cache: dict[str, Any]) -> bool:
-    checked = float(cache.get("checked_at") or 0.0)
+def _fresh_check(instant: float, cache: dict[str, Any], force: bool = False) -> bool:
+    """A recorded start suppresses checks for 24 h, even if the worker died.
+
+    The exclusive claim may be recovered after 60 s, but only a completed
+    result clears ``checking_at``; an incomplete record remains a daily gate.
+    An explicit re-check bypasses a completed cache, never an unfinished one.
+    """
     checking = float(cache.get("checking_at") or 0.0)
-    return ((checked > 0 and 0 <= instant - checked < CHECK_INTERVAL_SECONDS) or
-            (checking > 0 and 0 <= instant - checking < CHECK_CLAIM_SECONDS))
+    if checking > 0 and 0 <= instant - checking < CHECK_INTERVAL_SECONDS:
+        return True
+    if force:
+        return False
+    checked = float(cache.get("checked_at") or 0.0)
+    return checked > 0 and 0 <= instant - checked < CHECK_INTERVAL_SECONDS
 
 
 def _finish_check(instant: float, latest: Optional[str], error: Optional[str],
@@ -294,15 +307,19 @@ def check(current: str, force: bool = False, get: Optional[Callable[[str, float]
           now: Optional[float] = None) -> dict[str, Any]:
     """Perform or reuse the at-most-daily check; always record failures locally.
 
-    The claim (with its start time) is committed before the GET, so a fast CLI
-    that exits before this thread finishes cannot let another invocation start
-    a second request.
+    The start time is committed before the GET, so a fast CLI that exits before
+    this thread finishes cannot let another invocation send a second request:
+    the unfinished record gates for 24 h until a completed result replaces it.
     """
     instant = time.time() if now is None else now
     cache = read_cache()
-    if not force and _fresh_check(instant, cache):
-        return {"ok": True, "checked": False, "latest": cache["latest"],
-                "error": cache["error"], "assets": cache["assets"]}
+    if _fresh_check(instant, cache, force=force):
+        result = {"ok": True, "checked": False, "latest": cache["latest"],
+                  "error": cache["error"], "assets": cache["assets"]}
+        checking = float(cache.get("checking_at") or 0.0)
+        if checking > 0 and 0 <= instant - checking < CHECK_INTERVAL_SECONDS:
+            result["in_progress"] = True
+        return result
     if not _claim_check(instant):
         return {"ok": True, "checked": False, "latest": cache["latest"],
                 "error": cache["error"], "assets": cache["assets"],
@@ -370,6 +387,38 @@ def automatic_check_allowed(argv: Optional[list[str]] = None, environ: Optional[
     return bool(read_settings()["checks_enabled"])
 
 
+def bound_install_log(log: Path, max_bytes: int = INSTALL_LOG_MAX_BYTES) -> None:
+    """Keep detached update-install output owner-only and capped at 256 KiB.
+
+    The log is rewritten in place (same inode), so a detached installer that
+    still has it open keeps appending to the bounded file.
+    """
+    try:
+        info = log.lstat()
+    except OSError:
+        return
+    if not stat.S_ISREG(info.st_mode):
+        return
+    with contextlib.suppress(OSError):
+        os.chmod(log, 0o600)
+    if info.st_size <= max_bytes:
+        return
+    try:
+        with log.open("rb") as handle:
+            handle.seek(-max_bytes, os.SEEK_END)
+            tail = handle.read()
+        newline = tail.find(b"\n")
+        if 0 <= newline < len(tail) - 1:
+            tail = tail[newline + 1:]
+        flags = os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(log, flags)
+        with os.fdopen(fd, "wb") as handle:
+            handle.truncate(0)
+            handle.write(tail)
+    except OSError:
+        pass
+
+
 class BackgroundChecker:
     """Starts the bounded check off the command path; never blocks the command."""
 
@@ -411,6 +460,7 @@ class BackgroundChecker:
             return {"ok": False, "error": "installed CLI has no update entrypoint"}
         log = state_root() / "update-install.log"
         _private_dir(log.parent)
+        bound_install_log(log)
         command = [sys.executable, str(script), "update"]
         if os.name == "posix" and shutil.which("nice"):
             command = ["nice", "-n", "10", *command]
@@ -431,7 +481,9 @@ class BackgroundChecker:
             cause = _cause(exc)
             with open(log, "ab") as output:
                 output.write(("auto-install failed: " + cause + "\n").encode("utf-8"))
+            bound_install_log(log)
             return {"ok": False, "error": cause, "log": str(log)}
+        bound_install_log(log)
         return {"ok": True, "started": True, "log": str(log)}
 
     def notices(self, dim: bool = False) -> list[str]:
