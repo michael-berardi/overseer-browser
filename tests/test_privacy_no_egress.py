@@ -84,9 +84,11 @@ class PrivacyNoEgressTest(unittest.TestCase):
         self.assertNotIn('connect-src *', config)
 
     def test_build_settings_disable_registry_telemetry(self):
-        build = (ROOT / 'scripts/build-release.sh').read_text(encoding='utf-8')
-        for setting in ('DO_NOT_TRACK=1', 'npm_config_audit=false', 'npm_config_fund=false'):
-            self.assertIn(setting, build)
+        for script in ('scripts/build-release.sh', 'scripts/manage-macos.sh'):
+            build = (ROOT / script).read_text(encoding='utf-8')
+            for setting in ('DO_NOT_TRACK=1', 'npm_config_audit=false', 'npm_config_fund=false'):
+                with self.subTest(script=script, setting=setting):
+                    self.assertIn(setting, build)
 
     def test_default_read_only_commands_open_no_socket(self):
         with patch('cli.main.socket.socket', side_effect=AssertionError('unexpected socket')) as socket_factory, \
