@@ -6,6 +6,10 @@
 - The check is one anonymous request a day to the public GitHub release record, made in a detached background process; state is one `0600` file in the cache folder.
 - `overseer-browser update` now installs the newest release: it verifies the installer and bundle against `SHA256SUMS` before changing anything, keeps one rollback copy and restores it if the install fails. New: `update --check` (exit 0/10/1), `--skip`, `--auto on|off|status` (automatic updates, off by default), `--auto-check on|off` and `--rollback`. Source checkouts keep reinstalling from the checkout.
 - Release bundles now carry the real repository in their bundled installers and update check.
+- Privacy: a short README Privacy section, with the full network and local-data details in PRIVACY.md, which also corrects its statements about local deletion, browser-session state and the optional local meeting adapter.
+- Regression tests reject telemetry/analytics clients, collection endpoints and outbound network calls other than the update check. Release and source builds disable npm audit/funding requests and set `DO_NOT_TRACK`.
+- The isolated Chrome launch log (`agent-v1/chrome.log`) is now created owner-only and trimmed in place to its newest 256 KiB once it passes 1 MiB, instead of growing without bound.
+- SECURITY.md no longer says `activeTab` is absent; it is declared only for the popup-consented recording workflow.
 
 ## 0.10.17
 

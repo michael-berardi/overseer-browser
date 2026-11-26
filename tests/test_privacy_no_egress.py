@@ -22,6 +22,11 @@ FORBIDDEN_IMPORT_ROOTS = {
     'opentelemetry', 'openai', 'anthropic',
 }
 FORBIDDEN_IMPORT_PATHS = {'urllib.request', 'http.client', 'http.server', 'socketserver'}
+# The anonymous daily update check (docs/updates.md, contract v1) is the one sanctioned outbound
+# request: only cli/updates.py may import urllib.request, and tests/test_updates.py pins its
+# URL, User-Agent and request count.
+UPDATE_CHECK_MODULE = ROOT / 'cli' / 'updates.py'
+UPDATE_CHECK_IMPORTS = {'urllib.request', 'urllib.error'}
 FORBIDDEN_SOCKET_ATTRS = {'AF_INET', 'AF_INET6', 'create_connection', 'gethostbyname'}
 FORBIDDEN_PACKAGES = re.compile(
     r'(?:sentry|posthog|mixpanel|amplitude|segment|bugsnag|datadog|analytics|telemetry)', re.I)
@@ -63,8 +68,9 @@ class PrivacyNoEgressTest(unittest.TestCase):
                             names = [f'{module}.{alias.name}' for alias in node.names] if module else [alias.name for alias in node.names]
                         else:
                             names = []
+                        allowed = UPDATE_CHECK_IMPORTS if path.resolve() == UPDATE_CHECK_MODULE.resolve() else set()
                         for name in names:
-                            self.assertNotIn(name, FORBIDDEN_IMPORT_PATHS)
+                            self.assertNotIn(name, FORBIDDEN_IMPORT_PATHS - allowed)
                             self.assertNotIn(name.split('.')[0], FORBIDDEN_IMPORT_ROOTS)
                         if isinstance(node, ast.Attribute):
                             self.assertNotIn(node.attr, FORBIDDEN_SOCKET_ATTRS)
@@ -97,6 +103,34 @@ class PrivacyNoEgressTest(unittest.TestCase):
             self.assertEqual(main(['help']), 0)
         socket_factory.assert_not_called()
 
+    def test_update_check_is_the_only_outbound_request(self):
+        source = (ROOT / 'cli/updates.py').read_text(encoding='utf-8')
+        self.assertIn('/releases/latest', source)
+        self.assertIn('overseer-browser-update-check', source)
+        self.assertIn('OVERSEER_BROWSER_NO_UPDATE_CHECK', source)
+        self.assertEqual(source.count('urllib.request.urlopen('), 1)
+
+    def test_readme_privacy_is_short_and_details_live_in_privacy_md(self):
+        readme = (ROOT / 'README.md').read_text(encoding='utf-8')
+        self.assertEqual(readme.count('\n## Privacy\n'), 1)
+        section = readme.split('\n## Privacy\n', 1)[1].split('\n## ', 1)[0]
+        lines = [line for line in section.splitlines() if line.strip()]
+        self.assertLessEqual(len(lines), 6)
+        self.assertIn('[PRIVACY.md](PRIVACY.md)', section)
+        self.assertIn('OVERSEER_BROWSER_NO_UPDATE_CHECK=1', section)
+        self.assertNotIn('no automatic update check', readme.lower())
+        privacy = (ROOT / 'PRIVACY.md').read_text(encoding='utf-8')
+        for detail in ('no telemetry, analytics, or crash reporting', 'anonymous daily update check',
+                       'Chrome Native Messaging', 'random local token', 'DO_NOT_TRACK',
+                       '`0600` `host.log`', '`agent-v1/chrome.log`', 'trimmed to its newest 256 KiB once it passes 1 MiB',
+                       '`0700` runtime directory', '~/Library/Application Support/OverSeer/browser',
+                       '$XDG_RUNTIME_DIR/overseer-browser', '~/.config/overseer-browser',
+                       '%LOCALAPPDATA%\\OverSeer\\browser', 'OVERSEER_BROWSER_RUNTIME',
+                       'OVERSEER_BROWSER_NO_UPDATE_CHECK=1', '`update-check.json` (mode `0600`)',
+                       'UltraVox', 'chrome://extensions', 'storage.session'):
+            with self.subTest(detail=detail):
+                self.assertIn(detail, privacy)
+        self.assertNotIn('no automatic update check', privacy.lower())
 
     def test_launch_logs_are_bounded_and_private(self):
         import tempfile

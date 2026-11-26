@@ -2,6 +2,12 @@
 
 OverSeer Browser is a local-first Chromium extension, native host, and CLI. It has no user account and no cloud browser-control plane. The app sends no telemetry or usage data to us. Browser control works without an external service.
 
+## Network
+
+Nothing is sent to us. There is no telemetry, analytics, or crash reporting. Apart from the anonymous daily update check described below, the extension, native host, and CLI make no outbound HTTP requests in normal operation. Installing or updating a release fetches only the release files (installer, archive, and `SHA256SUMS`) from GitHub by HTTPS. Building from source also downloads npm packages from the npm registry, with audit, funding, and `DO_NOT_TRACK` telemetry opt-outs set by the build scripts.
+
+The extension talks to the local native host through Chrome Native Messaging; the CLI talks to that host over a same-user local socket with a random local token. No account or cloud control service is involved. Browser traffic happens when you navigate or act on a page. A client, model provider, or other service you configure receives whatever you send it; that transfer is outside this project.
+
 ## Update checks
 
 The only automatic outgoing request is an anonymous `GET` of the project's public GitHub "latest release" record, at most once every 24 hours. The CLI makes it only after a command run in a terminal (never in CI, agent, JSON or non-interactive runs); the extension popup asks the local native host, which makes the same check. The request carries a fixed User-Agent (`overseer-browser-update-check`) and no version, identifier, machine data, usage data or credentials.
@@ -20,6 +26,10 @@ The extension, native host, and CLI may keep bounded local state needed to execu
 The extension and native host do not independently upload these values. A calling client may deliberately forward returned observations, screenshots, uploads, or action results to another service; that transfer is outside this repository and must be evaluated under the client's privacy policy. Shell history, browser profiles, operating-system logs, backups, browser sync, and user-selected upload destinations can also retain data independently.
 
 Runtime state is bounded and local. Session, permission, and pending meeting state live in Chrome's `storage.session`, which Chrome clears when the browser session ends; queued meeting events also expire after 90 seconds. On macOS, `overseer-browser uninstall` removes the native host registration, CLI, and token; on other platforms use the manual removal steps in [docs/install.md](docs/install.md). Uninstalling does not delete the runtime directory, exported evidence, or shared browser data.
+
+The host keeps its token and a bounded, `0600` `host.log` (and, for the isolated Agent Window, a `0600` `agent-v1/chrome.log`, trimmed to its newest 256 KiB once it passes 1 MiB) in a `0700` runtime directory: macOS `~/Library/Application Support/OverSeer/browser`; Linux `$XDG_RUNTIME_DIR/overseer-browser`, or `~/.config/overseer-browser` when that is unset; Windows `%LOCALAPPDATA%\OverSeer\browser`. `OVERSEER_BROWSER_RUNTIME` overrides all of these. Screenshots, QA packs, timelapses, and recordings are written only when you ask for them and can contain page content. OS-temp copies expire; files you keep or write elsewhere are yours to delete. An optional local UltraVox adapter can receive minimized meeting detections over same-user IPC when its private socket is present (see below).
+
+To delete local data, remove the extension in `chrome://extensions`, delete the runtime directory above and any evidence or recording directories you created, and remove the native-host registration and CLI using the uninstall steps in [docs/install.md](docs/install.md) (`overseer-browser uninstall` on macOS, which also removes the update state, update log, and rollback copy).
 
 ## Explicit QA evidence (0.5.0)
 

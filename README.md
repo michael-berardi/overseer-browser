@@ -58,10 +58,11 @@ automatic updates are off until you turn them on. See [Updates](docs/updates.md)
 
 ## Privacy
 
-- No account, telemetry or cloud control plane; browser control stays local.
-- One anonymous update check a day to GitHub's public release record; turn it
-  off with `OVERSEER_BROWSER_NO_UPDATE_CHECK=1`.
-- Details in [PRIVACY.md](PRIVACY.md).
+- Nothing is sent to us: no account, telemetry, analytics or cloud control plane.
+- Network: one anonymous update check a day to GitHub's public release record
+  (off: `OVERSEER_BROWSER_NO_UPDATE_CHECK=1`); install and update fetch release files.
+- Stored locally: a token, bounded `0600` logs, session and update state, and
+  evidence only when you ask. Details in [PRIVACY.md](PRIVACY.md).
 
 ## First session
 
@@ -87,38 +88,6 @@ persistent limits or a window that stays hidden return an actionable error.
 Use refs returned by `observe` for actions such as `click osr-12`.
 Use a distinct `--session KEY` or `OVERSEER_BROWSER_SESSION` for each concurrent
 agent. Video recording requires a fresh approval click in the extension popup.
-
-## Privacy
-
-Nothing is sent to us. There is no telemetry, analytics, crash reporting, or
-automatic update check. In normal operation the extension, native host, and CLI
-make no outbound HTTP requests. Installing or updating a release fetches only
-the release archive and its checksum file from GitHub by HTTPS. Building from
-source also downloads npm packages from the npm registry, with audit, funding
-and `DO_NOT_TRACK` telemetry opt-outs set by the build scripts.
-
-The extension talks to the local native host through Chrome Native Messaging;
-the CLI talks to that host over a same-user local socket with a random local
-token. No account or cloud control service is involved. Browser traffic happens
-when you navigate or act on a page. A client, model provider, or other service
-you configure receives whatever you send it; that transfer is outside this
-project.
-
-Locally, the extension keeps session, permission, and short-lived meeting state
-in the browser profile. The host keeps its token and a bounded, `0600`
-`host.log` (and, for the isolated Agent Window, a `0600` `agent-v1/chrome.log` trimmed past 1 MiB) in a `0700` runtime directory (macOS `~/Library/Application Support/OverSeer/browser`,
-Linux `$XDG_RUNTIME_DIR/overseer-browser`, or `~/.config/overseer-browser` when that is unset; `OVERSEER_BROWSER_RUNTIME` overrides all, Windows `%LOCALAPPDATA%\OverSeer\browser`).
-Screenshots, QA packs, timelapses, and recordings are written only when you ask
-for them and can contain page content. OS-temp copies expire; files you keep or
-write elsewhere are yours to delete. An optional local UltraVox adapter can
-receive minimized meeting detections over same-user IPC when its private socket
-is present.
-
-To delete local data, remove the extension in `chrome://extensions`, delete the
-runtime directory above and any evidence or recording directories you created,
-and remove the native-host registration and CLI using the uninstall steps in
-[installation and updates](docs/install.md) (`overseer-browser uninstall` on
-macOS). See [PRIVACY.md](PRIVACY.md) for the full data flow and boundaries.
 
 ## Reference
 
