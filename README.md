@@ -75,6 +75,36 @@ Use refs returned by `observe` for actions such as `click osr-12`.
 Use a distinct `--session KEY` or `OVERSEER_BROWSER_SESSION` for each concurrent
 agent. Video recording requires a fresh approval click in the extension popup.
 
+## Privacy
+
+Nothing is sent to us. There is no telemetry, analytics, crash reporting, or
+automatic update check. In normal operation the extension, native host, and CLI
+make no outbound HTTP requests. Installing or updating fetches only the release
+archive and its checksum file from GitHub by HTTPS.
+
+The extension talks to the local native host through Chrome Native Messaging;
+the CLI talks to that host over a same-user local socket with a random local
+token. No account or cloud control service is involved. Browser traffic happens
+when you navigate or act on a page. A client, model provider, or other service
+you configure receives whatever you send it; that transfer is outside this
+project.
+
+Locally, the extension keeps session, permission, and short-lived meeting state
+in the browser profile. The host keeps its token and a bounded, `0600`
+`host.log` in a `0700` runtime directory (macOS `~/Library/Application Support/OverSeer/browser`,
+Linux `$XDG_RUNTIME_DIR/overseer-browser`, Windows `%LOCALAPPDATA%\OverSeer\browser`).
+Screenshots, QA packs, timelapses, and recordings are written only when you ask
+for them and can contain page content. OS-temp copies expire; files you keep or
+write elsewhere are yours to delete. An optional local UltraVox adapter can
+receive minimized meeting detections over same-user IPC when its private socket
+is present.
+
+To delete local data, remove the extension in `chrome://extensions`, delete the
+runtime directory above and any evidence or recording directories you created,
+and remove the native-host registration and CLI using the uninstall steps in
+[installation and updates](docs/install.md) (`overseer-browser uninstall` on
+macOS). See [PRIVACY.md](PRIVACY.md) for the full data flow and boundaries.
+
 ## Reference
 
 - [Usage guide](docs/usage.md): parallel sessions, tab lending, mobile-width
@@ -95,7 +125,9 @@ python3 -m unittest tests.test_browser_bridge
 ```
 
 The extension tests use Node-based browser doubles, not a running browser.
-The Python bridge tests use fixtures and local sockets. See
+The Python bridge tests use fixtures and local sockets. For local npm commands,
+prefix with `DO_NOT_TRACK=1 npm_config_audit=false npm_config_fund=false` on a
+POSIX shell to skip registry audit/funding requests. See
 [Contributing](CONTRIBUTING.md) for manual browser checks.
 
 ## License

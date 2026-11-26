@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.10.18
+
+- Added a short README Privacy section and corrected PRIVACY.md statements about local deletion, browser-session state, and the optional local meeting adapter.
+- Added regression tests that reject telemetry/analytics clients, endpoints, and outbound network calls in the default configuration. Release builds now disable npm audit/funding requests and honor `DO_NOT_TRACK`.
+
 ## 0.10.17
 
 - Page evaluation now works in the session's own Agent Window without a popup capability grant and falls back to bounded MAIN-world script injection when Chrome has no User Scripts grant, so clean managed owned sessions can run viewability checks without an operator gesture. Borrowed tabs still require the popup grant, and strict-CSP pages still require User Scripts.
