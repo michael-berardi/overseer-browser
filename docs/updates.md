@@ -95,3 +95,13 @@ no standalone update channel or UI. The CLI owns the single check and the
 installer; the extension is moved into the stable folder by that installer, and
 `overseer-browser refresh-extension` moves it into the folder Chrome already
 loaded. No separate extension/network check or silent browser UI prompt exists.
+
+## Documentation deviations
+
+The contract asks for 3-6 short lines in the README Privacy section. This
+project keeps a detailed [README Privacy section](../README.md#privacy) instead,
+because the anonymous release check, detached worker, owner-only cache and
+logs, and local browser/agent state each need an accurate boundary statement;
+[PRIVACY.md](../PRIVACY.md) carries the full data flow. This is a documentation
+deviation only: the privacy guarantees are not relaxed, and no release-check
+behavior or version changed.
