@@ -22,6 +22,7 @@ import os
 from pathlib import Path
 import secrets
 import shutil
+import stat
 import struct
 import subprocess
 import sys
@@ -328,6 +329,40 @@ def _warn_once(what: str, cause: object) -> None:
           f'caller\'s process coalition', file=sys.stderr)
 
 
+LOG_MAX_BYTES = 1024 * 1024
+LOG_KEEP_BYTES = 256 * 1024
+
+
+def bound_log(log: Path, max_bytes: int = LOG_MAX_BYTES, keep_bytes: int = LOG_KEEP_BYTES) -> None:
+    """Keep an append-only launch log bounded and owner-only: past max_bytes keep only its newest tail."""
+    path = Path(log)
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return
+    if not stat.S_ISREG(info.st_mode):
+        return
+    with contextlib.suppress(OSError):
+        os.chmod(path, 0o600)
+    if info.st_size <= max_bytes:
+        return
+    with path.open('rb') as handle:
+        handle.seek(-keep_bytes, os.SEEK_END)
+        tail = handle.read()
+    newline = tail.find(b'\n')
+    if 0 <= newline < len(tail) - 1:
+        tail = tail[newline + 1:]
+    temporary = path.with_name(f'.{path.name}.{secrets.token_hex(4)}.tmp')
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try:
+        with os.fdopen(fd, 'wb') as handle:
+            handle.write(tail)
+        os.replace(temporary, path)
+    finally:
+        with contextlib.suppress(FileNotFoundError):
+            temporary.unlink()
+
+
 def spawn(argv: list[str], *, log: Path, state_dir: Path, env: dict[str, str] | None = None,
           cwd: str | os.PathLike[str] | None = None, what: str = 'the command',
           timeout: float = START_TIMEOUT):
@@ -338,13 +373,15 @@ def spawn(argv: list[str], *, log: Path, state_dir: Path, env: dict[str, str] | 
     """
     environment = dict(os.environ if env is None else env)
     directory = str(cwd) if cwd is not None else os.getcwd()
+    with contextlib.suppress(OSError):
+        bound_log(Path(log))
     if launchd_enabled():
         try:
             return _submit([str(item) for item in argv], cwd=directory, env=environment, log=Path(log),
                            state_dir=Path(state_dir), timeout=timeout)
         except LaunchdRefused as exc:
             _warn_once(what, exc)
-    with Path(log).open('ab') as stream:
+    with os.fdopen(os.open(log, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), 'ab') as stream:
         return subprocess.Popen([str(item) for item in argv], env=environment, cwd=directory,
                                 stdin=subprocess.DEVNULL, stdout=stream, stderr=stream, start_new_session=True)
 

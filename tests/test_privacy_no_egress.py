@@ -4,6 +4,7 @@ from __future__ import annotations
 import ast
 import contextlib
 import io
+import os
 import json
 import re
 import unittest
@@ -93,6 +94,23 @@ class PrivacyNoEgressTest(unittest.TestCase):
             self.assertEqual(main(['--version']), 0)
             self.assertEqual(main(['help']), 0)
         socket_factory.assert_not_called()
+
+
+    def test_launch_logs_are_bounded_and_private(self):
+        import tempfile
+        from native_host import coalition
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / 'chrome.log'
+            log.write_bytes(b'old line\n' * 400_000)  # ~3.6 MB, past the bound
+            os.chmod(log, 0o644)
+            coalition.bound_log(log)
+            self.assertLessEqual(log.stat().st_size, coalition.LOG_KEEP_BYTES)
+            self.assertEqual(log.stat().st_mode & 0o777, 0o600)
+            self.assertTrue(log.read_bytes().startswith(b'old line\n'))
+            small = Path(tmp) / 'small.log'
+            small.write_bytes(b'kept\n')
+            coalition.bound_log(small)
+            self.assertEqual(small.read_bytes(), b'kept\n')
 
 
 if __name__ == '__main__':
