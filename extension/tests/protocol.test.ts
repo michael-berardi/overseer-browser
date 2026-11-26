@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { COMMANDS, isBoundedNativeFrame, isMeetingDetection, isNativeHandshakeAck, isNativeHostError, isNativeMeetingAck, parseNativeRequest, serializedFrameBytes, type NativeHello } from '../src/protocol';
+import { COMMANDS, isBoundedNativeFrame, isMeetingDetection, isNativeHandshakeAck, isNativeHostError, isNativeMeetingAck, isUpdateAction, isUpdateStatus, parseNativeRequest, serializedFrameBytes, type NativeHello } from '../src/protocol';
 import { MAX_SCREENSHOT_FRAME_BYTES } from '../src/screenshot';
 
 describe('native protocol validation', () => {
@@ -30,6 +30,22 @@ describe('native protocol validation', () => {
   it('validates meeting delivery acknowledgements', () => {
     expect(isNativeMeetingAck({ version: 1, kind: 'meeting_ack', detection_id: 'detection-1', delivered: true })).toBe(true);
     expect(isNativeMeetingAck({ version: 1, kind: 'meeting_ack', detection_id: 'detection-1', delivered: 'yes' })).toBe(false);
+  });
+
+  it('accepts only bounded native-host update status frames and known actions', () => {
+    const status = { version: 1, kind: 'update_status', request_id: 'update-check-v1', result: {
+      available: true, current: '0.11.0', latest: '0.12.0', notes: 'Notes', installing: false,
+      installed: false, auto: false, checks: true, error: '', command: 'overseer-browser update',
+    } };
+    expect(isUpdateStatus(status)).toBe(true);
+    expect(isUpdateStatus({ ...status, result: { ...status.result, latest: null } })).toBe(true);
+    expect(isUpdateStatus({ ...status, result: { ...status.result, notes: 'x'.repeat(700) } })).toBe(false);
+    expect(isUpdateStatus({ ...status, result: { ...status.result, available: 'yes' } })).toBe(false);
+    expect(isUpdateStatus({ ...status, result: { ...status.result, checks: undefined } })).toBe(false);
+    expect(isUpdateStatus({ ...status, kind: 'response' })).toBe(false);
+    expect(isUpdateAction('install')).toBe(true);
+    expect(isUpdateAction('rm -rf')).toBe(false);
+    expect(isUpdateAction(undefined)).toBe(false);
   });
 
   it('validates bounded native-host error frames', () => {

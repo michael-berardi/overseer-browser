@@ -59,7 +59,7 @@ except ImportError:
         validate_request,
     )
     from runtime import RuntimePaths, ensure_token, prepare_socket  # type: ignore[no-redef]
-HOST_VERSION = "0.10.17"
+HOST_VERSION = "0.11.0"
 DEFAULT_REQUEST_TIMEOUT = 30.0
 MAX_PENDING = 128
 MAX_CLIENT_REQUEST_IDS = 4_096
@@ -357,6 +357,8 @@ class NativeHost:
                         "capabilities": ["local_control", "meeting_detection", "multi_session"],
                     }
                 )
+            elif kind == "update_check":
+                self._answer_update_check(message)
             elif kind == "response":
                 self._route_extension_response(message)
             elif kind == "meeting_detected":
@@ -370,6 +372,18 @@ class NativeHost:
                         "delivered": delivered,
                     }
                 )
+
+    def _answer_update_check(self, message: dict[str, Any]) -> None:
+        """Answer the popup from local update state; network work runs in a detached child, never here."""
+        try:
+            from cli import updates
+            result = updates.popup(HOST_VERSION, message["action"])
+        except Exception as exc:  # the popup shows the cause; the host keeps serving commands
+            result = {"available": False, "current": HOST_VERSION, "latest": None, "notes": "",
+                      "installing": False, "installed": False, "auto": False, "checks": False,
+                      "error": " ".join(str(exc).split())[:200], "command": "overseer-browser update"}
+        self._write_native_safely({"version": 1, "kind": "update_status",
+                                   "request_id": message["request_id"], "result": result})
 
     def _write_native_safely(self, message: dict[str, Any]) -> None:
         try:

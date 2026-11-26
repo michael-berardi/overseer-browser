@@ -31,9 +31,9 @@ except ImportError:
     from native_host.protocol import MAX_FRAME_BYTES, ProtocolError, encode_frame, read_frame
     from native_host.runtime import RuntimePaths, is_private_file
     from cli.runtime_discovery import find_active_runtime
-from cli import evidence, recording, dom_query, temp_outputs
+from cli import evidence, recording, dom_query, temp_outputs, updates
 
-CLI_VERSION = "0.10.17"
+CLI_VERSION = "0.11.0"
 MAX_UPLOAD_BYTES = 8 * 1024 * 1024
 MAX_UPLOAD_CHUNKS = 32
 MAX_UPLOAD_FILES = 16
@@ -88,7 +88,8 @@ CLI_USAGE = {
     "dom find": "dom find LOCATOR",
     "dom get": "dom get text|html|value|attribute|count|box|computedstyles LOCATOR [NAMES...]",
     "dom is": "dom is visible|enabled|checked|editable|attached LOCATOR",
-    "version": "version | --version", "install": "install", "update": "update",
+    "version": "version | --version", "install": "install",
+    "update": "update [--check | --skip | --auto on|off|status | --auto-check on|off | --rollback]",
     "uninstall": "uninstall", "refresh-extension": "refresh-extension",
     "help": "help [COMMAND [ACTION]]",
     "sessions": "sessions start [NAME] [--mobile [--width PX] [--height PX]] | stop | list",
@@ -137,6 +138,7 @@ _GLOBAL_OPTIONS = {
 _COMMAND_OPTIONS = {
     "sessions start": {"--mobile", "--width", "--height"},
     "console read": {"--clear"}, "observe": {"--changes"}, "upload": {"--via"},
+    "update": {"--check", "--skip", "--auto", "--auto-check", "--rollback"},
     "wait": {"--ready", "--absent", "--url", "--text", "--selector", "--state", "--stable", "--timeout-ms"},
 }
 
@@ -1167,6 +1169,49 @@ def _run_script(action: str) -> dict[str, Any]:
         raise CLIError("installer_failed", str(exc)) from exc
     return {"ok": completed.returncode == 0, "action": action, "stdout": completed.stdout.strip(), "stderr": completed.stderr.strip(), "returncode": completed.returncode}
 
+def _handle_update(args: list[str], environment: dict[str, str]) -> tuple[dict[str, Any], int | None]:
+    """update: report (--check), skip, auto opt-in, check switch, rollback, or install."""
+    modes = [flag for flag in ("--check", "--skip", "--auto", "--auto-check", "--rollback") if flag in args]
+    usage = ({"ok": False, "error": {"code": "usage", "message": f"usage: overseer-browser {CLI_USAGE['update']}"}}, 2)
+    if len(modes) > 1:
+        return usage
+    mode = modes[0] if modes else ""
+    value = args[args.index(mode) + 1] if mode in {"--auto", "--auto-check"} and args.index(mode) + 1 < len(args) else None
+    if len(args) != (2 if value is not None else 1 if mode else 0):
+        return usage
+    if mode == "--check":
+        result = updates.report(CLI_VERSION, updates.check_now(CLI_VERSION, environment), environment)
+        code = {"available": updates.EXIT_AVAILABLE, "failed": 1}.get(result["state"], 0)
+        return {"ok": result["state"] != "failed", "result": result}, code
+    if mode == "--skip":
+        state = updates.load_state(environment)
+        if not state["latest"] or updates.due(state):
+            state = updates.check_now(CLI_VERSION, environment)
+        if not updates.is_newer(state["latest"], CLI_VERSION):
+            return {"ok": True, "result": {"skipped": None, "message": "no newer release to skip"}}, None
+        updates.update_state(environment, skip=state["latest"])
+        return {"ok": True, "result": {"skipped": state["latest"]}}, None
+    if mode == "--auto" and value in {"on", "off"}:
+        updates.update_state(environment, auto=value == "on", asked=True)
+    elif mode == "--auto-check" and value in {"on", "off"}:
+        updates.update_state(environment, checks=value == "on")
+    elif mode in {"--auto", "--auto-check"} and value != "status":
+        return usage
+    if mode in {"--auto", "--auto-check"}:
+        state = updates.load_state(environment)
+        return {"ok": True, "result": {"auto": state["auto"], "checks": updates.automatic_checks(environment),
+                                       "skipped": state["skip"] or None, "last_error": state["auto_error"],
+                                       "state_file": str(updates.cache_dir(environment) / updates.STATE_FILE)}}, None
+    if mode == "--rollback":
+        restored = updates.restore_previous(environment)
+        if restored is None:
+            raise updates.UpdateError("rollback_unavailable", "no previous version is kept for rollback")
+        return {"ok": True, "result": {"restored": restored}}, None
+    if updates.install_kind(CLI_VERSION, environment) == "source":
+        return _run_script("update"), None  # a checkout reinstalls itself after git pull, as before
+    return {"ok": True, "result": updates.run_update(CLI_VERSION, environment)}, None
+
+
 def _screenshot_output_format(output: Path) -> str:
     suffix = output.suffix.lower()
     try:
@@ -1249,6 +1294,8 @@ def _render_cli_error(exc: CLIError, json_output: bool, raw_json: bool = False) 
 
 def main(argv: list[str] | None = None) -> int:
     raw = list(sys.argv[1:] if argv is None else argv)
+    environment = dict(os.environ)
+    update_exit: int | None = None
     raw_json = "--raw-json" in raw
     json_output = "--json" in raw or raw_json
     help_payload = _help_payload(raw)
@@ -1437,9 +1484,13 @@ def main(argv: list[str] | None = None) -> int:
                                                CLI_VERSION, session_key, tab_id=tab_id,
                                                frames=frames, interval=interval, tracked=created)
                 payload['result']['expires_unix'] = temp_outputs.metadata(directory, keep_outputs)['expires_unix']
-        elif command in {"install", "update", "uninstall", "refresh-extension"}:
+        elif command == "update":
+            payload, update_exit = _handle_update(args, environment)
+        elif command in {"install", "uninstall", "refresh-extension"}:
             _exact(args, 0, command)
             payload = _run_script(command)
+            if command == "uninstall" and payload.get("ok"):
+                updates.remove_state(environment)
         elif command == "health":
             _exact(args, 0, "health")
             payload = local_health()
@@ -1522,6 +1573,8 @@ def main(argv: list[str] | None = None) -> int:
             payload = _require_mobile_support(extension_command, params, payload)
     except CLIError as exc:
         payload = _error_envelope(exc)
+    except updates.UpdateError as exc:
+        payload = {"ok": False, "error": {"code": exc.code, "message": str(exc)}}
     except ProtocolError as exc:
         payload = {"ok": False, "error": {"code": "protocol_error", "message": "native host exchanged an invalid protocol frame"}}
     except OSError as exc:
@@ -1538,7 +1591,24 @@ def main(argv: list[str] | None = None) -> int:
         except OSError:
             pass
         return 1
+    _after_command(command, bool(payload.get("ok")), json_output, environment)
+    if update_exit is not None:
+        return update_exit
     return 0 if payload.get("ok") else 1
+
+
+def _after_command(command: str, ok: bool, json_output: bool, environment: dict[str, str]) -> None:
+    """Update housekeeping after the result is printed; it never changes the command's output or exit."""
+    if command in {"update", "install", "uninstall", "help", "version", "health", "status"}:
+        return
+    try:
+        if ok:
+            updates.prune_previous(CLI_VERSION, environment, used=True)
+        if updates.notices_allowed(json_output, environment):
+            updates.emit_notice(updates.notice(CLI_VERSION, environment), env=environment)
+            updates.start_background_check(CLI_VERSION, environment)
+    except (OSError, ValueError):
+        pass
 
 
 if __name__ == "__main__":

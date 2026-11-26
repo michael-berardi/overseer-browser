@@ -17,6 +17,8 @@ EXTENSION_ID = "iabfdeokmilpklblkgccpjlekchfjcno"
 NATIVE_HOST_NAME = "com.paretocybernetics.overseer_browser"
 
 _REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
+# Mirrors cli.updates.POPUP_ACTIONS: the popup can only ask for these.
+UPDATE_ACTIONS = ("status", "check", "install", "skip", "auto_on", "auto_off", "checks_on", "checks_off")
 _COMMAND_RE = re.compile(r"^[A-Za-z0-9_.:/-]{1,96}$")
 _HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
 
@@ -159,6 +161,14 @@ def validate_extension_message(message: object) -> dict[str, Any]:
         if "error" in message and message["error"] is not None:
             _validate_error_fields(message["error"])
         return message
+    if kind == "update_check":
+        request_id = message.get("request_id")
+        if not isinstance(request_id, str) or not _REQUEST_ID_RE.fullmatch(request_id):
+            raise ProtocolError("invalid update check request_id")
+        action = message.get("action", "status")
+        if action not in UPDATE_ACTIONS:
+            raise ProtocolError("invalid update check action")
+        return {"version": 1, "kind": "update_check", "request_id": request_id, "action": action}
     if kind == "meeting_detected":
         validate_meeting_payload(message.get("payload"))
         return message

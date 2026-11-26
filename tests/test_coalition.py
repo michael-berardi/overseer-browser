@@ -370,6 +370,9 @@ class LauncherGuardTests(unittest.TestCase):
         ('cli/main.py', 'str(script)'),            # the installer script behind install/update/uninstall
         ('cli/recording.py', 'ffmpeg'), ('cli/recording.py', "shutil.which('ffmpeg')"),
         ('cli/recording.py', "shutil.which('ffprobe')"), ('cli/recording.py', 'ffprobe'),
+        # Updates: the detached check child is cli/updates.py itself; argv is a verified release
+        # installer or a kept release's platform installer. Neither starts a browser.
+        ('cli/updates.py', 'sys.executable'), ('cli/updates.py', 'argv'),
     }
 
     def sources(self):

@@ -65,6 +65,36 @@ export interface NativeHandshakeAck {
   ok: boolean;
   error?: string;
 }
+export const UPDATE_ACTIONS = ['status', 'check', 'install', 'skip', 'auto_on', 'auto_off', 'checks_on', 'checks_off'] as const;
+export type UpdateAction = typeof UPDATE_ACTIONS[number];
+
+export interface UpdateCheckRequest {
+  version: 1;
+  kind: 'update_check';
+  request_id: string;
+  action: UpdateAction;
+}
+
+export interface UpdateStatus {
+  available: boolean;
+  current: string;
+  latest: string | null;
+  notes: string;
+  installing: boolean;
+  installed: boolean;
+  auto: boolean;
+  checks: boolean;
+  error: string;
+  command: string;
+}
+
+export interface NativeUpdateStatus {
+  version: 1;
+  kind: 'update_status';
+  request_id: string;
+  result: UpdateStatus;
+}
+
 export interface NativeMeetingAck {
   version: 1;
   kind: 'meeting_ack';
@@ -79,7 +109,7 @@ export interface NativeHostError {
 
 
 
-export type NativeOutbound = NativeHello | NativeResponse | MeetingEvent;
+export type NativeOutbound = NativeHello | NativeResponse | MeetingEvent | UpdateCheckRequest;
 
 export interface ProtocolError {
   code: string;
@@ -101,6 +131,21 @@ export function isNativeMeetingAck(value: unknown): value is NativeMeetingAck {
     typeof value.detection_id === 'string' && value.detection_id.length >= 1 &&
     value.detection_id.length <= 128 && typeof value.delivered === 'boolean';
 }
+export function isUpdateAction(value: unknown): value is UpdateAction {
+  return typeof value === 'string' && (UPDATE_ACTIONS as readonly string[]).includes(value);
+}
+
+export function isUpdateStatus(value: unknown): value is NativeUpdateStatus {
+  if (!isPlainObject(value) || value.version !== 1 || value.kind !== 'update_status' ||
+      typeof value.request_id !== 'string' || !/^[A-Za-z0-9_.:-]{1,128}$/.test(value.request_id) ||
+      !isPlainObject(value.result)) return false;
+  const status = value.result;
+  const short = (text: unknown, limit: number): boolean => typeof text === 'string' && text.length <= limit;
+  return ['available', 'installing', 'installed', 'auto', 'checks'].every((key) => typeof status[key] === 'boolean') &&
+    short(status.current, 32) && (status.latest === null || short(status.latest, 32)) &&
+    short(status.notes, 600) && short(status.error, 256) && short(status.command, 256);
+}
+
 export function isNativeHostError(value: unknown): value is NativeHostError {
   if (!isPlainObject(value) || value.version !== 1 || value.kind !== 'error' || !isPlainObject(value.error)) return false;
   const { code, message, reason, fallback } = value.error;

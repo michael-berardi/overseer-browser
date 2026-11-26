@@ -50,6 +50,19 @@ open a browser.
 See [installation and updates](docs/install.md) for source builds, Windows,
 uninstalling, and loading the extension to lend everyday tabs.
 
+## Updates
+
+The CLI (in a terminal) and the extension popup tell you when a newer release
+exists. `overseer-browser update` installs it after checking its SHA-256;
+automatic updates are off until you turn them on. See [Updates](docs/updates.md).
+
+## Privacy
+
+- No account, telemetry or cloud control plane; browser control stays local.
+- One anonymous update check a day to GitHub's public release record; turn it
+  off with `OVERSEER_BROWSER_NO_UPDATE_CHECK=1`.
+- Details in [PRIVACY.md](PRIVACY.md).
+
 ## First session
 
 ```sh

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { setAllSiteAccess, setCurrentOriginAccess, type PermissionState } from '../../src/permissions';
+import type { UpdateAction, UpdateStatus } from '../../src/protocol';
 
 
 type ActiveTab = {
@@ -22,6 +23,7 @@ type PopupState = {
   permissions: PermissionState;
   sessions: Array<{ sessionId: string; sessionKey?: string; name?: string; agentWindowId: number; startedAtMs: number }>;
   active_tab: ActiveTab | null;
+  update?: UpdateStatus | null;
 };
 
 type RuntimeReply = Partial<PopupState> & {
@@ -32,6 +34,27 @@ type RuntimeReply = Partial<PopupState> & {
 
 export const MEETING_HOST_POLICY = 'Only the exact Meet host meet.google.com and Zoom provider subdomains such as us02web.zoom.us are watched.';
 export const SITE_ACCESS_POLICY = 'Agent access is off by default. Allow only the current site or enable unlimited access for every HTTP and HTTPS site. Commands still require an active session and a session-owned or explicitly borrowed tab.';
+export const UPDATE_PRIVACY = 'The local host checks the public release record at most once a day, anonymously; the extension makes no request of its own.';
+
+export function updateHeading(status: UpdateStatus | null | undefined): string {
+  if (!status) return 'Not checked yet';
+  if (status.available && status.installed) return `${status.latest} installed`;
+  if (status.available && status.installing) return `Installing ${status.latest}…`;
+  if (status.available) return 'Update available';
+  return status.error ? 'Last check failed' : 'Up to date';
+}
+
+export function updateBannerPresentation(status: UpdateStatus | null | undefined): { message: string; notes: string; actions: boolean } | null {
+  if (!status?.available || !status.latest) return null;
+  if (status.installed) {
+    return { message: `OverSeer Browser ${status.latest} is installed. Reload it in chrome://extensions to finish.`, notes: '', actions: false };
+  }
+  return {
+    message: `OverSeer Browser ${status.latest} is available — you have ${status.current}.`,
+    notes: status.notes,
+    actions: !status.installing,
+  };
+}
 
 export function connectionStatusPresentation(connected: boolean): {
   label: 'Connected' | 'Disconnected';
@@ -84,6 +107,7 @@ const initialState: PopupState = {
   permissions: { meetingHosts: true, optionalSiteAccess: false, currentOriginAccess: false, allSiteAccess: false },
   sessions: [],
   active_tab: null,
+  update: null,
 };
 
 export default function App() {
@@ -91,6 +115,7 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState('');
   const [selectedSessionKey, setSelectedSessionKey] = useState('');
+  const [remindLater, setRemindLater] = useState(false);
   const chosenSessionKey = state.sessions.some((session) => session.sessionKey === selectedSessionKey)
     ? selectedSessionKey : state.sessions.length === 1 ? state.sessions[0]?.sessionKey ?? 'default' : '';
 
@@ -193,13 +218,67 @@ export default function App() {
     }
   };
 
+  const updateAction = async (action: UpdateAction): Promise<void> => {
+    setBusy(true);
+    setNotice('');
+    try {
+      const reply = (await browser.runtime.sendMessage({ kind: 'update_action', action })) as RuntimeReply;
+      const failure = runtimeReplyError(reply, 'The local host did not accept the update request.');
+      if (failure) throw failure;
+      window.setTimeout(() => void refresh(), 400);
+    } catch (error) {
+      setNotice(formatPopupError('Unable to change updates', error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const activeTab = state.active_tab;
+  const update = state.update ?? null;
+  const updateBanner = remindLater ? null : updateBannerPresentation(update);
   const activeTabLabel = activeTab?.title || activeTab?.url || 'No active browser tab';
   const connectionStatus = connectionStatusPresentation(state.connected);
   const currentSiteEnabled = state.permissions.currentOriginAccess && state.evaluate_enabled;
   const unlimitedEnabled = state.permissions.allSiteAccess && state.evaluate_enabled;
   const accessLabel = unlimitedEnabled ? 'UNLIMITED' : currentSiteEnabled ? 'THIS SITE' : 'OFF';
 
+
+  const updatesSection = (
+    <section className="section" aria-labelledby="updates-heading">
+      <p className="eyebrow">UPDATES</p>
+      <h2 id="updates-heading">{updateHeading(update)}</h2>
+      {updateBanner ? (
+        <div className="update-banner" role="status">
+          <div className="update-row">
+            <p className="body-copy">{updateBanner.message}</p>
+            {updateBanner.actions ? (
+              <button className="button primary update-button" type="button" onClick={() => void updateAction('install')} disabled={busy}>Install Update</button>
+            ) : null}
+          </div>
+          {updateBanner.notes ? <p className="update-notes">{updateBanner.notes}</p> : null}
+          {updateBanner.actions ? (
+            <div className="update-actions">
+              <button className="button secondary update-button" type="button" onClick={() => void updateAction('skip')} disabled={busy}>Skip This Version</button>
+              <button className="button secondary update-button" type="button" onClick={() => setRemindLater(true)} disabled={busy}>Remind Me Later</button>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+      <label className="update-row update-setting">
+        <span>Check for updates automatically</span>
+        <input type="checkbox" checked={update?.checks ?? true} onChange={(event) => void updateAction(event.target.checked ? 'checks_on' : 'checks_off')} disabled={busy || !update} />
+      </label>
+      <label className="update-row update-setting">
+        <span>Install updates automatically</span>
+        <input type="checkbox" checked={update?.auto ?? false} onChange={(event) => void updateAction(event.target.checked ? 'auto_on' : 'auto_off')} disabled={busy || !update} />
+      </label>
+      <div className="update-row update-setting">
+        <span className="update-version">Version {update?.current ?? browser.runtime.getManifest().version}</span>
+        <button className="button secondary update-button" type="button" onClick={() => void updateAction('check')} disabled={busy || !state.connected}>Check Now</button>
+      </div>
+      <p className="muted">{update?.error ? `Last check: ${update.error}` : UPDATE_PRIVACY}</p>
+    </section>
+  );
 
   return (
     <main className="popup" aria-labelledby="title">
@@ -230,6 +309,8 @@ export default function App() {
           {connectionActionLabel(state.connected, state.native_enabled)}
         </button>
       </section>
+
+      {updateBanner ? updatesSection : null}
 
       <section className="section" aria-labelledby="active-tab-heading">
         <div className="section-heading compact">
@@ -294,6 +375,8 @@ export default function App() {
           <p className="notice" role="status">Chrome’s Allow User Scripts setting is off. Enable it once in this extension’s Chrome settings to use page evaluation.</p>
         ) : null}
       </section>
+
+      {updateBanner ? null : updatesSection}
 
       {state.takeover_requested ? (
         <section className="takeover" aria-labelledby="takeover-heading">

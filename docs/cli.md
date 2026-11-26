@@ -35,8 +35,13 @@ overseer-browser record start [fps seconds max-bytes] | status | stop <path> | r
 overseer-browser capture start | stop
 overseer-browser takeover [resume]
 overseer-browser cancel <request-id>
+overseer-browser update [--check | --skip | --auto on|off|status | --auto-check on|off | --rollback]
 overseer-browser help
 ```
+
+`update --check` exits 0 when current, 10 when a newer release exists and 1
+when the check failed (the JSON result names the cause). Update notices go to
+stderr in a terminal only, never into JSON. See [Updates](updates.md).
 
 Automation results are minified JSON on stdout, including errors with stable
 codes. Help and the default `status` view are human-readable; use `status --json`

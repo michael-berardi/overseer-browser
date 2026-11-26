@@ -9,11 +9,15 @@ import {
   type MeetingDetection,
   type NativeOutbound,
   type NativeRequest,
+  type UpdateAction,
+  type UpdateStatus,
   isBoundedNativeFrame,
   isMeetingDetection,
   isNativeHandshakeAck,
   isNativeHostError,
   isNativeMeetingAck,
+  isUpdateAction,
+  isUpdateStatus,
   parseNativeRequest,
   responseError,
   responseOk,
@@ -45,6 +49,9 @@ export const MAX_BEACON_ENTRIES = 100;
 const CAPABILITY_STORAGE_KEY = 'overseer.capability.evaluate.v1';
 const CONNECTION_STORAGE_KEY = 'overseer.connection.enabled.v1';
 const NATIVE_RECONNECT_ALARM = 'overseer.native.reconnect.v1';
+const UPDATE_CHECK_ID = 'update-check-v1';
+// The host answers from a small local file; its own 24 h cache bounds the network check.
+const UPDATE_STATUS_REFRESH_MS = 10_000;
 const TAKEOVER_STORAGE_KEY = 'overseer.takeover.requested.v1';
 const BATCHABLE_COMMANDS: ReadonlySet<Command> = new Set([
   'windows.resize', 'tabs.list', 'tabs.create', 'tabs.select', 'tabs.close', 'tabs.return',
@@ -346,6 +353,8 @@ const inflight = new Map<string, InflightRequest>();
 let nativeEnabled = false;
 let nativePort: chrome.runtime.Port | null = null;
 let nativeHandshakeTimer: TimerHandle | undefined;
+let updateStatus: UpdateStatus | null = null;
+let updateRequestedAtMs = 0;
 let reconnectTimer: TimerHandle | undefined;
 let reconnectDelayMs = 250;
 let meetingRetryTimer: TimerHandle | undefined;
@@ -565,7 +574,14 @@ function startBackground(): void {
       return true;
     }
     if (value.kind === 'popup_state') {
+      requestUpdateStatus('status');
       void popupState().then(sendResponse);
+      return true;
+    }
+    if (value.kind === 'update_action' && isUpdateAction(value.action)) {
+      sendResponse(requestUpdateStatus(value.action)
+        ? { ok: true }
+        : { ok: false, error: { message: 'The local host is not connected.' } });
       return true;
     }
     if (value.kind === 'popup_borrow_active') {
@@ -673,6 +689,10 @@ function connectNative(): void {
         });
         return;
       }
+      if (isUpdateStatus(message) && message.request_id === UPDATE_CHECK_ID) {
+        updateStatus = message.result;
+        return;
+      }
       if (isNativeMeetingAck(message)) {
         void meetingStateReady.then(async () => {
           pendingMeetings.acknowledge(message.detection_id, message.delivered);
@@ -695,6 +715,7 @@ function connectNative(): void {
       clearNativeHandshakeTimer();
       nativePort = null;
       connected = false;
+      updateRequestedAtMs = 0;
       uploads.clear();
       void recordingCleanup().catch(() => {});
       observeDeltas.clear();
@@ -743,6 +764,7 @@ function failNativeConnection(
   clearNativeHandshakeTimer();
   lastNativeError = error;
   connected = false;
+  updateRequestedAtMs = 0;
   uploads.clear();
   void recordingCleanup().catch(() => {});
   observeDeltas.clear();
@@ -1914,6 +1936,13 @@ async function userScriptsAvailable(): Promise<boolean> {
   }
 }
 
+function requestUpdateStatus(action: UpdateAction): boolean {
+  if (!nativeEnabled || !connected) return false;
+  if (action === 'status' && Date.now() - updateRequestedAtMs < UPDATE_STATUS_REFRESH_MS) return true;
+  updateRequestedAtMs = Date.now();
+  return sendNative({ version: 1, kind: 'update_check', request_id: UPDATE_CHECK_ID, action });
+}
+
 async function popupState(): Promise<unknown> {
   const [activeTab] = await browser.tabs.query({ active: true, lastFocusedWindow: true });
   const sessionsState = await sessionRegistry.list();
@@ -1928,6 +1957,7 @@ async function popupState(): Promise<unknown> {
     permissions: await getPermissionState(activeTab?.url),
     sessions: sessionsState,
     active_tab: activeTab ? popupTabDetails(activeTab, session) : null,
+    update: updateStatus,
   };
 }
 

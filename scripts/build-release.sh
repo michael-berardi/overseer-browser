@@ -14,6 +14,16 @@ command -v npm >/dev/null 2>&1 || { echo "build-release: Node.js and npm are req
 command -v zip >/dev/null 2>&1 || { echo "build-release: zip is required to build the Windows archive" >&2; exit 1; }
 commit=$(git rev-parse HEAD)
 
+# The shipped sources keep a neutral placeholder owner (tests/test_neutrality.py); the released
+# installers get the real GitHub owner/repo, from OVERSEER_BROWSER_RELEASE_REPO or the origin remote.
+PLACEHOLDER="example-user/overseer-browser"
+slug="${OVERSEER_BROWSER_RELEASE_REPO:-}"
+if [ -z "$slug" ]; then
+  slug=$(git remote get-url origin 2>/dev/null | sed -E -n 's#^(git@github\.com:|https://github\.com/)([A-Za-z0-9._-]+)/([A-Za-z0-9._-]+)$#\2/\3#p' | sed 's#\.git$##')
+fi
+printf '%s\n' "$slug" | grep -Eq '^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$' ||
+  { echo "build-release: cannot tell the GitHub owner/repo; set OVERSEER_BROWSER_RELEASE_REPO=owner/repo (or add a GitHub origin remote)" >&2; exit 1; }
+
 echo "build-release: building the extension (npm ci + npm run build)"
 npm ci --prefix extension
 npm run build --prefix extension
@@ -23,6 +33,12 @@ rm -rf "$OUT"; mkdir -p "$OUT"
 case "$OUT" in /*) OUT_ABS="$OUT" ;; *) OUT_ABS="$(pwd)/$OUT" ;; esac
 stage=$(mktemp -d "${TMPDIR:-/tmp}/overseer-browser-build.XXXXXX"); trap 'rm -rf "$stage"' EXIT
 git archive --format=tar HEAD | tar -x -C "$stage"
+# The bundled installers and update check name the same repository as the release assets.
+for f in cli/updates.py scripts/install.sh scripts/install.ps1; do
+  sed "s#$PLACEHOLDER#$slug#g" "$stage/$f" > "$stage/$f.stamped" && mv "$stage/$f.stamped" "$stage/$f"
+  grep -q "$PLACEHOLDER" "$stage/$f" && { echo "build-release: $f still has the placeholder owner" >&2; exit 1; }
+done
+chmod 755 "$stage/scripts/install.sh" "$stage/scripts/install.ps1"
 mkdir -p "$stage/extension/.output"
 cp -R extension/.output/chrome-mv3 "$stage/extension/.output/chrome-mv3"
 printf '%s\n' "$commit" > "$stage/COMMIT"
@@ -37,15 +53,6 @@ else
 fi
 ( cd "$stage" && zip -X -q "$OUT_ABS/overseer-browser.zip" -@ < "$stage.list" )
 rm -f "$stage.list"
-# The shipped sources keep a neutral placeholder owner (tests/test_neutrality.py); the released
-# installers get the real GitHub owner/repo, from OVERSEER_BROWSER_RELEASE_REPO or the origin remote.
-PLACEHOLDER="example-user/overseer-browser"
-slug="${OVERSEER_BROWSER_RELEASE_REPO:-}"
-if [ -z "$slug" ]; then
-  slug=$(git remote get-url origin 2>/dev/null | sed -E -n 's#^(git@github\.com:|https://github\.com/)([A-Za-z0-9._-]+)/([A-Za-z0-9._-]+)$#\2/\3#p' | sed 's#\.git$##')
-fi
-printf '%s\n' "$slug" | grep -Eq '^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$' ||
-  { echo "build-release: cannot tell the GitHub owner/repo; set OVERSEER_BROWSER_RELEASE_REPO=owner/repo (or add a GitHub origin remote)" >&2; exit 1; }
 for f in install.sh install.ps1; do
   sed "s#$PLACEHOLDER#$slug#g" "scripts/$f" > "$OUT/$f"
   chmod 755 "$OUT/$f"

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.11.0
+
+- Update notices: after a command in a terminal, the CLI says when a newer stable release exists (stderr, at most once a day per version; never in JSON, CI, agent or non-interactive runs). The extension popup has an Updates section with Install Update, Skip This Version, Remind Me Later, both settings, the version and Check Now.
+- The check is one anonymous request a day to the public GitHub release record, made in a detached background process; state is one `0600` file in the cache folder.
+- `overseer-browser update` now installs the newest release: it verifies the installer and bundle against `SHA256SUMS` before changing anything, keeps one rollback copy and restores it if the install fails. New: `update --check` (exit 0/10/1), `--skip`, `--auto on|off|status` (automatic updates, off by default), `--auto-check on|off` and `--rollback`. Source checkouts keep reinstalling from the checkout.
+- Release bundles now carry the real repository in their bundled installers and update check.
+
 ## 0.10.17
 
 - Page evaluation now works in the session's own Agent Window without a popup capability grant and falls back to bounded MAIN-world script injection when Chrome has no User Scripts grant, so clean managed owned sessions can run viewability checks without an operator gesture. Borrowed tabs still require the popup grant, and strict-CSP pages still require User Scripts.
