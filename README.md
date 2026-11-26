@@ -92,8 +92,10 @@ agent. Video recording requires a fresh approval click in the extension popup.
 
 Nothing is sent to us. There is no telemetry, analytics, crash reporting, or
 automatic update check. In normal operation the extension, native host, and CLI
-make no outbound HTTP requests. Installing or updating fetches only the release
-archive and its checksum file from GitHub by HTTPS.
+make no outbound HTTP requests. Installing or updating a release fetches only
+the release archive and its checksum file from GitHub by HTTPS. Building from
+source also downloads npm packages from the npm registry, with audit, funding
+and `DO_NOT_TRACK` telemetry opt-outs set by the build scripts.
 
 The extension talks to the local native host through Chrome Native Messaging;
 the CLI talks to that host over a same-user local socket with a random local
@@ -104,8 +106,8 @@ project.
 
 Locally, the extension keeps session, permission, and short-lived meeting state
 in the browser profile. The host keeps its token and a bounded, `0600`
-`host.log` (and, for the isolated Agent Window, a `0600` `chrome.log` trimmed past 1 MiB) in a `0700` runtime directory (macOS `~/Library/Application Support/OverSeer/browser`,
-Linux `$XDG_RUNTIME_DIR/overseer-browser`, Windows `%LOCALAPPDATA%\OverSeer\browser`).
+`host.log` (and, for the isolated Agent Window, a `0600` `agent-v1/chrome.log` trimmed past 1 MiB) in a `0700` runtime directory (macOS `~/Library/Application Support/OverSeer/browser`,
+Linux `$XDG_RUNTIME_DIR/overseer-browser`, or `~/.config/overseer-browser` when that is unset; `OVERSEER_BROWSER_RUNTIME` overrides all, Windows `%LOCALAPPDATA%\OverSeer\browser`).
 Screenshots, QA packs, timelapses, and recordings are written only when you ask
 for them and can contain page content. OS-temp copies expire; files you keep or
 write elsewhere are yours to delete. An optional local UltraVox adapter can

@@ -352,15 +352,11 @@ def bound_log(log: Path, max_bytes: int = LOG_MAX_BYTES, keep_bytes: int = LOG_K
     newline = tail.find(b'\n')
     if 0 <= newline < len(tail) - 1:
         tail = tail[newline + 1:]
-    temporary = path.with_name(f'.{path.name}.{secrets.token_hex(4)}.tmp')
-    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-    try:
-        with os.fdopen(fd, 'wb') as handle:
-            handle.write(tail)
-        os.replace(temporary, path)
-    finally:
-        with contextlib.suppress(FileNotFoundError):
-            temporary.unlink()
+    # Rewrite in place (same inode), so a Chrome that still holds the log open keeps appending to it.
+    fd = os.open(path, os.O_WRONLY | os.O_NOFOLLOW)
+    with os.fdopen(fd, 'wb') as handle:
+        handle.truncate(0)
+        handle.write(tail)
 
 
 def spawn(argv: list[str], *, log: Path, state_dir: Path, env: dict[str, str] | None = None,

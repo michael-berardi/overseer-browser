@@ -85,6 +85,8 @@ build_extension() {
     fail "Node.js and npm are required to build the extension"
   npm_path="$(dirname "$npm_bin"):${PATH:-/usr/bin:/bin}"
   say "Building extension"
+  # Building from source fetches npm packages; registry audit/funding requests and tool telemetry stay off.
+  export DO_NOT_TRACK=1 npm_config_audit=false npm_config_fund=false
   if [ -f "$ROOT/extension/package-lock.json" ]; then
     PATH="$npm_path" "$npm_bin" ci --prefix "$ROOT/extension"
   fi
