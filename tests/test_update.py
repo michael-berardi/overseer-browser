@@ -437,6 +437,18 @@ class UpdateContractTests(unittest.TestCase):
         self.assertTrue((home / "extension" / "manifest.json").is_file())
         self.assertTrue((self.base / "bin" / "overseer-browser").is_file())
 
+    def test_privacy_doc_matches_stale_claim_contract(self):
+        privacy = (ROOT / "PRIVACY.md").read_text(encoding="utf-8")
+        self.assertNotIn(
+            "an unfinished check still counts for 24 hours even if its process exits",
+            privacy,
+        )
+        self.assertIn(
+            "A claim left by a dead worker expires after 60 seconds and the check can be retried.",
+            privacy,
+        )
+        self.assertIn("Only a completed check gates automatic checks for 24 hours", privacy)
+
     def test_shipped_sources_use_the_project_release_repository(self):
         for relative in ("cli/update.py", "scripts/install.sh", "scripts/install.ps1"):
             self.assertNotIn("example-user", (ROOT / relative).read_text(), relative)
