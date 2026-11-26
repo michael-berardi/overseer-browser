@@ -48,7 +48,9 @@ the CLI in `~/.local/bin`. Add that directory to PATH if needed. It does not
 open a browser.
 
 See [installation and updates](docs/install.md) for source builds, Windows,
-uninstalling, and loading the extension to lend everyday tabs.
+uninstalling, and loading the extension to lend everyday tabs. See
+[Updates](docs/updates.md) for the anonymous release check, opt-outs, and
+rollback.
 
 ## First session
 
@@ -77,12 +79,17 @@ agent. Video recording requires a fresh approval click in the extension popup.
 
 ## Privacy
 
-Nothing is sent to us. There is no telemetry, analytics, crash reporting, or
-automatic update check. In normal operation the extension, native host, and CLI
-make no outbound HTTP requests. Installing or updating a release fetches only
-the release archive and its checksum file from GitHub by HTTPS. Building from
-source also downloads npm packages from the npm registry, with audit, funding
-and `DO_NOT_TRACK` telemetry opt-outs set by the build scripts.
+There is no telemetry, analytics, or crash reporting. In an interactive terminal
+the CLI makes one anonymous HTTPS GET per day to this repository's public GitHub
+"latest release" record, with a fixed `overseer-browser-update-check`
+User-Agent and no account, version, usage, or machine data. It is off in CI,
+agents, non-TTY/JSON use, and with `OVERSEER_BROWSER_NO_UPDATE_CHECK=1` or
+`overseer-browser update --checks off`; automatic installation is opt-in. The
+extension and native host make no network requests. Installing or updating a
+release fetches only the release archive and its checksum file from GitHub by
+HTTPS. Building from source also downloads npm packages from the npm registry,
+with audit, funding and `DO_NOT_TRACK` telemetry opt-outs set by the build
+scripts. See [Updates](docs/updates.md) for details.
 
 The extension talks to the local native host through Chrome Native Messaging;
 the CLI talks to that host over a same-user local socket with a random local
@@ -114,6 +121,7 @@ macOS). See [PRIVACY.md](PRIVACY.md) for the full data flow and boundaries.
 - [CLI reference](docs/cli.md), or `overseer-browser help`.
 - [Protocol](PROTOCOL.md) and [read-only DOM queries](DOM_QUERIES.md).
 - [Privacy](PRIVACY.md) and [security](SECURITY.md): local data flow and trust boundaries.
+- [Updates](docs/updates.md): anonymous daily check, opt-outs, install and rollback.
 - [Contributing](CONTRIBUTING.md) and [changelog](CHANGELOG.md).
 
 ## Development

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.10.19
+
+- Added an anonymous, at-most-daily release check in interactive CLI use: one GET to the public GitHub latest-release record with a fixed update-check User-Agent, a 3-second background timeout, and a private local cache that records failures for `update --check`. Checks are off in CI, agents, non-TTY/JSON use, and via env or persistent config opt-outs; one notice per version per 24 hours goes to stderr after the command.
+- Added `update --check`, `--skip`, `--checks on|off|status`, `--auto on|off|status`, and `--rollback`. Automatic installation is opt-in, detached and low-priority; release installs verify SHA-256 against `SHA256SUMS`, swap atomically and keep one previous release for rollback.
+- Documented the single anonymous request in README Privacy, PRIVACY.md, and the new `docs/updates.md` (update-contract v1 marker); the extension and native host have no separate release-check runtime.
+
 ## 0.10.18
 
 - Added a short README Privacy section and corrected PRIVACY.md statements about local deletion, browser-session state, and the optional local meeting adapter.

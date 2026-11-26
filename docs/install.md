@@ -52,7 +52,11 @@ enable Developer mode, click **Load unpacked** and select the printed
 `~/.overseer-browser/extension` folder (the dedicated agent browser loads the
 extension by itself; this step is for your everyday Chrome).
 
-Update by re-running the same one-liner. Remove by deleting the tool folder
+Update by re-running the same one-liner (`overseer-browser update` does this for
+release installs). Each update keeps the previous verified release in
+`<install>/rollback/previous`; `overseer-browser update --rollback` restores it.
+An anonymous, at-most-daily release check and its opt-outs are described in
+[Updates](updates.md). Remove by deleting the tool folder
 (`~/.overseer-browser` or `%LOCALAPPDATA%\OverSeerBrowser`), the
 `overseer-browser` shim in your bin folder, and the native host entries the
 installer printed; then remove the extension from `chrome://extensions`.

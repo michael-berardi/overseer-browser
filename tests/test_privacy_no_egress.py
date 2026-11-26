@@ -22,6 +22,10 @@ FORBIDDEN_IMPORT_ROOTS = {
     'opentelemetry', 'openai', 'anthropic',
 }
 FORBIDDEN_IMPORT_PATHS = {'urllib.request', 'http.client', 'http.server', 'socketserver'}
+# The v1 update contract requires exactly one anonymous GET to the project's
+# own releases/latest record. Only cli/update.py may import urllib.request,
+# and tests/test_update.py pins its URL, User-Agent and request count.
+UPDATE_CHECK_MODULE = ROOT / 'cli' / 'update.py'
 FORBIDDEN_SOCKET_ATTRS = {'AF_INET', 'AF_INET6', 'create_connection', 'gethostbyname'}
 FORBIDDEN_PACKAGES = re.compile(
     r'(?:sentry|posthog|mixpanel|amplitude|segment|bugsnag|datadog|analytics|telemetry)', re.I)
@@ -63,8 +67,9 @@ class PrivacyNoEgressTest(unittest.TestCase):
                             names = [f'{module}.{alias.name}' for alias in node.names] if module else [alias.name for alias in node.names]
                         else:
                             names = []
+                        allowed = {'urllib.request', 'urllib.error'} if path.resolve() == UPDATE_CHECK_MODULE.resolve() else set()
                         for name in names:
-                            self.assertNotIn(name, FORBIDDEN_IMPORT_PATHS)
+                            self.assertNotIn(name, FORBIDDEN_IMPORT_PATHS - allowed)
                             self.assertNotIn(name.split('.')[0], FORBIDDEN_IMPORT_ROOTS)
                         if isinstance(node, ast.Attribute):
                             self.assertNotIn(node.attr, FORBIDDEN_SOCKET_ATTRS)

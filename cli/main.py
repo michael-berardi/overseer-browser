@@ -31,9 +31,9 @@ except ImportError:
     from native_host.protocol import MAX_FRAME_BYTES, ProtocolError, encode_frame, read_frame
     from native_host.runtime import RuntimePaths, is_private_file
     from cli.runtime_discovery import find_active_runtime
-from cli import evidence, recording, dom_query, temp_outputs
+from cli import evidence, recording, dom_query, temp_outputs, update as updates
 
-CLI_VERSION = "0.10.18"
+CLI_VERSION = "0.10.19"
 MAX_UPLOAD_BYTES = 8 * 1024 * 1024
 MAX_UPLOAD_CHUNKS = 32
 MAX_UPLOAD_FILES = 16
@@ -88,7 +88,8 @@ CLI_USAGE = {
     "dom find": "dom find LOCATOR",
     "dom get": "dom get text|html|value|attribute|count|box|computedstyles LOCATOR [NAMES...]",
     "dom is": "dom is visible|enabled|checked|editable|attached LOCATOR",
-    "version": "version | --version", "install": "install", "update": "update",
+    "version": "version | --version", "install": "install",
+    "update": "update | update --check | update --skip [VERSION] | update --auto on|off|status | update --checks on|off|status | update --rollback",
     "uninstall": "uninstall", "refresh-extension": "refresh-extension",
     "help": "help [COMMAND [ACTION]]",
     "sessions": "sessions start [NAME] [--mobile [--width PX] [--height PX]] | stop | list",
@@ -138,6 +139,7 @@ _COMMAND_OPTIONS = {
     "sessions start": {"--mobile", "--width", "--height"},
     "console read": {"--clear"}, "observe": {"--changes"}, "upload": {"--via"},
     "wait": {"--ready", "--absent", "--url", "--text", "--selector", "--state", "--stable", "--timeout-ms"},
+    "update": {"--check", "--skip", "--auto", "--checks", "--rollback"},
 }
 
 
@@ -1154,18 +1156,99 @@ def _extension_update_hint(loaded: Any) -> dict[str, Any] | None:
     }
 
 
-def _run_script(action: str) -> dict[str, Any]:
-    # A source checkout carries scripts/; an installed runtime does not, so use the installed manager.
-    candidates = [Path(__file__).resolve().parents[1] / "scripts" / "manage-macos.sh",
-                  Path.home() / "Library/Application Support/OverSeer/browser/scripts/manage-macos.sh"]
+def _installer_script(name: str) -> Path:
+    """Prefer the installed bundle's installer; a source checkout keeps its own."""
+    home = Path(os.environ.get("OVERSEER_BROWSER_HOME", Path.home() / ".overseer-browser")).expanduser()
+    installed = sorted((home / "releases").glob("release-*/scripts/" + name), reverse=True)
+    candidates = installed + [Path(__file__).resolve().parents[1] / "scripts" / name,
+                              Path.home() / "Library/Application Support/OverSeer/browser/scripts/" + name]
     script = next((path for path in candidates if path.is_file()), None)
     if script is None:
         raise CLIError("not_installed", "installer script is missing: " + ", ".join(str(path) for path in candidates))
+    return script
+
+
+def _run_script(action: str, extra_args: list[str] | None = None, script: Path | None = None,
+                env: dict[str, str] | None = None) -> dict[str, Any]:
+    """Run a local installer action with no shell interpretation of arguments."""
+    script = script or _installer_script("manage-macos.sh" if action != "rollback" else "install.sh")
+    if script.name == "install.ps1":
+        argv = ["powershell", "-ExecutionPolicy", "Bypass", "-File", str(script)] + (extra_args or [])
+    elif script.suffix == ".sh":
+        positional = [] if script.name == "install.sh" else ([] if action == "rollback" else [action])
+        argv = ["sh", str(script)] + positional + (extra_args or [])
+    else:
+        argv = [str(script), action] + (extra_args or [])
     try:
-        completed = subprocess.run([str(script), action], capture_output=True, text=True, timeout=300, check=False)
-    except OSError as exc:
+        completed = subprocess.run(argv, capture_output=True, text=True, timeout=300, check=False,
+                                   env=env or None)
+    except (OSError, subprocess.SubprocessError) as exc:
         raise CLIError("installer_failed", str(exc)) from exc
-    return {"ok": completed.returncode == 0, "action": action, "stdout": completed.stdout.strip(), "stderr": completed.stderr.strip(), "returncode": completed.returncode}
+    return {"ok": completed.returncode == 0, "action": action, "stdout": completed.stdout.strip(),
+            "stderr": completed.stderr.strip(), "returncode": completed.returncode}
+
+
+def _perform_update_install() -> dict[str, Any]:
+    """Release installs re-run their signed-checksum installer against the latest tag."""
+    home = Path(os.environ.get("OVERSEER_BROWSER_HOME", Path.home() / ".overseer-browser")).expanduser()
+    release_install = any((home / "releases").glob("release-*/scripts/install.sh"))
+    if release_install:
+        env = dict(os.environ)
+        env["OVERSEER_BROWSER_RELEASE_BASE"] = ("https://github.com/" + updates.release_slug() +
+                                                "/releases/latest/download")
+        env.pop("OVERSEER_BROWSER_VERSION", None)
+        return _run_script("update", script=_installer_script("install.sh"), env=env)
+    if os.environ.get("OVERSEER_BROWSER_AUTO_UPDATE") == "1":
+        # Source checkouts have no verified release artifact to swap.
+        raise CLIError("auto_install_unsupported",
+                       "automatic installation is for release installs only; run git pull, then overseer-browser update")
+    if sys.platform == "darwin":
+        return _run_script("update")
+    if sys.platform == "linux":
+        return _run_script("update", script=_installer_script("install-linux.sh"))
+    return _run_script("update", script=_installer_script("install.ps1"))
+
+
+def _update_control(args: list[str]) -> tuple[dict[str, Any], int]:
+    flags = [arg for arg in args if arg.startswith("-")]
+    values = [arg for arg in args if not arg.startswith("-")]
+    allowed = {"--check": 0, "--skip": None, "--auto": 1, "--checks": 1, "--rollback": 0}
+    if len(flags) != len(set(flags)) or any(flag not in allowed for flag in flags):
+        raise CLIError("usage", "usage: " + CLI_USAGE["update"])
+    if len(flags) != 1:
+        raise CLIError("usage", "update controls are mutually exclusive")
+    flag = flags[0]
+    if len(values) > (0 if flag in {"--check", "--rollback"} else 1):
+        raise CLIError("usage", "usage: " + CLI_USAGE["update"])
+    if flag == "--check":
+        result = updates.check(CLI_VERSION, force=True)
+        payload = {"ok": result["ok"], "result": {"current": CLI_VERSION, "latest": result["latest"],
+                                                   "update_available": updates.is_newer(result["latest"], CLI_VERSION),
+                                                   "checked": result["checked"]}}
+        if not result["ok"]:
+            payload["error"] = {"code": "check_failed", "message": result["error"]}
+        return payload, 0 if result["ok"] and not payload["result"]["update_available"] else 10 if result["ok"] else 1
+    if flag == "--skip":
+        version = updates.skip_version(values[0] if values else None)
+        return {"ok": True, "result": {"skipped": version}}, 0
+    if flag == "--rollback":
+        payload = _run_script("rollback", script=_installer_script("install.sh"))
+        return payload, 0 if payload["ok"] else 1
+    setting = {"--auto": "auto_install", "--checks": "checks_enabled"}[flag]
+    current = updates.read_settings()
+    if not values:
+        return {"ok": True, "result": {"auto_install": current["auto_install"],
+                                       "checks_enabled": current["checks_enabled"]}}, 0
+    value = values[0].lower()
+    if value == "status":
+        return {"ok": True, "result": {"auto_install": current["auto_install"],
+                                       "checks_enabled": current["checks_enabled"]}}, 0
+    if value not in {"on", "off"}:
+        raise CLIError("usage", flag + " takes on, off or status")
+    current[setting] = value == "on"
+    saved = updates.write_settings(current)
+    return {"ok": True, "result": {"auto_install": saved["auto_install"],
+                                   "checks_enabled": saved["checks_enabled"]}}, 0
 
 def _screenshot_output_format(output: Path) -> str:
     suffix = output.suffix.lower()
@@ -1247,7 +1330,7 @@ def _render_cli_error(exc: CLIError, json_output: bool, raw_json: bool = False) 
     _render(_error_envelope(exc), json_output, raw_json)
 
 
-def main(argv: list[str] | None = None) -> int:
+def _cli_main(argv: list[str] | None = None, checker: "updates.BackgroundChecker | None" = None) -> int:
     raw = list(sys.argv[1:] if argv is None else argv)
     raw_json = "--raw-json" in raw
     json_output = "--json" in raw or raw_json
@@ -1437,9 +1520,13 @@ def main(argv: list[str] | None = None) -> int:
                                                CLI_VERSION, session_key, tab_id=tab_id,
                                                frames=frames, interval=interval, tracked=created)
                 payload['result']['expires_unix'] = temp_outputs.metadata(directory, keep_outputs)['expires_unix']
+        elif command == "update" and any(arg.startswith("-") for arg in args):
+            payload, status = _update_control(args)
+            _render(payload, json_output, raw_json)
+            return status
         elif command in {"install", "update", "uninstall", "refresh-extension"}:
             _exact(args, 0, command)
-            payload = _run_script(command)
+            payload = _perform_update_install() if command == "update" else _run_script(command)
         elif command == "health":
             _exact(args, 0, "health")
             payload = local_health()
@@ -1539,6 +1626,26 @@ def main(argv: list[str] | None = None) -> int:
             pass
         return 1
     return 0 if payload.get("ok") else 1
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Run one command, then emit an update notice from the background check."""
+    raw = list(sys.argv[1:] if argv is None else argv)
+    checker: updates.BackgroundChecker | None = None
+    if updates.automatic_check_allowed(raw):
+        checker = updates.BackgroundChecker(CLI_VERSION)
+        checker.start()
+    try:
+        return _cli_main(argv, checker)
+    finally:
+        if checker is not None:
+            try:
+                dim = bool(getattr(sys.stderr, "isatty", lambda: False)() and
+                           os.environ.get("TERM", "").lower() != "dumb")
+                for line in checker.notices(dim=dim):
+                    print(line, file=sys.stderr)
+            except (OSError, ValueError):
+                pass
 
 
 if __name__ == "__main__":

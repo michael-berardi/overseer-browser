@@ -2,6 +2,10 @@
 
 OverSeer Browser is a local-first Chromium extension, native host, and CLI. It has no user account and no cloud browser-control plane. The app sends no telemetry or usage data to us. Browser control works without an external service.
 
+## Release check
+
+In interactive terminal use, the CLI makes one anonymous HTTPS GET per 24 hours to this repository's public GitHub "latest release" record. The only request header beyond the HTTP defaults is a fixed `overseer-browser-update-check` User-Agent; no account, CLI version, usage, machine, session, or browser data is sent. The timestamp, newest tag, and any failure cause are kept in an owner-only local cache; a notice is shown at most once per version per 24 hours. The check is disabled in CI, agent and non-TTY/JSON use, and by `OVERSEER_BROWSER_NO_UPDATE_CHECK=1` or `overseer-browser update --checks off`. Installing an update fetches the release archive and `SHA256SUMS` from GitHub. Automatic installation is off unless you turn it on. The extension and native host never make this request. See [docs/updates.md](docs/updates.md).
+
 ## What stays on the device
 
 The extension, native host, and CLI may keep bounded local state needed to execute a request:

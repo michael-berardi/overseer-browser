@@ -35,8 +35,17 @@ overseer-browser record start [fps seconds max-bytes] | status | stop <path> | r
 overseer-browser capture start | stop
 overseer-browser takeover [resume]
 overseer-browser cancel <request-id>
+overseer-browser update [--check | --skip [VERSION] | --auto on|off|status | --checks on|off|status | --rollback]
 overseer-browser help
 ```
+
+The CLI checks for a newer release at most once a day in interactive use: one
+anonymous GET to this repository's public GitHub latest-release record, on a
+3-second background timeout, with the result cached privately. Notices go to
+stderr after the command, never into JSON output; `update --check` reports the
+current and latest version (exit 0 current, 10 available, 1 failed with cause).
+`--skip`, `--checks`, and opt-in `--auto` persist locally. See
+[Updates](updates.md).
 
 Automation results are minified JSON on stdout, including errors with stable
 codes. Help and the default `status` view are human-readable; use `status --json`

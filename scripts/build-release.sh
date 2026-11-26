@@ -31,6 +31,20 @@ mkdir -p "$stage/extension/.output"
 cp -R extension/.output/chrome-mv3 "$stage/extension/.output/chrome-mv3"
 printf '%s\n' "$commit" > "$stage/COMMIT"
 
+# The shipped sources keep a neutral placeholder owner (tests/test_neutrality.py); the released
+# code gets the real GitHub owner/repo, from OVERSEER_BROWSER_RELEASE_REPO or the origin remote.
+PLACEHOLDER="example-user/overseer-browser"
+slug="${OVERSEER_BROWSER_RELEASE_REPO:-}"
+if [ -z "$slug" ]; then
+  slug=$(git remote get-url origin 2>/dev/null | sed -E -n 's#^(git@github\.com:|https://github\.com/)([A-Za-z0-9._-]+)/([A-Za-z0-9._-]+)$#\2/\3#p' | sed 's#\.git$##')
+fi
+printf '%s\n' "$slug" | grep -Eq '^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$' ||
+  { echo "build-release: cannot tell the GitHub owner/repo; set OVERSEER_BROWSER_RELEASE_REPO=owner/repo (or add a GitHub origin remote)" >&2; exit 1; }
+# The bundled update checker must query the same repository the installers download from.
+sed "s#$PLACEHOLDER#$slug#g" "$stage/cli/update.py" > "$stage/cli/update.py.new"
+mv "$stage/cli/update.py.new" "$stage/cli/update.py"
+grep -q "$PLACEHOLDER" "$stage/cli/update.py" && { echo "build-release: update checker still has the placeholder owner" >&2; exit 1; }
+
 # Deterministic: sorted names, fixed owner and times (1980-01-01 is the zip epoch floor).
 ( cd "$stage" && find . -mindepth 1 | LC_ALL=C sort | sed 's|^\./||' > "$stage.list" )
 ( cd "$stage" && find . -mindepth 1 -exec touch -t 198001010000 {} + )
@@ -41,15 +55,6 @@ else
 fi
 ( cd "$stage" && zip -X -q "$OUT_ABS/overseer-browser.zip" -@ < "$stage.list" )
 rm -f "$stage.list"
-# The shipped sources keep a neutral placeholder owner (tests/test_neutrality.py); the released
-# installers get the real GitHub owner/repo, from OVERSEER_BROWSER_RELEASE_REPO or the origin remote.
-PLACEHOLDER="example-user/overseer-browser"
-slug="${OVERSEER_BROWSER_RELEASE_REPO:-}"
-if [ -z "$slug" ]; then
-  slug=$(git remote get-url origin 2>/dev/null | sed -E -n 's#^(git@github\.com:|https://github\.com/)([A-Za-z0-9._-]+)/([A-Za-z0-9._-]+)$#\2/\3#p' | sed 's#\.git$##')
-fi
-printf '%s\n' "$slug" | grep -Eq '^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$' ||
-  { echo "build-release: cannot tell the GitHub owner/repo; set OVERSEER_BROWSER_RELEASE_REPO=owner/repo (or add a GitHub origin remote)" >&2; exit 1; }
 for f in install.sh install.ps1; do
   sed "s#$PLACEHOLDER#$slug#g" "scripts/$f" > "$OUT/$f"
   chmod 755 "$OUT/$f"
