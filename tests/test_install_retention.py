@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import os
 from pathlib import Path
+import shlex
 import subprocess
 import sys
 import tarfile
@@ -163,6 +164,24 @@ class InstallerRetentionTests(unittest.TestCase):
         self.assertFalse(previous.exists())
         self.assertTrue((self.tool_home / "releases" / "release-0.11.1" / "cli" / "main.py").is_file())
 
+    def test_rollback_cleanup_failure_does_not_fail_a_successful_install(self):
+        previous = self.retained_previous()
+        source = self.release_tree("0.11.2", "0.11.2", "downloaded")
+        rel = f"{self.tool_home}/releases/release-0.11.2"
+        # Simulate an undeletable rollback copy (locked file, permission change,
+        # external process) without touching anything else the installer removes.
+        body = (
+            f'rm() {{ [ "${{2:-}}" = {shlex.quote(str(previous))} ] && return 1; command rm "$@"; }}; '
+            f'finalize_install {shlex.quote(rel)} 0.11.2 {shlex.quote(str(source))}'
+        )
+        result = self.run_functions(body)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("Version check passed", result.stdout)
+        self.assertIn("could not be deleted", result.stdout)
+        self.assertTrue(previous.exists(), "the failed deletion must leave the copy for manual cleanup")
+        self.assertTrue((self.tool_home / "releases" / "release-0.11.2" / "cli" / "main.py").is_file())
+        self.assertTrue((self.bin_dir / "overseer-browser").is_file())
+
     def test_a_symlinked_previous_release_is_never_deleted(self):
         elsewhere = self.base / "elsewhere"
         elsewhere.mkdir()
@@ -274,6 +293,14 @@ class RetentionDocumentationTests(unittest.TestCase):
                       "overseer-browser-install.*", "overseer-media-v1-",
                       "overseer-outputs-v1-", "extension.tmp"):
             self.assertIn(write, privacy, write)
+        for path in ("~/.cache/overseer-browser", "~/Library/Caches/overseer-browser",
+                     r"%LOCALAPPDATA%\OverSeer\browser\update",
+                     "~/.local/share/overseer-browser", "Default/Service Worker"):
+            self.assertIn(path, privacy, path)
+        self.assertNotIn("The extension and native host never make this request", privacy)
+        removal = privacy[privacy.index("### Deleting local data"):]
+        self.assertIn("~/.local/share/overseer-browser", removal)
+        self.assertIn("update cache and install-log directories", removal)
         self.assertIn("### Deleting local data", privacy)
         updates = " ".join((REPO / "docs" / "updates.md").read_text(encoding="utf-8").split())
         self.assertIn("a successful update leaves no previous release", updates)

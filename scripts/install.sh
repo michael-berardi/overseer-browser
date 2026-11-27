@@ -83,9 +83,14 @@ drop_previous_release() {
     say "Left the unexpected symlink at $HOME_DIR/rollback/previous alone; remove it manually"
     return 0
   fi
-  rm -rf "$HOME_DIR/rollback/previous" || die "cannot delete the retained previous release"
-  rmdir "$HOME_DIR/rollback" 2>/dev/null || true
-  say "Removed the retained previous release: it is kept only until an update proves it starts"
+  # Cleanup is not part of the install's success criteria: the new release has
+  # already passed its version and start checks, so a stuck copy is only debris.
+  if rm -rf "$HOME_DIR/rollback/previous"; then
+    rmdir "$HOME_DIR/rollback" 2>/dev/null || true
+    say "Removed the retained previous release: it is kept only until an update proves it starts"
+  else
+    say "Note: the new release installed, but the retained previous release at $HOME_DIR/rollback/previous could not be deleted; remove it manually"
+  fi
 }
 
 # Keep one previous release for `overseer-browser update --rollback`.
