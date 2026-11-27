@@ -105,3 +105,10 @@ logs, and local browser/agent state each need an accurate boundary statement;
 [PRIVACY.md](../PRIVACY.md) carries the full data flow. This is a documentation
 deviation only: the privacy guarantees are not relaxed, and no release-check
 behavior or version changed.
+
+The contract's §2 prompt also asks an interactive `update` command to show
+current → new and the first release-note lines, ask `Install <new> now? [Y/n]`,
+and after success ask once about future automatic updates. This CLI installs
+immediately on an explicit `update` and does not ask either question; its
+`auto_asked` preference is currently unused. That prompt UX is an unimplemented
+gap, not a privacy change, and must be closed before release.
