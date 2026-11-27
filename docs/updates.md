@@ -79,8 +79,8 @@ owning them. Source checkouts update with `git pull --ff-only` followed by
 
 Off by default. `overseer-browser update --auto on` (or `--auto off` / `--auto status`)
 stores the choice in per-user config next to the update settings, so it survives
-updates; `--auto off` stops future installs but does not delete a retained rollback copy.
-updates. When it is on, a detected release is installed in a detached,
+updates. `--auto off` stops future installs but does not delete a retained rollback copy.
+When it is on, a detected release is installed in a detached,
 low-priority background process that logs to `update-install.log` beside the
 cache and applies to the next command. That owner-only log is capped to its
 newest 256 KiB. A failed install leaves the current
