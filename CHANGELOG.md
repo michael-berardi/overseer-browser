@@ -4,6 +4,7 @@
 
 - macOS and Linux installers now prune superseded `runtimes/` trees once every file in a tree is older than 30 days. The published runtime, trees still named by a launcher/manifest or runtime override, and all recent or symlinked trees are kept; cleanup failures are reported without failing the install.
 - `PRIVACY.md` and `docs/install.md` now state that bound and the remaining manual deletion steps; regression tests cover an aged non-current runtime being removed while the fresh current and fresh non-current copies survive. No release-check or prompt code changed.
+- Pruning reads its references exactly: an `OVERSEER_BROWSER_RUNTIME` override that names a runtime directory now protects that tree (`scripts/manage-macos.sh`, `scripts/install-linux.sh`), and a regression test pins that aged trees still named by a managed CLI launcher, a native-messaging manifest, or an override file survive while an unreferenced aged tree is pruned.
 
 ## 0.11.2
 

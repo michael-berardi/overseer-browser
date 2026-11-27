@@ -79,16 +79,33 @@ root = Path(root)
 if not root.is_dir():
     raise SystemExit(0)
 pattern = re.compile(re.escape(str(root)) + r'/runtime-[A-Za-z0-9_-]+')
+root_real = os.path.realpath(root)
 protected = {os.path.realpath(current)}
+
+
+def protect(reference):
+    # A reference either names the runtime tree itself (the OVERSEER_BROWSER_RUNTIME
+    # override is a directory) or names it inside a file (a launcher or manifest).
+    resolved = os.path.realpath(reference)
+    inner = os.path.relpath(resolved, root_real).split(os.sep)[0]
+    if inner == os.pardir:
+        protected.add(resolved)
+    else:
+        protected.add(os.path.realpath(os.path.join(str(root), inner)))
+
+
 for reference in references:
     if not reference:
+        continue
+    if os.path.isdir(reference):
+        protect(reference)
         continue
     try:
         text = Path(reference).read_text(encoding='utf-8', errors='replace')
     except OSError:
         continue
     for match in pattern.finditer(text):
-        protected.add(os.path.realpath(match.group(0)))
+        protect(match.group(0))
 cutoff = time.time() - 30 * 24 * 60 * 60
 for path in sorted(root.iterdir()):
     if path.is_symlink() or not path.is_dir() or not re.fullmatch(r'runtime-[A-Za-z0-9_-]+', path.name):
@@ -211,4 +228,4 @@ say "(e.g. chrome://extensions), enable Developer mode, and load/unload the unpa
 say "directory above yourself."
 
 say "Coordinate the NEW Load unpacked path with session owners and reconfirm connection/site permissions."
-say "Old runtime/extension trees are retained; no running host is restarted or extension reloaded."
+say "Unreferenced runtime/extension trees older than 30 days are pruned by the next install; no running host is restarted or extension reloaded."

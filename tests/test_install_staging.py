@@ -14,6 +14,50 @@ import unittest
 REPO = Path(__file__).resolve().parents[1]
 
 
+def prepare_install(script, base, overrides=None):
+    """Synthetic checkout, fake HOME and a no-op npm for one platform installer."""
+    root = base / 'checkout'
+    (root / 'scripts').mkdir(parents=True)
+    shutil.copy2(REPO / 'scripts' / script, root / 'scripts' / script)
+    for package in ('cli', 'native_host'):
+        (root / package).mkdir()
+        for source in (REPO / package).glob('*.py'):
+            shutil.copy2(source, root / package / source.name)
+    built = root / 'extension/.output/chrome-mv3'
+    built.mkdir(parents=True)
+    (built / 'manifest.json').write_text(json.dumps({'manifest_version': 3}))
+    (built / 'background.js').write_text('// synthetic build')
+    (root / 'extension/package.json').write_text('{}')
+    npm = base / 'npm'
+    npm.write_text('#!/bin/sh\nexit 0\n')
+    npm.chmod(0o700)
+    home = base / 'home'
+    home.mkdir()
+    # The ambient shell must not leak a runtime override or loaded-version hint into the installer.
+    env = {key: value for key, value in os.environ.items()
+           if key not in ('OVERSEER_BROWSER_RUNTIME', 'OVERSEER_BROWSER_LOADED_EXTENSION_VERSION',
+                          'OVERSEER_BROWSER_PREBUILT_EXTENSION')}
+    env.update(HOME=str(home), PYTHON=sys.executable, NPM=str(npm),
+               XDG_DATA_HOME=str(home / 'data'), XDG_CONFIG_HOME=str(home / 'config'),
+               OVERSEER_BROWSER_BIN_DIR=str(home / 'bin'), TMPDIR=str(base))
+    env.update(overrides or {})
+    app = home / ('Library/Application Support/OverSeer/browser' if 'macos' in script
+                  else 'data/overseer-browser')
+    return root, built, env, home, app
+
+
+def run_install(script, root, base, env):
+    return subprocess.run(['bash', str(root / 'scripts' / script), 'install'],
+                          env=env, cwd=base, text=True, capture_output=True, timeout=180)
+
+
+def chrome_manifest_path(script, home):
+    """The Chrome native-messaging registration the installer publishes."""
+    directory = ('Library/Application Support/Google/Chrome' if 'macos' in script
+                 else 'config/google-chrome')
+    return home / directory / 'NativeMessagingHosts/com.paretocybernetics.overseer_browser.json'
+
+
 class InstallStagingTests(unittest.TestCase):
     def exercise(self, script, relay=False):
         with tempfile.TemporaryDirectory() as temporary:
@@ -206,28 +250,7 @@ class RuntimePruningTests(unittest.TestCase):
     def exercise(self, script):
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
-            root = base / 'checkout'
-            (root / 'scripts').mkdir(parents=True)
-            shutil.copy2(REPO / 'scripts' / script, root / 'scripts' / script)
-            for package in ('cli', 'native_host'):
-                (root / package).mkdir()
-                for source in (REPO / package).glob('*.py'):
-                    shutil.copy2(source, root / package / source.name)
-            built = root / 'extension/.output/chrome-mv3'
-            built.mkdir(parents=True)
-            (built / 'manifest.json').write_text(json.dumps({'manifest_version': 3}))
-            (built / 'background.js').write_text('// synthetic build')
-            (root / 'extension/package.json').write_text('{}')
-            npm = base / 'npm'
-            npm.write_text('#!/bin/sh\nexit 0\n')
-            npm.chmod(0o700)
-            home = base / 'home'
-            home.mkdir()
-            env = dict(os.environ, HOME=str(home), PYTHON=sys.executable, NPM=str(npm),
-                       XDG_DATA_HOME=str(home / 'data'), XDG_CONFIG_HOME=str(home / 'config'),
-                       OVERSEER_BROWSER_BIN_DIR=str(home / 'bin'), TMPDIR=str(base))
-            app = home / ('Library/Application Support/OverSeer/browser' if 'macos' in script
-                          else 'data/overseer-browser')
+            root, built, env, home, app = prepare_install(script, base)
             runtimes = app / 'runtimes'
 
             old = runtimes / 'runtime-old0001'
@@ -241,8 +264,7 @@ class RuntimePruningTests(unittest.TestCase):
             (fresh / 'cli').mkdir(parents=True)
             (fresh / 'cli/main.py').write_text('# fresh non-current runtime\n')
 
-            result = subprocess.run(['bash', str(root / 'scripts' / script), 'install'],
-                                    env=env, cwd=base, text=True, capture_output=True, timeout=180)
+            result = run_install(script, root, base, env)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn('Pruned old runtime copy', result.stdout)
             self.assertFalse(old.exists(), 'aged non-current runtime was not pruned')
@@ -260,6 +282,77 @@ class RuntimePruningTests(unittest.TestCase):
         self.exercise('manage-macos.sh')
 
     def test_linux_prunes_aged_runtime(self):
+        self.exercise('install-linux.sh')
+
+
+class RuntimePruningReferenceTests(unittest.TestCase):
+    """An aged runtime tree something still names survives; an unnamed one does not."""
+
+    def exercise(self, script):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            root, built, env, home, app = prepare_install(script, base)
+            runtimes = app / 'runtimes'
+            old_stamp = time.time() - 31 * 24 * 60 * 60
+
+            def aged_runtime(name):
+                tree = runtimes / name
+                (tree / 'cli').mkdir(parents=True)
+                (tree / 'cli/main.py').write_text(f'# {name}\n')
+                for entry in (tree, tree / 'cli', tree / 'cli/main.py'):
+                    os.utime(entry, (old_stamp, old_stamp))
+                return tree
+
+            # Three aged trees still in use plus one nothing references.
+            launcher_named = aged_runtime('runtime-launchernamed')
+            manifest_named = aged_runtime('runtime-manifestnamed')
+            override_named = aged_runtime('runtime-overridenamed')
+            unreferenced = aged_runtime('runtime-unreferenced')
+
+            launcher = home / 'bin/overseer-browser'
+            launcher.parent.mkdir(parents=True)
+            launcher.write_text('#!/bin/sh\n# OverSeer Browser managed launcher\n'
+                                f'exec python3 -c x "{launcher_named}" "$@"\n')
+            launcher.chmod(0o700)
+            manifest = chrome_manifest_path(script, home)
+            manifest.parent.mkdir(parents=True)
+            manifest.write_text(json.dumps({'name': 'com.paretocybernetics.overseer_browser',
+                                            'path': str(manifest_named / 'native-host')}))
+
+            # An override that names a directory protects that runtime tree.
+            result = run_install(script, root, base,
+                                 {**env, 'OVERSEER_BROWSER_RUNTIME': str(override_named)})
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn('Pruned old runtime copy', result.stdout)
+            self.assertFalse(unreferenced.exists(),
+                             'an aged runtime that nothing references was not pruned')
+            self.assertTrue(launcher_named.is_dir(),
+                            'an aged runtime the CLI launcher still names was pruned')
+            self.assertTrue(manifest_named.is_dir(),
+                            'an aged runtime a native-messaging manifest still names was pruned')
+            self.assertTrue(override_named.is_dir(),
+                            'an aged runtime named by the OVERSEER_BROWSER_RUNTIME directory was pruned')
+
+            # An override may instead name a file whose text names the runtime; the runtime the
+            # install just stopped naming becomes ordinary aged debris on the next run.
+            file_named = aged_runtime('runtime-filenamed')
+            still_unreferenced = aged_runtime('runtime-unreferenced2')
+            override_file = home / 'runtime-override'
+            override_file.write_text(f'OVERSEER_BROWSER_RUNTIME="{file_named}"\n')
+            result = run_install(script, root, base,
+                                 {**env, 'OVERSEER_BROWSER_RUNTIME': str(override_file)})
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertTrue(file_named.is_dir(),
+                            'an aged runtime named inside the override file was pruned')
+            self.assertFalse(still_unreferenced.exists(),
+                             'an aged runtime that nothing references was not pruned')
+            self.assertFalse(launcher_named.exists(),
+                             'a runtime no launcher names any more must not stay protected')
+
+    def test_macos_keeps_referenced_aged_runtime(self):
+        self.exercise('manage-macos.sh')
+
+    def test_linux_keeps_referenced_aged_runtime(self):
         self.exercise('install-linux.sh')
 
 
