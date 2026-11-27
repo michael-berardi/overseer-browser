@@ -53,8 +53,12 @@ enable Developer mode, click **Load unpacked** and select the printed
 extension by itself; this step is for your everyday Chrome).
 
 Update by re-running the same one-liner (`overseer-browser update` does this for
-release installs). Each update keeps the previous verified release in
-`<install>/rollback/previous`; `overseer-browser update --rollback` restores it.
+release installs). An update keeps the release it displaced in
+`<install>/rollback/previous` until the new release has installed and started;
+`overseer-browser update --rollback` restores it after a failed update, and a
+successful update deletes the copy. Installer temp and staging leftovers of an
+interrupted run are swept by the next install; [PRIVACY.md](../PRIVACY.md) lists
+every local write with its lifetime.
 An anonymous, at-most-daily release check and its opt-outs are described in
 [Updates](updates.md). Remove by deleting the tool folder
 (`~/.overseer-browser` or `%LOCALAPPDATA%\OverSeerBrowser`), the

@@ -59,13 +59,14 @@ installing, swaps the release atomically, and keeps the previous release under
 and re-registers the local host; it reports plainly when no previous release
 was kept.
 
-Only one rollback copy is retained. Each update replaces that single copy with
-the release it displaced; it has no expiry and stays on disk until the next
-update replaces it, so clearing it sooner means it must be removed manually.
-`overseer-browser update --auto off` only stops future automatic installs — it
-does not delete the retained copy. Remove `<install>/rollback/previous`
-manually if you no longer want it (after which `--rollback` reports that no
-previous release was kept).
+Only one rollback copy is retained, and it is a recovery aid rather than
+durable state: as soon as the newly installed release passes the installer's
+version and start check, the installer deletes
+`<install>/rollback/previous`, so a successful update leaves no previous
+release behind and `--rollback` then reports that no previous release was kept.
+An update that fails keeps the copy — that is the case `--rollback` exists for
+— and the next successful update removes it. `overseer-browser update --auto
+off` only stops future automatic installs; it deletes nothing.
 
 An explicit update installs without questions and never overwrites a
 package manager's files: this project ships its own per-user release bundles
@@ -98,17 +99,12 @@ loaded. No separate extension/network check or silent browser UI prompt exists.
 
 ## Documentation deviations
 
-The contract asks for 3-6 short lines in the README Privacy section. This
-project keeps a detailed [README Privacy section](../README.md#privacy) instead,
-because the anonymous release check, detached worker, owner-only cache and
-logs, and local browser/agent state each need an accurate boundary statement;
-[PRIVACY.md](../PRIVACY.md) carries the full data flow. This is a documentation
-deviation only: the privacy guarantees are not relaxed, and no release-check
-behavior or version changed.
-
 The contract's §2 prompt also asks an interactive `update` command to show
 current → new and the first release-note lines, ask `Install <new> now? [Y/n]`,
 and after success ask once about future automatic updates. This CLI installs
 immediately on an explicit `update` and does not ask either question; its
 `auto_asked` preference is currently unused. That prompt UX is an unimplemented
 gap, not a privacy change, and must be closed before release.
+
+[PRIVACY.md](../PRIVACY.md) carries the full data flow, the local-write
+inventory with lifetimes and cleanup, and the deletion steps.

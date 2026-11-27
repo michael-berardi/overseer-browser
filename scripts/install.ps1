@@ -80,6 +80,14 @@ function Install-OverSeerBrowser {
     if (-not (Get-Command bash -ErrorAction SilentlyContinue)) { throw 'overseer-browser install: bash is required for the POSIX platform installer; install it, then run this again.' }
   }
 
+  # Retention: this run's temp folder is removed in the finally block below, so only a run that was
+  # killed outright leaves one behind. Sweep those stale copies; a live install's folder is far newer.
+  Get-ChildItem -LiteralPath ([IO.Path]::GetTempPath()) -Directory -Filter 'overseer-browser-install*' -ErrorAction SilentlyContinue |
+    Where-Object { $_.LastWriteTimeUtc -lt (Get-Date).ToUniversalTime().AddHours(-6) } |
+    ForEach-Object {
+      try { Remove-Item -Recurse -Force -LiteralPath $_.FullName -ErrorAction Stop; Write-Host "Removed stale installer temp folder: $($_.FullName)" } catch { }
+    }
+
   $tmp = Join-Path ([IO.Path]::GetTempPath()) ('overseer-browser-install-' + [guid]::NewGuid().ToString('N'))
   New-Item -ItemType Directory -Path $tmp | Out-Null
   $savedBinDirEnv = $env:OVERSEER_BROWSER_BIN_DIR   # restored in finally: the child installer needs it only during this run

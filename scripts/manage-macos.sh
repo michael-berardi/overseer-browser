@@ -111,8 +111,16 @@ finally:
  if os.path.exists(t): os.unlink(t)' "$1" "${2:-600}"
 }
 
+# Retention: a run killed before its EXIT trap leaves staging and publish debris;
+# sweep only what is older than an hour so a concurrent install is never disturbed.
+prune_stale_staging() {
+  find "$APP_SUPPORT/runtimes" -maxdepth 1 -name '.stage-*' -mmin +60 -exec rm -rf {} + 2>/dev/null || true
+  find "$APP_SUPPORT" -maxdepth 1 -name '.publish-*' -mmin +60 -exec rm -f {} + 2>/dev/null || true
+}
+
 stage_runtime() {
   mkdir -p "$APP_SUPPORT/runtimes"
+  prune_stale_staging
   STAGE="$(mktemp -d "$APP_SUPPORT/runtimes/.stage-XXXXXXXX")"
   trap 'if [ -n "${STAGE:-}" ]; then rm -rf "$STAGE"; fi' EXIT
   mkdir "$STAGE/native_host" "$STAGE/cli" "$STAGE/extension"

@@ -4,7 +4,7 @@ OverSeer Browser is a local-first Chromium extension, native host, and CLI. It h
 
 ## Release check
 
-In interactive terminal use, the CLI makes one anonymous HTTPS GET per 24 hours to this repository's public GitHub "latest release" record. The only request header beyond the HTTP defaults is a fixed `overseer-browser-update-check` User-Agent; no account, CLI version, usage, machine, session, or browser data is sent. The timestamp, newest tag, and any failure cause of a completed check are kept in an owner-only local cache; its start time is recorded only as a short in-flight claim. A claim left by a dead worker expires after 60 seconds and the check can be retried. Only a completed check gates automatic checks for 24 hours, and a notice is shown at most once per version per 24 hours. The check is disabled in CI, agent and non-TTY/JSON use, and by `OVERSEER_BROWSER_NO_UPDATE_CHECK=1` or `overseer-browser update --checks off`. Installing an update fetches the release archive and `SHA256SUMS` from GitHub. Automatic installation is off unless you turn it on; its owner-only log is capped at 256 KiB. The extension and native host never make this request. See [docs/updates.md](docs/updates.md).
+In interactive terminal use, the CLI makes one anonymous HTTPS GET per 24 hours to this repository's public GitHub "latest release" record. The only request header beyond the HTTP defaults is a fixed `overseer-browser-update-check` User-Agent; no account, CLI version, usage, machine, session, or browser data is sent. The timestamp, newest tag, and any failure cause of a completed check are kept in an owner-only local cache; its start time is recorded only as a short in-flight claim. A claim left by a dead worker expires after 60 seconds and the check can be retried. Only a completed check gates automatic checks for 24 hours, and a notice is shown at most once per version per 24 hours. The check is disabled in CI, agent and non-TTY/JSON use, and by `OVERSEER_BROWSER_NO_UPDATE_CHECK=1` or `overseer-browser update --checks off`. Installing an update fetches the release archive and `SHA256SUMS` from GitHub; building from source also downloads npm packages from the npm registry, with `DO_NOT_TRACK=1` and npm audit/funding requests disabled by the build scripts. The extension and native host make no network requests of their own. Automatic installation is off unless you turn it on; its owner-only log is capped at 256 KiB. The extension and native host never make this request. See [docs/updates.md](docs/updates.md).
 
 ## What stays on the device
 
@@ -18,6 +18,29 @@ The extension, native host, and CLI may keep bounded local state needed to execu
 The extension and native host do not independently upload these values. A calling client may deliberately forward returned observations, screenshots, uploads, or action results to another service; that transfer is outside this repository and must be evaluated under the client's privacy policy. Shell history, browser profiles, operating-system logs, backups, browser sync, and user-selected upload destinations can also retain data independently.
 
 Runtime state is bounded and local. Session, permission, and pending meeting state live in Chrome's `storage.session`, which Chrome clears when the browser session ends; queued meeting events also expire after 90 seconds. On macOS, `overseer-browser uninstall` removes the native host registration, CLI, and token; on other platforms use the manual removal steps in [docs/install.md](docs/install.md). Uninstalling does not delete the runtime directory, exported evidence, or shared browser data.
+
+The extension talks to the local native host through Chrome Native Messaging; the CLI talks to that host over a same-user local socket with a random local token. No account or cloud control service is involved. Browser traffic happens when you navigate or act on a page. A client, model provider, or other service you configure receives whatever you send it; that transfer is outside this project.
+
+## Local writes, lifetimes, and automatic cleanup
+
+Every local write this project makes on its own behalf is listed here, bounded, and never uploaded. Paths are the defaults, and `OVERSEER_BROWSER_RUNTIME`, `OVERSEER_BROWSER_HOME`, `OVERSEER_BROWSER_UPDATE_STATE_DIR` and their documented XDG equivalents override them.
+
+| Local write | Contents | Lifetime and cleanup |
+| --- | --- | --- |
+| Runtime directory (`0700`: macOS `~/Library/Application Support/OverSeer/browser`, Linux `$XDG_RUNTIME_DIR/overseer-browser` or `~/.config/overseer-browser` when unset, Windows `%LOCALAPPDATA%\OverSeer\browser`) | random host token (`0600`), local socket, connection metadata, `0600` `host.log`, `0600` `agent-v1/chrome.log` | `host.log` keeps the last 200 start/stop lines; `agent-v1/chrome.log` is trimmed to its newest 256 KiB every time it passes 1 MiB. Survives uninstall until you delete the directory. |
+| Update cache (`update-check.json`, `update-check.inflight`, `update-settings.json`) | check timestamp, newest tag, failure cause, shown/skipped maps, your opt-in settings; the claim holds only a start time | Owner-only, rewritten in place, fixed field set. The claim is deleted when the check finishes and is treated as stale after 60 seconds. |
+| `update-install.log` next to the cache | opt-in automatic-install output and failure cause | Owner-only, capped to its newest 256 KiB on every write. |
+| `<install>/rollback/previous` (macOS/Linux one-step installer) | the release tree an update displaced | Deleted automatically once the newly installed release passes the installer's version and start check; a failed update keeps it for `update --rollback`, and the next successful update deletes it. |
+| Installer temp (`$TMPDIR/overseer-browser-install.*`, Windows `%TEMP%\overseer-browser-install*`) | downloaded archive, `SHA256SUMS`, unpacked bundle | Removed when the installer exits; leftovers of a killed run are swept by the next install once they are older than six hours. |
+| Install staging (`releases/*.tmp`, `extension.tmp`, `rollback/.restoring`, `runtimes/.stage-*`, `.publish-*`) | half-staged release, extension, manifest and managed script files | Removed on success or failure; leftovers of a killed run are swept by the next install or platform installer once they are older than an hour. |
+| OS-temp outputs and media staging (`overseer-outputs-v1-<uid>`, `overseer-media-v1-<uid>`) | requested screenshots, QA files and recording conversions named to an OS-temp destination | Registered for automatic expiry (15 minutes, with a request-lifetime cap) and reaped by the native host at startup and while idle; `--keep` and outside-temp destinations are never deleted. |
+| Requested evidence and kept exports (QA packs, timelapses, recordings you keep) | page content | Written only when explicitly requested, never uploaded, and never deleted automatically. Deleting them is yours. |
+
+The extension also keeps session, permission, and short-lived meeting state in the browser profile; Chrome clears the session part when the browser session ends.
+
+### Deleting local data
+
+Remove the extension in `chrome://extensions`, delete the runtime directory above, the update cache, `<install>` (including any `rollback` folder), and any evidence or recording directories you created, then remove the native-host registration and CLI with the uninstall steps in [docs/install.md](docs/install.md) (`overseer-browser uninstall` on macOS). Nothing else is written on your behalf.
 
 ## Explicit QA evidence (0.5.0)
 

@@ -7,6 +7,9 @@
 # (scripts/manage-macos.sh on macOS, scripts/install-linux.sh on Linux) from there. That installer
 # registers the per-user native host and puts `overseer-browser` in $OVERSEER_BROWSER_BIN_DIR
 # (default ~/.local/bin). No sudo, no shell-profile edits; re-running upgrades in place.
+# Local writes are disposable: the download temp folder is removed on exit, leftovers of a killed
+# run are swept by the next install, and the retained previous release is deleted once the newly
+# installed release passes its start check.
 # Environment: OVERSEER_BROWSER_HOME, OVERSEER_BROWSER_BIN_DIR, OVERSEER_BROWSER_VERSION (pin, e.g. 0.10.3),
 # OVERSEER_BROWSER_RELEASE_BASE (override the download base URL, used by tests; file:// works).
 set -eu
@@ -33,6 +36,58 @@ case "$MODE" in
   *) printf 'usage: install.sh [install|--rollback]\n' >&2; exit 2 ;;
 esac
 
+# Retention bounds for this installer's own local writes. Only debris older
+# than these bounds is swept, so a concurrent install is never disturbed.
+INSTALL_TEMP_MAX_AGE_MINUTES=360
+STAGING_MAX_AGE_MINUTES=60
+
+# Older than N minutes? Keeps fresh debris a concurrent installer may still own.
+older_than() {
+  [ -n "$(find "$1" -maxdepth 0 -mmin +"$2" 2>/dev/null)" ]
+}
+
+# Bounded retention: a run killed before its EXIT trap leaves its download and
+# staging debris behind, so the next install sweeps the stale copies.
+sweep_install_debris() {
+  for stale in "${TMPDIR:-/tmp}"/overseer-browser-install.*; do
+    [ -d "$stale" ] && [ ! -L "$stale" ] || continue
+    older_than "$stale" "$INSTALL_TEMP_MAX_AGE_MINUTES" || continue
+    if rm -rf "$stale" 2>/dev/null; then say "Removed stale installer temp folder: $stale"; fi
+  done
+  for stale in "$HOME_DIR/extension.tmp" "$HOME_DIR"/releases/*.tmp "$HOME_DIR/rollback/.restoring"; do
+    [ -e "$stale" ] && [ ! -L "$stale" ] || continue
+    older_than "$stale" "$STAGING_MAX_AGE_MINUTES" || continue
+    if rm -rf "$stale" 2>/dev/null; then say "Removed stale install staging folder: $stale"; fi
+  done
+  case "$(uname -s)" in
+    Darwin) app_support="$HOME/Library/Application Support/OverSeer/browser" ;;
+    *) app_support="${XDG_DATA_HOME:-$HOME/.local/share}/overseer-browser" ;;
+  esac
+  for stale in "$app_support"/runtimes/.stage-*; do
+    [ -e "$stale" ] && [ ! -L "$stale" ] || continue
+    older_than "$stale" "$STAGING_MAX_AGE_MINUTES" || continue
+    if rm -rf "$stale" 2>/dev/null; then say "Removed stale runtime staging folder: $stale"; fi
+  done
+  for stale in "$app_support"/.publish-*; do
+    [ -f "$stale" ] && [ ! -L "$stale" ] || continue
+    older_than "$stale" "$STAGING_MAX_AGE_MINUTES" || continue
+    if rm -f "$stale" 2>/dev/null; then say "Removed stale publish temp file: $stale"; fi
+  done
+}
+
+# The retained previous release is a recovery copy for a failed update, not
+# durable state, so it goes as soon as the new release runs.
+drop_previous_release() {
+  [ -e "$HOME_DIR/rollback/previous" ] || return 0
+  if [ -L "$HOME_DIR/rollback/previous" ]; then
+    say "Left the unexpected symlink at $HOME_DIR/rollback/previous alone; remove it manually"
+    return 0
+  fi
+  rm -rf "$HOME_DIR/rollback/previous" || die "cannot delete the retained previous release"
+  rmdir "$HOME_DIR/rollback" 2>/dev/null || true
+  say "Removed the retained previous release: it is kept only until an update proves it starts"
+}
+
 # Keep one previous release for `overseer-browser update --rollback`.
 preserve_previous() {
   for d in "$HOME_DIR"/releases/release-*; do
@@ -40,7 +95,7 @@ preserve_previous() {
     mkdir -p "$HOME_DIR/rollback" || die "cannot create the rollback directory"
     rm -rf "$HOME_DIR/rollback/previous"
     mv "$d" "$HOME_DIR/rollback/previous" || die "cannot keep the previous release for rollback"
-    say "Previous release kept at $HOME_DIR/rollback/previous; restore with: overseer-browser update --rollback"
+    say "Previous release staged at $HOME_DIR/rollback/previous for: overseer-browser update --rollback (removed once this update verifies)"
     break
   done
 }
@@ -92,6 +147,8 @@ finalize_install() {
   say "Version check passed: $GOT"
   say "Local health (the extension is not loaded in a browser yet, so 'ok' stays false until it is):"
   "$CLI" health || true
+  # The new release starts, so the recovery copy is no longer needed.
+  drop_previous_release
 
   case ":$PATH:" in *":$BIN_DIR:"*) ;; *) say "Add $BIN_DIR to your PATH:  export PATH=\"$BIN_DIR:\$PATH\"" ;; esac
   say ""
@@ -105,7 +162,7 @@ finalize_install() {
 
 rollback_install() {
   previous="$HOME_DIR/rollback/previous"
-  [ -f "$previous/cli/main.py" ] || die "no verified previous release is kept; nothing to roll back"
+  [ -f "$previous/cli/main.py" ] || die "no previous release is kept; nothing to roll back (a successful update deletes the copy)"
   version=$(sed -n 's/^CLI_VERSION = "\([^"]*\)".*/\1/p' "$previous/cli/main.py" | head -n 1)
   [ -n "$version" ] || die "the kept release has no readable CLI version"
   [ -d "$previous/extension/.output/chrome-mv3" ] || die "the kept release has no built extension"
@@ -141,6 +198,7 @@ main() {
     *) die "unsupported system $(uname -s); on Windows use install.ps1" ;;
   esac
 
+  sweep_install_debris
   TMP=$(mktemp -d "${TMPDIR:-/tmp}/overseer-browser-install.XXXXXX") || die "cannot create a temporary folder"
   trap 'rm -rf "$TMP"' EXIT
   trap 'exit 130' INT

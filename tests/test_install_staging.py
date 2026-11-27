@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 REPO = Path(__file__).resolve().parents[1]
@@ -45,10 +46,28 @@ class InstallStagingTests(unittest.TestCase):
                           else 'data/overseer-browser')
             command = ['bash', str(root / 'scripts' / script), 'install']
 
+            # Retention: staging/publish debris from a killed run is swept once it is stale,
+            # while everything a live install still owns is left alone.
+            stale_stage = app / 'runtimes' / '.stage-deadbeef'
+            stale_stage.mkdir(parents=True)
+            (stale_stage / 'cli').write_text('stale half-staged runtime')
+            stale_publish = app / '.publish-deadbeef'
+            stale_publish.write_text('stale publish temp file')
+            stale_stamp = time.time() - 2 * 60 * 60
+            os.utime(stale_stage, (stale_stamp, stale_stamp))
+            os.utime(stale_publish, (stale_stamp, stale_stamp))
+            fresh_stage = app / 'runtimes' / '.stage-live0001'
+            fresh_stage.mkdir()
+
+            swept = {'checked': False}
+
             def install(ok=True):
                 result = subprocess.run(command, env=env, cwd=base, text=True, capture_output=True)
                 self.assertEqual(result.returncode == 0, ok, result.stdout + result.stderr)
-                self.assertFalse(list(app.rglob('.stage-*')))
+                self.assertFalse(stale_stage.exists(), 'stale runtime staging debris was not swept')
+                self.assertFalse(stale_publish.exists(), 'stale publish temp file was not swept')
+                if not swept['checked']:
+                    self.assertTrue(fresh_stage.is_dir(), 'a live staging folder must never be swept')
                 self.assertFalse(list(home.rglob('.publish-*')))
                 return result
 
@@ -62,6 +81,8 @@ class InstallStagingTests(unittest.TestCase):
                 stale.parent.mkdir(parents=True)
                 stale.write_text('{"name": "stale pre-rebrand manifest"}')
             result = install()
+            swept['checked'] = True
+            shutil.rmtree(fresh_stage)  # the live stage was preserved; drop it before counting runtimes
             self.assertIn('permissions', result.stdout)
             self.assertIn('removed legacy manifest', result.stdout)
             if 'macos' in script:

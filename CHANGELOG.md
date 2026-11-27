@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.11.2
+
+- README's Privacy section is 3-6 short lines that link to `PRIVACY.md` again; the full data flow, runtime paths, log caps, and deletion steps moved into `PRIVACY.md`, and the resolved documentation-deviation note is gone from `docs/updates.md`.
+- `PRIVACY.md` now inventories every local write with its lifetime and cleanup: the update cache and its in-flight claim, `update-install.log`, `<install>/rollback/previous`, installer temp and staging debris, `host.log` and `agent-v1/chrome.log`, OS-temp outputs and media staging, and evidence you explicitly keep.
+- Retention: the installer deletes `<install>/rollback/previous` once the newly installed release passes its version and start check, so a successful update leaves no previous release behind; a failed update keeps it for `update --rollback`. The next install sweeps installer temp folders older than six hours and staging/publish debris older than an hour, and the platform installers prune `.stage-*`/`.publish-*` leftovers of a killed run.
+- No release-check or prompt behavior changed; the recorded interactive prompt gap is still open.
+
 ## 0.11.1
 
 - The automatic release check now runs in a detached, low-priority one-shot child process instead of a Python thread. It survives fast CLI exits, writes its completed result or failure to the private cache, and keeps the in-flight claim only for the request; an abandoned claim is recoverable after 60 seconds instead of suppressing `update --check` for 24 hours. The 24-hour gate for completed checks, fixed User-Agent, opt-outs, checksum verification, rollback and bounded logs are unchanged.

@@ -341,12 +341,20 @@ class UpdateContractTests(unittest.TestCase):
     def test_branch_version_is_above_the_published_release(self):
         self.assertGreater(update.stable_version(CLI_VERSION), (0, 11, 0))
 
-    def test_rollback_retention_gap_is_documented(self):
-        text = (ROOT / "docs" / "updates.md").read_text(encoding="utf-8")
-        self.assertIn("removed manually", text)
+    def test_rollback_retention_is_bounded_and_documented(self):
+        text = " ".join((ROOT / "docs" / "updates.md").read_text(encoding="utf-8").split())
+        # The retained copy is a recovery aid for a failed update, not durable
+        # state: a successful run deletes it, so no manual cleanup is required.
+        self.assertIn("a successful update leaves no previous release", text)
+        self.assertIn("An update that fails keeps the copy", text)
+        self.assertNotIn("removed manually", text)
+        self.assertNotIn("no expiry", text)
         self.assertIn("--auto off", text)
         self.assertIn("detached", text)
         self.assertNotIn("background thread", text)
+        installer = (ROOT / "scripts" / "install.sh").read_text(encoding="utf-8")
+        self.assertIn("drop_previous_release", installer)
+        self.assertIn("sweep_install_debris", installer)
 
     def test_settings_persist_and_check_exit_codes(self):
         with contextlib.redirect_stdout(io.StringIO()):
