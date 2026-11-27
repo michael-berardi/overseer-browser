@@ -203,7 +203,7 @@ After a valid successful response, the host emits this acknowledgement to the ex
 
 Missing, malformed, mismatched, or unsuccessful adapter responses produce `delivered: false` while the bounded queue entry remains valid. Adapters must preserve the opaque payload, treat detection IDs idempotently, and never start recording without a separate visible user action.
 
-## Update status (0.11.3)
+## Update status (0.11.0)
 
 The popup's Updates section asks the host; the extension makes no network request. `action` is one of `status`, `check`, `install`, `skip`, `auto_on`, `auto_off`, `checks_on`, `checks_off`; anything else is a protocol error.
 

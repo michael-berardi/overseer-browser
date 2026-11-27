@@ -1,12 +1,11 @@
 # Changelog
 
-## 0.11.3
+## 0.11.3 - 2026-11-27
 
-- Privacy documentation now inventories every local write with its path, contents, lifetime and cleanup; README's Privacy section stays short and points to PRIVACY.md for the details.
-- Installer retention is bounded: a successful update deletes `<install>/rollback/previous` after the new release passes its version and start check, a failed one keeps it for `update --rollback`, and the next install sweeps stale temp, staging and publish debris.
-- macOS and Linux installers prune unreferenced `runtimes/` trees whose files are all older than 30 days. The published tree, recent trees, symlinks, and trees named by a launcher, native-messaging manifest or `OVERSEER_BROWSER_RUNTIME` override are kept; cleanup failures are reported without failing the install.
-- The daily update check now records its start in the same private state file before the HTTPS GET. A live claim prevents a second request (including from `update --check`) and an abandoned claim recovers after 60 seconds instead of suppressing checks for a day; completed checks still gate for 24 hours. The anonymous request, opt-outs, popup UI, checksum verification and rollback are unchanged.
-- Regression tests cover the retention and pruning rules, override-named runtime protection, and the claim recovery path.
+- Privacy: README's Privacy section stays short and links to `PRIVACY.md`, which now lists every local write with its path, contents, lifetime and cleanup, including the update state, the automatic-update log, the update rollback copy (`~/.overseer-browser/previous`), installer temp and staging folders, runtime trees, `host.log`, `agent-v1/chrome.log`, OS-temp outputs and kept evidence.
+- Installer cleanup: `install.sh` and `install.ps1` remove temp folders left by a killed run once they are older than six hours; `install.sh` and the macOS and Linux platform installers remove staging and publish leftovers older than an hour. Fresh folders that a concurrent install may own are left alone.
+- macOS and Linux installers prune old `runtimes/` trees. A tree is kept while a launcher, native-messaging manifest, browser profile (a folder Chrome loads unpacked) or `OVERSEER_BROWSER_RUNTIME`/`OVERSEER_BROWSER_EXTENSION` names it, and symlinked trees are never touched. Other trees go once all their files are older than 30 days, counted from the last install that found them in use. A pruning failure is reported and does not fail the install.
+- The update check, notices, popup Updates section, `update` and its rollback copy are unchanged from 0.11.0: one anonymous check a day at most, off with `OVERSEER_BROWSER_NO_UPDATE_CHECK=1` or `update --auto-check off`.
 
 ## 0.11.0
 

@@ -47,13 +47,9 @@ One anonymous `GET` of the project's public GitHub "latest release" record
 owner/repo) with the fixed User-Agent `overseer-browser-update-check`. It sends
 no version, identifier, machine or usage data. It runs at most once every 24
 hours, in a detached background process with a 4-second timeout, so commands
-never wait for it. The start time is written to the state file before the GET:
-a concurrent command, including `update --check`, reuses the in-flight check
-instead of sending a second request, and a check killed mid-flight can be
-retried after 60 seconds. A failure is recorded with its cause and shown only
-by `update --check`; a completed check is not retried until the next day. Only
-stable `x.y.z` releases that are strictly newer count; drafts and prereleases
-are ignored.
+never wait for it. A failure is recorded with its cause and shown only by
+`update --check`; it is not retried until the next day. Only stable `x.y.z`
+releases that are strictly newer count; drafts and prereleases are ignored.
 
 ## Automatic updates
 
@@ -79,13 +75,10 @@ reinstalled. The temporary folder is deleted on success and failure.
 - State: one file, `update-check.json` (mode `0600`), in the platform cache
   folder: `~/Library/Caches/overseer-browser` on macOS,
   `$XDG_CACHE_HOME/overseer-browser` (default `~/.cache/overseer-browser`) on Linux,
-  `%LOCALAPPDATA%\overseer-browser\Cache` on Windows. It also holds the short
-  in-flight `checking_at` claim, cleared when the check completes.
+  `%LOCALAPPDATA%\overseer-browser\Cache` on Windows.
 - Automatic-update log: `auto-update.log` in the same folder, kept under 256 KB.
-- Rollback copy: at most one. For one-step installs a successful update leaves
-  no previous release in `<install>/rollback/previous`; the CLI removes its own
-  kept copy after the new version completes its first successful command, or
-  after 7 days.
+- Rollback copy: at most one, removed after the new version completes its
+  first successful command, or after 7 days.
 - `overseer-browser uninstall` removes the state file, the log and the rollback copy.
 
 ## Opting out and overrides

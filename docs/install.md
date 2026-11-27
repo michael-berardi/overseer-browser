@@ -52,17 +52,15 @@ enable Developer mode, click **Load unpacked** and select the printed
 `~/.overseer-browser/extension` folder (the dedicated agent browser loads the
 extension by itself; this step is for your everyday Chrome).
 
-Update by re-running the same one-liner (`overseer-browser update` does this for
-release installs). An update keeps the release it displaced in
-`<install>/rollback/previous` until the new release has installed and started;
-`overseer-browser update --rollback` restores it after a failed update, and a
-successful update deletes the copy. macOS/Linux installers also prune
-unreferenced runtime trees older than 30 days, keeping the current and recent
-copies. Installer temp and staging leftovers of an interrupted run are swept by
-the next install; [PRIVACY.md](../PRIVACY.md) lists every local write with its
-lifetime.
-An anonymous, at-most-daily release check and its opt-outs are described in
-[Updates](updates.md). Remove by deleting the tool folder
+Update with `overseer-browser update` (or by re-running the same one-liner);
+see [Updates](updates.md) for the anonymous daily update check, its opt-outs
+and rollback. `update` keeps the release it replaces in `<install>/previous`
+for `overseer-browser update --rollback` until the new version completes its
+first successful command (or after 7 days). The next install sweeps temp and
+staging leftovers of an interrupted run, and macOS/Linux installers prune
+runtime trees nothing uses any more once their files are older than 30 days
+(see the source install below); [PRIVACY.md](../PRIVACY.md) lists every local
+write with its lifetime. Remove by deleting the tool folder
 (`~/.overseer-browser` or `%LOCALAPPDATA%\OverSeerBrowser`), the
 `overseer-browser` shim in your bin folder, and the native host entries the
 installer printed; then remove the extension from `chrome://extensions`.
@@ -114,9 +112,11 @@ npm ci --prefix extension && npm run build --prefix extension
 
 The script registers the native host and CLI for Chrome, Chromium, Brave and
 Edge. After `git pull --ff-only`, rebuild the extension and rerun the installer to update.
-Load the new extension directory printed by the installer; the current and recent
-runtime trees are kept, and unreferenced copies older than 30 days are pruned by
-the next install.
+Load the new extension directory printed by the installer. Runtime trees still
+named by a launcher, native-messaging manifest, browser profile (a folder Chrome
+loads unpacked) or `OVERSEER_BROWSER_RUNTIME`/`OVERSEER_BROWSER_EXTENSION` are
+kept, as are symlinked trees; a later install prunes other copies once their
+files are older than 30 days, counted from the last install that found them in use.
 
 ### Windows from source (experimental)
 

@@ -333,8 +333,21 @@ class RuntimePruningReferenceTests(unittest.TestCase):
             self.assertTrue(override_named.is_dir(),
                             'an aged runtime named by the OVERSEER_BROWSER_RUNTIME directory was pruned')
 
+            # A tree in use at this install is recorded, so a host or browser still running from
+            # it is not pulled out from under it for 30 days after it is superseded. The trees'
+            # own timestamps are left alone.
+            ledger_path = app / 'runtimes-last-used.json'
+            self.assertEqual(ledger_path.stat().st_mode & 0o777, 0o600)
+            ledger = json.loads(ledger_path.read_text())
+            for tree in (launcher_named, manifest_named, override_named):
+                self.assertGreater(ledger[tree.name], old_stamp + 29 * 24 * 60 * 60)
+                self.assertLess(tree.stat().st_mtime, old_stamp + 60)
+            self.assertNotIn(unreferenced.name, ledger)
+            ledger[launcher_named.name] = old_stamp  # ...and 30 days pass for this one only
+            ledger_path.write_text(json.dumps(ledger))
+
             # An override may instead name a file whose text names the runtime; the runtime the
-            # install just stopped naming becomes ordinary aged debris on the next run.
+            # install stopped naming 30 days ago becomes ordinary aged debris on the next run.
             file_named = aged_runtime('runtime-filenamed')
             still_unreferenced = aged_runtime('runtime-unreferenced2')
             override_file = home / 'runtime-override'
@@ -348,11 +361,99 @@ class RuntimePruningReferenceTests(unittest.TestCase):
                              'an aged runtime that nothing references was not pruned')
             self.assertFalse(launcher_named.exists(),
                              'a runtime no launcher names any more must not stay protected')
+            # The install rewrote the manifest, so nothing names this tree now; it was in use
+            # at the previous install, so it survives the 30 days after that.
+            self.assertTrue(manifest_named.is_dir(),
+                            'a runtime in use at the previous install was pruned within 30 days')
+            self.assertNotIn(str(manifest_named), chrome_manifest_path(script, home).read_text())
+            self.assertFalse(list(app.glob('.publish-*')))
 
     def test_macos_keeps_referenced_aged_runtime(self):
         self.exercise('manage-macos.sh')
 
     def test_linux_keeps_referenced_aged_runtime(self):
+        self.exercise('install-linux.sh')
+
+
+class RuntimePruningSafetyTests(unittest.TestCase):
+    """Browser-loaded, extension-override and symlinked runtime trees are never pruned."""
+
+    def exercise(self, script):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            root, built, env, home, app = prepare_install(script, base)
+            runtimes = app / 'runtimes'
+            old_stamp = time.time() - 31 * 24 * 60 * 60
+
+            def age_tree(tree):
+                for entry in (tree, *tree.rglob('*')):
+                    os.utime(entry, (old_stamp, old_stamp), follow_symlinks=False)
+
+            def aged_runtime(name):
+                tree = runtimes / name
+                (tree / 'extension').mkdir(parents=True)
+                (tree / 'extension/manifest.json').write_text('{}')
+                age_tree(tree)
+                return tree
+
+            # Everyday Chrome loaded the extension unpacked from a runtime tree, as the
+            # installer's own "Load unpacked" hint tells a source install to do.
+            browser_loaded = aged_runtime('runtime-browserloaded')
+            profile = home / ('Library/Application Support/Google/Chrome/Profile 1' if 'macos' in script
+                              else 'config/google-chrome/Profile 1')
+            profile.mkdir(parents=True)
+            (profile / 'Secure Preferences').write_text(json.dumps({'extensions': {'settings': {
+                'iabfdeokmilpklblkgccpjlekchfjcno': {'location': 4,
+                                                     'path': str(browser_loaded / 'extension')}}}}))
+            env_named = aged_runtime('runtime-envnamed')
+            # A tree that holds a symlink, and a runtime name that is itself a symlink.
+            linked = aged_runtime('runtime-haslink')
+            (linked / 'extension/link').symlink_to(base)
+            age_tree(linked)
+            outside = base / 'outside-runtime'
+            (outside / 'cli').mkdir(parents=True)
+            age_tree(outside)
+            (runtimes / 'runtime-symlinked').symlink_to(outside, target_is_directory=True)
+            unreferenced = aged_runtime('runtime-unreferenced')
+
+            result = run_install(script, root, base,
+                                 {**env, 'OVERSEER_BROWSER_EXTENSION': str(env_named / 'extension')})
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertFalse(unreferenced.exists(), 'an aged unreferenced runtime was not pruned')
+            self.assertTrue((browser_loaded / 'extension/manifest.json').is_file(),
+                            'the runtime an everyday browser loads unpacked was pruned')
+            self.assertTrue(env_named.is_dir(), 'the OVERSEER_BROWSER_EXTENSION runtime was pruned')
+            self.assertTrue((linked / 'extension/link').is_symlink(), 'a tree holding a symlink was pruned')
+            self.assertTrue((runtimes / 'runtime-symlinked').is_symlink(), 'a symlinked runtime was removed')
+            self.assertTrue((outside / 'cli').is_dir(), 'a symlinked runtime target was touched')
+            self.assertTrue(base.is_dir())
+
+    def test_macos_never_prunes_loaded_or_symlinked_runtimes(self):
+        self.exercise('manage-macos.sh')
+
+    def test_linux_never_prunes_loaded_or_symlinked_runtimes(self):
+        self.exercise('install-linux.sh')
+
+
+class RuntimePruningFailureTests(unittest.TestCase):
+    """A pruning failure is reported and never fails the install."""
+
+    def exercise(self, script):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            root, built, env, home, app = prepare_install(script, base)
+            text = (root / 'scripts' / script).read_text()
+            marker = "root, current, *references = sys.argv[1:]\n"
+            self.assertEqual(text.count(marker), 1)
+            (root / 'scripts' / script).write_text(text.replace(marker, marker + "raise SystemExit(7)\n"))
+            result = run_install(script, root, base, env)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn('old runtime copies were not pruned this time', result.stderr)
+
+    def test_macos_prune_failure_does_not_fail_install(self):
+        self.exercise('manage-macos.sh')
+
+    def test_linux_prune_failure_does_not_fail_install(self):
         self.exercise('install-linux.sh')
 
 

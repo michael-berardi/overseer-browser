@@ -9,7 +9,6 @@ from __future__ import annotations
 import hashlib
 import os
 from pathlib import Path
-import shlex
 import subprocess
 import sys
 import tarfile
@@ -77,7 +76,7 @@ class InstallerRetentionTests(unittest.TestCase):
         self.assertTrue(unrelated.is_dir(), "unrelated temp folders are never swept")
 
     def test_stale_install_staging_and_platform_debris_is_swept(self):
-        for directory in ("releases/release-0.10.18.tmp", "extension.tmp", "rollback/.restoring"):
+        for directory in ("releases/release-0.10.18.tmp", "extension.tmp"):
             path = self.tool_home / directory
             path.mkdir(parents=True)
             (path / "partial").write_text("half staged")
@@ -99,7 +98,7 @@ class InstallerRetentionTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertFalse(stage.exists())
         self.assertFalse(published.exists())
-        self.assertFalse((self.tool_home / "rollback" / ".restoring").exists())
+        self.assertFalse((self.tool_home / "extension.tmp").exists())
         self.assertFalse((self.tool_home / "releases" / "release-0.10.18.tmp").exists())
         self.assertIn("Removed stale runtime staging folder", result.stdout)
         self.assertIn("Removed stale publish temp file", result.stdout)
@@ -125,74 +124,59 @@ class InstallerRetentionTests(unittest.TestCase):
                 'chmod 700 "$OVERSEER_BROWSER_BIN_DIR/overseer-browser"\n')
         return source
 
-    def retained_previous(self) -> Path:
-        """What an update leaves behind: the release it displaced, kept for --rollback."""
+    def updater_rollback_copy(self) -> Path:
+        """What `overseer-browser update` leaves behind: cli/updates.py keep_previous()."""
         tree = self.release_tree("0.11.1", "0.11.1", "displaced")
         (tree / "marker").write_text("displaced release")
-        previous = self.tool_home / "rollback" / "previous"
+        previous = self.tool_home / "previous" / "release-0.11.1"
         previous.parent.mkdir(parents=True)
         tree.rename(previous)
-        (self.tool_home / "releases").mkdir(parents=True, exist_ok=True)
         return previous
 
-    def test_successful_install_deletes_the_retained_previous_release(self):
-        previous = self.retained_previous()
+    def test_install_keeps_only_the_new_release_and_leaves_the_update_rollback_copy(self):
+        # The rollback copy belongs to the CLI updater, which drops it after the new
+        # version's first successful command or after 7 days; the installer never touches it.
+        previous = self.updater_rollback_copy()
+        older = self.tool_home / "releases" / "release-0.10.18"
+        (older / "cli").mkdir(parents=True)
         source = self.release_tree("0.11.2", "0.11.2", "downloaded")
         result = self.run_functions(
             f'finalize_install "{self.tool_home}/releases/release-0.11.2" 0.11.2 "{source}"')
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertFalse(previous.exists(), "a successful run must not keep the previous release")
-        self.assertIn("Removed the retained previous release", result.stdout)
+        self.assertFalse(older.exists(), "an older release folder must not be left behind")
+        self.assertEqual((previous / "marker").read_text(), "displaced release")
         self.assertFalse((self.tool_home / "rollback").exists())
+        self.assertFalse((self.tool_home / "extension.tmp").exists())
         self.assertTrue((self.tool_home / "releases" / "release-0.11.2" / "cli" / "main.py").is_file())
         self.assertTrue((self.bin_dir / "overseer-browser").is_file())
 
-    def test_failed_install_keeps_the_retained_previous_release_for_rollback(self):
-        previous = self.retained_previous()
-        # The staged CLI reports a version other than the release being installed:
-        # that check failing is exactly what keeps the rollback copy alive.
+    def test_failed_install_keeps_the_update_rollback_copy(self):
+        previous = self.updater_rollback_copy()
+        # The staged CLI reports a version other than the release being installed.
         source = self.release_tree("0.11.2", "0.9.9", "downloaded")
         result = self.run_functions(
             f'finalize_install "{self.tool_home}/releases/release-0.11.2" 0.11.2 "{source}"')
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("the installed CLI reports", result.stderr)
-        self.assertTrue(previous.exists(), "a failed run must keep the rollback copy")
         self.assertEqual((previous / "marker").read_text(), "displaced release")
-        restore = self.run_functions("rollback_install")
-        self.assertEqual(restore.returncode, 0, restore.stdout + restore.stderr)
-        self.assertIn("Rolled back to OverSeer Browser 0.11.1", restore.stdout)
+
+    def test_updater_rollback_copy_is_bounded(self):
+        # cli/updates.py, not the installer, bounds the copy: gone after a newer version's
+        # first successful command, or once it is older than 7 days.
+        sys.path.insert(0, str(REPO))
+        try:
+            from cli import updates
+        finally:
+            sys.path.remove(str(REPO))
+        env = {"OVERSEER_BROWSER_HOME": str(self.tool_home)}
+        previous = self.updater_rollback_copy()
+        self.assertFalse(updates.prune_previous("0.11.2", env, used=False))
+        self.assertTrue(updates.prune_previous("0.11.2", env, used=True))
         self.assertFalse(previous.exists())
-        self.assertTrue((self.tool_home / "releases" / "release-0.11.1" / "cli" / "main.py").is_file())
-
-    def test_rollback_cleanup_failure_does_not_fail_a_successful_install(self):
-        previous = self.retained_previous()
-        source = self.release_tree("0.11.2", "0.11.2", "downloaded")
-        rel = f"{self.tool_home}/releases/release-0.11.2"
-        # Simulate an undeletable rollback copy (locked file, permission change,
-        # external process) without touching anything else the installer removes.
-        body = (
-            f'rm() {{ [ "${{2:-}}" = {shlex.quote(str(previous))} ] && return 1; command rm "$@"; }}; '
-            f'finalize_install {shlex.quote(rel)} 0.11.2 {shlex.quote(str(source))}'
-        )
-        result = self.run_functions(body)
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("Version check passed", result.stdout)
-        self.assertIn("could not be deleted", result.stdout)
-        self.assertTrue(previous.exists(), "the failed deletion must leave the copy for manual cleanup")
-        self.assertTrue((self.tool_home / "releases" / "release-0.11.2" / "cli" / "main.py").is_file())
-        self.assertTrue((self.bin_dir / "overseer-browser").is_file())
-
-    def test_a_symlinked_previous_release_is_never_deleted(self):
-        elsewhere = self.base / "elsewhere"
-        elsewhere.mkdir()
-        (elsewhere / "keep").write_text("not ours")
-        rollback = self.tool_home / "rollback"
-        rollback.mkdir(parents=True)
-        (rollback / "previous").symlink_to(elsewhere, target_is_directory=True)
-        result = self.run_functions("drop_previous_release")
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("Left the unexpected symlink", result.stdout)
-        self.assertTrue((elsewhere / "keep").is_file())
+        previous = self.updater_rollback_copy()
+        later = time.time() + updates.KEEP_PREVIOUS + 60
+        self.assertTrue(updates.prune_previous("0.11.0", env, used=False, now=later))
+        self.assertFalse(previous.exists())
 
 
 class OneStepInstallerRetentionTests(unittest.TestCase):
@@ -256,10 +240,12 @@ class OneStepInstallerRetentionTests(unittest.TestCase):
         digest = hashlib.sha256(archive.read_bytes()).hexdigest()
         (self.dist / "SHA256SUMS").write_text(f"{digest}  overseer-browser.tar.gz\n")
 
-    def test_install_sweeps_stale_debris_and_drops_the_previous_release(self):
+    def test_install_sweeps_stale_debris_and_keeps_only_the_new_release(self):
         displaced = self.tool_home / "releases" / "release-0.10.18"
         (displaced / "cli").mkdir(parents=True)
         (displaced / "cli" / "main.py").write_text('CLI_VERSION = "0.10.18"\n')
+        rollback = self.tool_home / "previous" / "release-0.10.17"
+        rollback.mkdir(parents=True)  # the CLI updater's copy; it bounds that one itself
         stale_temp = self.tmp / "overseer-browser-install.KILLED"
         (stale_temp / "src").mkdir(parents=True)
         self.age(stale_temp, 24 * 60)
@@ -272,13 +258,11 @@ class OneStepInstallerRetentionTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("Removed stale installer temp folder", result.stdout)
         self.assertIn("Removed stale runtime staging folder", result.stdout)
-        self.assertIn("Previous release staged at", result.stdout)
-        self.assertIn("Removed the retained previous release", result.stdout)
         self.assertFalse(stale_temp.exists())
         self.assertFalse(stale_stage.exists())
-        self.assertFalse((self.tool_home / "rollback" / "previous").exists(),
-                         "a successful install must not leave the previous release behind")
-        self.assertFalse(displaced.exists())
+        self.assertFalse((self.tool_home / "rollback").exists())
+        self.assertTrue(rollback.is_dir(), "the installer must leave the updater's rollback copy alone")
+        self.assertFalse(displaced.exists(), "an installer re-run must not keep the release it replaced")
         self.assertTrue((self.tool_home / "releases" / "release-0.11.2" / "cli" / "main.py").is_file())
         self.assertFalse(list(self.tmp.glob("overseer-browser-install.*")), result.stdout)
         self.assertTrue((self.bin_dir / "overseer-browser").is_file())
@@ -289,7 +273,7 @@ class RetentionDocumentationTests(unittest.TestCase):
         privacy = (REPO / "PRIVACY.md").read_text(encoding="utf-8")
         self.assertIn("## Local writes, lifetimes, and automatic cleanup", privacy)
         for write in ("host.log", "agent-v1/chrome.log", "update-check.json",
-                      "auto-update.log", "rollback/previous",
+                      "auto-update.log", "<install>/previous",
                       "overseer-browser-install.*", "overseer-media-v1-",
                       "overseer-outputs-v1-", "extension.tmp"):
             self.assertIn(write, privacy, write)
@@ -298,17 +282,21 @@ class RetentionDocumentationTests(unittest.TestCase):
                      "~/.local/share/overseer-browser", "Default/Service Worker"):
             self.assertIn(path, privacy, path)
         self.assertNotIn("The extension and native host never make this request", privacy)
+        self.assertNotIn("rollback/previous", privacy)
+        self.assertNotIn("checking_at", privacy)
         self.assertIn("older than 30 days", privacy)
         self.assertNotIn("older runtime trees remain until you delete them", privacy)
         removal = privacy[privacy.index("### Deleting local data"):]
         self.assertIn("~/.local/share/overseer-browser", removal)
         self.assertIn("update cache folder above", removal)
         self.assertIn("### Deleting local data", privacy)
+        self.assertIn("first successful command", privacy)
         updates = " ".join((REPO / "docs" / "updates.md").read_text(encoding="utf-8").split())
-        self.assertIn("a successful update leaves no previous release", updates)
+        self.assertIn("removed after the new version completes its first successful command, or after 7 days", updates)
         self.assertNotIn("must be removed manually", updates)
         install = " ".join((REPO / "docs" / "install.md").read_text(encoding="utf-8").split())
-        self.assertIn("a successful update deletes the copy", install)
+        self.assertIn("first successful command", install)
+        self.assertNotIn("rollback/previous", install)
         self.assertIn("older than 30 days", install)
         self.assertNotIn("old runtime trees are retained", install)
 

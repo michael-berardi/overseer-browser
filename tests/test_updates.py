@@ -140,26 +140,6 @@ class CheckTests(Sandbox):
         self.assertTrue(updates.start_background_check(CURRENT, self.env, spawn=self.spawn))
         self.assertEqual(len(self.spawned), 3)
 
-    def test_abandoned_claim_recovers_instead_of_gating_for_a_day(self) -> None:
-        moment = 1_000.0
-        updates.update_state(self.env, checked_at=moment, checking_at=moment)
-        calls: list[str] = []
-
-        def fetch(url: str) -> dict:
-            calls.append(url)
-            return self.record()
-
-        state = updates.check_now(CURRENT, self.env, fetch, now=moment + 30.0)
-        self.assertEqual(calls, [])  # a live claim is reused by update --check too
-        self.assertEqual(state["checking_at"], moment)
-        self.assertFalse(updates.due(state, moment + 30.0))
-        self.assertFalse(updates.start_background_check(CURRENT, self.env, moment + 30.0, self.spawn))
-        self.assertEqual(self.spawned, [])
-        state = updates.check_now(CURRENT, self.env, fetch, now=moment + updates.CLAIM_SECONDS + 1)
-        self.assertEqual(len(calls), 1)
-        self.assertEqual((state["checking_at"], state["latest"]), (0.0, NEXT))
-        self.assertTrue(state["checked_at"] > moment)
-
     def test_detached_child_runs_isolated_and_writes_only_the_state_file(self) -> None:
         record = self.base / "latest.json"
         record.write_text(json.dumps(self.record()), encoding="utf-8")

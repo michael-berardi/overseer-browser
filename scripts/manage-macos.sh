@@ -118,24 +118,31 @@ prune_stale_staging() {
   find "$APP_SUPPORT" -maxdepth 1 -name '.publish-*' -mmin +60 -exec rm -f {} + 2>/dev/null || true
 }
 
-# Each install stages a full immutable runtime copy. Keep the published copy and
-# any copy still named by a launcher, manifest, or explicit runtime override; prune
-# the rest only when every entry in it is at least 30 days old, so a recent or
-# still-in-use copy survives an interrupted or in-flight rollout.
+# Each install stages a full immutable runtime copy. Keep the published copy, any copy
+# still named by a launcher, manifest, browser profile (an everyday Chrome may load the
+# extension unpacked from a runtime tree) or explicit OVERSEER_BROWSER_RUNTIME /
+# OVERSEER_BROWSER_EXTENSION override, and symlinked trees. runtimes-last-used.json records
+# when each tree was last named, so a copy in use at an install survives 30 days after it is
+# superseded; the rest is pruned once every entry in it is at least 30 days old. Never fails
+# the install.
 prune_old_runtimes() {
   local -a references=(
     "$HOST_PATH" "$CLI_FALLBACK" "$CLI_LAUNCHER" "$RELAY_PATH"
-    "${OVERSEER_BROWSER_RUNTIME:-}" "$MANIFEST" "$TESTING_MANIFEST"
+    "$(cat "$CLI_LAUNCHER_PATH" 2>/dev/null || true)"
+    "${OVERSEER_BROWSER_RUNTIME:-}" "${OVERSEER_BROWSER_EXTENSION:-}" "$MANIFEST" "$TESTING_MANIFEST"
   )
-  local dir
+  local dir prefs
   for dir in "Google/Chrome" "Google/Chrome for Testing" "Chromium" "BraveSoftware/Brave-Browser" "Microsoft Edge"; do
     references+=(
       "$HOME/Library/Application Support/$dir/NativeMessagingHosts/com.paretocybernetics.overseer_browser.json"
       "$HOME/Library/Application Support/$dir/NativeMessagingHosts/$LEGACY_HOST_NAME.json"
     )
+    for prefs in "$HOME/Library/Application Support/$dir"/*/Preferences "$HOME/Library/Application Support/$dir"/*/"Secure Preferences"; do
+      if [ -f "$prefs" ]; then references+=("$prefs"); fi
+    done
   done
-  "$PYTHON" -I - "$APP_SUPPORT/runtimes" "$RUNTIME" "${references[@]}" <<'PYPRUNE'
-import os, re, shutil, sys, time
+  "$PYTHON" -I - "$APP_SUPPORT/runtimes" "$RUNTIME" "${references[@]}" <<'PYPRUNE' ||
+import json, os, re, shutil, sys, tempfile, time
 from pathlib import Path
 
 root, current, *references = sys.argv[1:]
@@ -170,11 +177,26 @@ for reference in references:
         continue
     for match in pattern.finditer(text):
         protect(match.group(0))
-cutoff = time.time() - 30 * 24 * 60 * 60
+now = time.time()
+cutoff = now - 30 * 24 * 60 * 60
+# When each tree was last in use (named at an install); tree mtimes are never changed.
+ledger_path = root.parent / 'runtimes-last-used.json'
+try:
+    ledger = json.loads(ledger_path.read_text(encoding='utf-8'))
+except (OSError, ValueError):
+    ledger = {}
+if not isinstance(ledger, dict):
+    ledger = {}
+seen = {}
 for path in sorted(root.iterdir()):
     if path.is_symlink() or not path.is_dir() or not re.fullmatch(r'runtime-[A-Za-z0-9_-]+', path.name):
         continue
     if os.path.realpath(path) in protected:
+        seen[path.name] = now
+        continue
+    last = ledger.get(path.name)
+    if type(last) in (int, float) and cutoff < last <= now:
+        seen[path.name] = last  # in use within the last 30 days
         continue
     try:
         entries = [path, *path.rglob('*')]
@@ -186,7 +208,16 @@ for path in sorted(root.iterdir()):
         print(f'Pruned old runtime copy: {path}')
     except OSError as exc:
         print(f'overseer-browser: could not prune old runtime copy {path}: {exc}', file=sys.stderr)
+try:
+    fd, staged = tempfile.mkstemp(prefix='.publish-', dir=str(root.parent))
+    with os.fdopen(fd, 'w', encoding='utf-8') as handle:
+        json.dump(seen, handle, sort_keys=True)
+    os.chmod(staged, 0o600)
+    os.replace(staged, ledger_path)
+except OSError as exc:
+    print(f'overseer-browser: could not record runtime use: {exc}', file=sys.stderr)
 PYPRUNE
+    say "Note: old runtime copies were not pruned this time; the install is unaffected" >&2
 }
 
 stage_runtime() {

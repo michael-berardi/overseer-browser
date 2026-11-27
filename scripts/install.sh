@@ -1,15 +1,15 @@
 #!/bin/sh
 # OverSeer Browser one-step installer for macOS and Linux:
-#   curl -fsSL https://github.com/michael-berardi/overseer-browser/releases/latest/download/install.sh | sh
+#   curl -fsSL https://github.com/example-user/overseer-browser/releases/latest/download/install.sh | sh
 # Downloads the release bundle (source plus the ALREADY BUILT extension, so no Node is needed),
 # checks its SHA-256 before anything is installed, unpacks it into a versioned folder under
 # $OVERSEER_BROWSER_HOME (default ~/.overseer-browser), then runs the repo's own platform installer
 # (scripts/manage-macos.sh on macOS, scripts/install-linux.sh on Linux) from there. That installer
 # registers the per-user native host and puts `overseer-browser` in $OVERSEER_BROWSER_BIN_DIR
 # (default ~/.local/bin). No sudo, no shell-profile edits; re-running upgrades in place.
-# Local writes are disposable: the download temp folder is removed on exit, leftovers of a killed
-# run are swept by the next install, and the retained previous release is deleted once the newly
-# installed release passes its start check.
+# Local writes are disposable: the download temp folder is removed on exit, and temp or staging
+# leftovers of a killed run are swept by the next install. `overseer-browser update` keeps its own
+# rollback copy in $OVERSEER_BROWSER_HOME/previous (cli/updates.py); this script never touches it.
 # Environment: OVERSEER_BROWSER_HOME, OVERSEER_BROWSER_BIN_DIR, OVERSEER_BROWSER_VERSION (pin, e.g. 0.10.3),
 # OVERSEER_BROWSER_RELEASE_BASE (override the download base URL, used by tests; file:// works).
 set -eu
@@ -25,13 +25,6 @@ else BASE="https://github.com/$REPO/releases/latest/download"; fi
 
 say() { printf '%s\n' "$*"; }
 die() { printf 'overseer-browser install: %s\n' "$*" >&2; exit 1; }
-
-MODE="${1:-install}"
-case "$MODE" in
-  install|--install) MODE=install ;;
-  rollback|--rollback) MODE=rollback ;;
-  *) printf 'usage: install.sh [install|--rollback]\n' >&2; exit 2 ;;
-esac
 
 # Retention bounds for this installer's own local writes. Only debris older
 # than these bounds is swept, so a concurrent install is never disturbed.
@@ -51,7 +44,7 @@ sweep_install_debris() {
     older_than "$stale" "$INSTALL_TEMP_MAX_AGE_MINUTES" || continue
     if rm -rf "$stale" 2>/dev/null; then say "Removed stale installer temp folder: $stale"; fi
   done
-  for stale in "$HOME_DIR/extension.tmp" "$HOME_DIR"/releases/*.tmp "$HOME_DIR/rollback/.restoring"; do
+  for stale in "$HOME_DIR/extension.tmp" "$HOME_DIR"/releases/*.tmp; do
     [ -e "$stale" ] && [ ! -L "$stale" ] || continue
     older_than "$stale" "$STAGING_MAX_AGE_MINUTES" || continue
     if rm -rf "$stale" 2>/dev/null; then say "Removed stale install staging folder: $stale"; fi
@@ -72,37 +65,7 @@ sweep_install_debris() {
   done
 }
 
-# The retained previous release is a recovery copy for a failed update, not
-# durable state, so it goes as soon as the new release runs.
-drop_previous_release() {
-  [ -e "$HOME_DIR/rollback/previous" ] || return 0
-  if [ -L "$HOME_DIR/rollback/previous" ]; then
-    say "Left the unexpected symlink at $HOME_DIR/rollback/previous alone; remove it manually"
-    return 0
-  fi
-  # Cleanup is not part of the install's success criteria: the new release has
-  # already passed its version and start checks, so a stuck copy is only debris.
-  if rm -rf "$HOME_DIR/rollback/previous"; then
-    rmdir "$HOME_DIR/rollback" 2>/dev/null || true
-    say "Removed the retained previous release: it is kept only until an update proves it starts"
-  else
-    say "Note: the new release installed, but the retained previous release at $HOME_DIR/rollback/previous could not be deleted; remove it manually"
-  fi
-}
-
-# Keep one previous release for `overseer-browser update --rollback`.
-preserve_previous() {
-  for d in "$HOME_DIR"/releases/release-*; do
-    [ -d "$d" ] || continue
-    mkdir -p "$HOME_DIR/rollback" || die "cannot create the rollback directory"
-    rm -rf "$HOME_DIR/rollback/previous"
-    mv "$d" "$HOME_DIR/rollback/previous" || die "cannot keep the previous release for rollback"
-    say "Previous release staged at $HOME_DIR/rollback/previous for: overseer-browser update --rollback (removed once this update verifies)"
-    break
-  done
-}
-
-# Atomically stage a verified tree, register it, and point the stable paths at it.
+# Stage the verified tree, register it, and point the stable paths at it.
 finalize_install() {
   rel="$1"; version="$2"; source_dir="$3"
   say "Installing OverSeer Browser $version into $rel..."
@@ -130,7 +93,7 @@ finalize_install() {
   rm -rf "$HOME_DIR/extension"
   mv "$HOME_DIR/extension.tmp" "$HOME_DIR/extension"
 
-  # Keep only the release that is installed now (the rollback copy lives elsewhere).
+  # Keep only the release that is installed now (an update's rollback copy lives in $HOME_DIR/previous).
   for d in "$HOME_DIR"/releases/release-*; do
     [ -d "$d" ] || continue
     [ "$d" = "$rel" ] || rm -rf "$d"
@@ -149,8 +112,6 @@ finalize_install() {
   say "Version check passed: $GOT"
   say "Local health (the extension is not loaded in a browser yet, so 'ok' stays false until it is):"
   "$CLI" health || true
-  # The new release starts, so the recovery copy is no longer needed.
-  drop_previous_release
 
   case ":$PATH:" in *":$BIN_DIR:"*) ;; *) say "Add $BIN_DIR to your PATH:  export PATH=\"$BIN_DIR:\$PATH\"" ;; esac
   say ""
@@ -159,18 +120,8 @@ finalize_install() {
   say "  $HOME_DIR/extension"
   say "The dedicated agent browser loads the extension by itself; the manual step is for your everyday Chrome."
   say "Next: overseer-browser sessions start"
-  say "Remove by deleting $HOME_DIR and $CLI (plus the native host entries the platform installer printed above)."
-}
-
-rollback_install() {
-  previous="$HOME_DIR/rollback/previous"
-  [ -f "$previous/cli/main.py" ] || die "no previous release is kept; nothing to roll back (a successful update deletes the copy)"
-  version=$(sed -n 's/^CLI_VERSION = "\([^"]*\)".*/\1/p' "$previous/cli/main.py" | head -n 1)
-  [ -n "$version" ] || die "the kept release has no readable CLI version"
-  [ -d "$previous/extension/.output/chrome-mv3" ] || die "the kept release has no built extension"
-  mv "$previous" "$HOME_DIR/rollback/.restoring" || die "cannot stage the rollback"
-  finalize_install "$HOME_DIR/releases/release-$version" "$version" "$HOME_DIR/rollback/.restoring"
-  say "Rolled back to OverSeer Browser $version."
+  say "Update later by re-running this installer. Remove by deleting $HOME_DIR and $CLI"
+  say "(plus the native host entries the platform installer printed above)."
 }
 
 main() {
@@ -225,15 +176,11 @@ main() {
   [ -n "$VERSION" ] || die "cannot read the release version from cli/main.py"
   REL="$HOME_DIR/releases/release-$VERSION"
 
-  preserve_previous
   finalize_install "$REL" "$VERSION" "$TMP/src"
 }
 
 if [ "${OSR_INSTALLER_LIB:-}" = 1 ]; then
   : # sourced by tests: functions only, no install or network
 else
-  case "$MODE" in
-    install) main ;;
-    rollback) rollback_install ;;
-  esac
+  main "$@"
 fi

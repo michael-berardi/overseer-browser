@@ -48,9 +48,7 @@ the CLI in `~/.local/bin`. Add that directory to PATH if needed. It does not
 open a browser.
 
 See [installation and updates](docs/install.md) for source builds, Windows,
-uninstalling, and loading the extension to lend everyday tabs. See
-[Updates](docs/updates.md) for the anonymous release check, opt-outs, and
-rollback.
+uninstalling, and loading the extension to lend everyday tabs.
 
 ## Updates
 
@@ -86,8 +84,9 @@ agent. Video recording requires a fresh approval click in the extension popup.
 ## Privacy
 
 - Nothing is sent to us: no account, telemetry, analytics or cloud control plane.
-- Network: one anonymous HTTPS GET a day to GitHub's public release record
-  (off: `OVERSEER_BROWSER_NO_UPDATE_CHECK=1`); install and update fetch release files.
+- Network: a daily update check, one anonymous HTTPS GET of GitHub's public
+  release record (off: `OVERSEER_BROWSER_NO_UPDATE_CHECK=1`); install and
+  update fetch release files.
 - Stored locally: a token, bounded `0600` logs, session and update state, and
   evidence only when you ask. Details in [PRIVACY.md](PRIVACY.md).
 
