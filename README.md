@@ -48,21 +48,15 @@ the CLI in `~/.local/bin`. Add that directory to PATH if needed. It does not
 open a browser.
 
 See [installation and updates](docs/install.md) for source builds, Windows,
-uninstalling, and loading the extension to lend everyday tabs.
+uninstalling, and loading the extension to lend everyday tabs. See
+[Updates](docs/updates.md) for the anonymous release check, opt-outs, and
+rollback.
 
 ## Updates
 
 The CLI (in a terminal) and the extension popup tell you when a newer release
 exists. `overseer-browser update` installs it after checking its SHA-256;
 automatic updates are off until you turn them on. See [Updates](docs/updates.md).
-
-## Privacy
-
-- Nothing is sent to us: no account, telemetry, analytics or cloud control plane.
-- Network: one anonymous update check a day to GitHub's public release record
-  (off: `OVERSEER_BROWSER_NO_UPDATE_CHECK=1`); install and update fetch release files.
-- Stored locally: a token, bounded `0600` logs, session and update state, and
-  evidence only when you ask. Details in [PRIVACY.md](PRIVACY.md).
 
 ## First session
 
@@ -89,6 +83,14 @@ Use refs returned by `observe` for actions such as `click osr-12`.
 Use a distinct `--session KEY` or `OVERSEER_BROWSER_SESSION` for each concurrent
 agent. Video recording requires a fresh approval click in the extension popup.
 
+## Privacy
+
+- Nothing is sent to us: no account, telemetry, analytics or cloud control plane.
+- Network: one anonymous HTTPS GET a day to GitHub's public release record
+  (off: `OVERSEER_BROWSER_NO_UPDATE_CHECK=1`); install and update fetch release files.
+- Stored locally: a token, bounded `0600` logs, session and update state, and
+  evidence only when you ask. Details in [PRIVACY.md](PRIVACY.md).
+
 ## Reference
 
 - [Usage guide](docs/usage.md): parallel sessions, tab lending, mobile-width
@@ -96,6 +98,7 @@ agent. Video recording requires a fresh approval click in the extension popup.
 - [CLI reference](docs/cli.md), or `overseer-browser help`.
 - [Protocol](PROTOCOL.md) and [read-only DOM queries](DOM_QUERIES.md).
 - [Privacy](PRIVACY.md) and [security](SECURITY.md): local data flow and trust boundaries.
+- [Updates](docs/updates.md): anonymous daily check, opt-outs, install and rollback.
 - [Contributing](CONTRIBUTING.md) and [changelog](CHANGELOG.md).
 
 ## Development

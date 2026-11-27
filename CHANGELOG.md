@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.11.3
+
+- Privacy documentation now inventories every local write with its path, contents, lifetime and cleanup; README's Privacy section stays short and points to PRIVACY.md for the details.
+- Installer retention is bounded: a successful update deletes `<install>/rollback/previous` after the new release passes its version and start check, a failed one keeps it for `update --rollback`, and the next install sweeps stale temp, staging and publish debris.
+- macOS and Linux installers prune unreferenced `runtimes/` trees whose files are all older than 30 days. The published tree, recent trees, symlinks, and trees named by a launcher, native-messaging manifest or `OVERSEER_BROWSER_RUNTIME` override are kept; cleanup failures are reported without failing the install.
+- The daily update check now records its start in the same private state file before the HTTPS GET. A live claim prevents a second request (including from `update --check`) and an abandoned claim recovers after 60 seconds instead of suppressing checks for a day; completed checks still gate for 24 hours. The anonymous request, opt-outs, popup UI, checksum verification and rollback are unchanged.
+- Regression tests cover the retention and pruning rules, override-named runtime protection, and the claim recovery path.
+
 ## 0.11.0
 
 - Update notices: after a command in a terminal, the CLI says when a newer stable release exists (stderr, at most once a day per version; never in JSON, CI, agent or non-interactive runs). The extension popup has an Updates section with Install Update, Skip This Version, Remind Me Later, both settings, the version and Check Now.

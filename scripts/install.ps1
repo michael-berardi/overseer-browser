@@ -1,6 +1,6 @@
 #Requires -Version 5.1
 # OverSeer Browser one-step installer for Windows (PowerShell 5.1 and 7):
-#   irm https://github.com/example-user/overseer-browser/releases/latest/download/install.ps1 | iex
+#   irm https://github.com/michael-berardi/overseer-browser/releases/latest/download/install.ps1 | iex
 # Downloads the release bundle (source plus the ALREADY BUILT extension, so no Node is needed),
 # checks its SHA-256 before anything is installed, unpacks it into a versioned folder under
 # $env:OVERSEER_BROWSER_HOME (default %LOCALAPPDATA%\OverSeerBrowser), then runs the repo's own
@@ -75,6 +75,14 @@ function Install-OverSeerBrowser {
     if (-not $python) { throw 'overseer-browser install: Python 3.9 or newer is required and was not found; install it with: sudo apt-get install -y python3 (or your platform equivalent, then run this again)' }
     if (-not (Get-Command bash -ErrorAction SilentlyContinue)) { throw 'overseer-browser install: bash is required for the POSIX platform installer; install it, then run this again.' }
   }
+
+  # Retention: this run's temp folder is removed in the finally block below, so only a run that was
+  # killed outright leaves one behind. Sweep those stale copies; a live install's folder is far newer.
+  Get-ChildItem -LiteralPath ([IO.Path]::GetTempPath()) -Directory -Filter 'overseer-browser-install*' -ErrorAction SilentlyContinue |
+    Where-Object { $_.LastWriteTimeUtc -lt (Get-Date).ToUniversalTime().AddHours(-6) } |
+    ForEach-Object {
+      try { Remove-Item -Recurse -Force -LiteralPath $_.FullName -ErrorAction Stop; Write-Host "Removed stale installer temp folder: $($_.FullName)" } catch { }
+    }
 
   $tmp = Join-Path ([IO.Path]::GetTempPath()) ('overseer-browser-install-' + [guid]::NewGuid().ToString('N'))
   New-Item -ItemType Directory -Path $tmp | Out-Null

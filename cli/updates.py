@@ -29,6 +29,7 @@ TOOL = "overseer-browser"
 RELEASE_REPO = "example-user/overseer-browser"
 USER_AGENT = "overseer-browser-update-check"
 INTERVAL = 24 * 60 * 60
+CLAIM_SECONDS = 60.0  # a killed check must not suppress later checks for a day
 TIMEOUT = 4.0
 KEEP_PREVIOUS = 7 * 24 * 60 * 60
 INSTALL_STALE = 60 * 60
@@ -50,7 +51,7 @@ SLUG_RE = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
 POPUP_ACTIONS = ("status", "check", "install", "skip", "auto_on", "auto_off", "checks_on", "checks_off")
 
 DEFAULTS: dict[str, Any] = {
-    "checked_at": 0.0, "latest": "", "notes": "", "error": "", "skip": "",
+    "checked_at": 0.0, "checking_at": 0.0, "spawned_at": 0.0, "latest": "", "notes": "", "error": "", "skip": "",
     "auto": False, "asked": False, "checks": True, "shown": "", "shown_at": 0.0,
     "installing": "", "installing_at": 0.0, "auto_error": "",
 }
@@ -194,12 +195,30 @@ def fetch_latest(url: str) -> dict[str, Any]:
     return record
 
 
+def _live_claim(state: dict[str, Any], moment: float) -> bool:
+    """True only while a check that started just now still owns the single request."""
+    started = float(state.get("checking_at") or 0.0)
+    return bool(started and 0 <= moment - started < CLAIM_SECONDS)
+
+
 def check_now(current: str, env: dict[str, str] | None = None,
               fetch: Callable[[str], dict[str, Any]] | None = None,
-              now: float | None = None) -> dict[str, Any]:
-    """Fetch the latest release record once and record the outcome, or its cause, in the state file."""
+              now: float | None = None,
+              force: bool = False) -> dict[str, Any]:
+    """Fetch the latest release record once and record the outcome, or its cause, in the state file.
+
+    A live claim is reused rather than sending a second GET (including from
+    ``update --check``); the detached child passes ``force`` to finish the
+    claim its parent created. An abandoned claim expires after 60 seconds.
+    """
     environ = _env(env)
-    changes: dict[str, Any] = {"checked_at": time.time() if now is None else now,
+    moment = time.time() if now is None else now
+    state = load_state(environ)
+    if not force and (_live_claim(state, moment) or
+                      (state.get("spawned_at") and 0 <= moment - state["spawned_at"] < CLAIM_SECONDS)):
+        return state  # a detached child already owns this check
+    update_state(environ, checked_at=moment, checking_at=moment, spawned_at=0.0)  # claim before the GET
+    changes: dict[str, Any] = {"checked_at": moment, "checking_at": 0.0,
                                "latest": "", "notes": "", "error": ""}
     try:
         repo = _repo(environ)
@@ -215,12 +234,18 @@ def check_now(current: str, env: dict[str, str] | None = None,
         changes["error"] = _cause(exc)
         if isinstance(exc, urllib.error.HTTPError):
             exc.close()
-    return update_state(environ, **changes)
+    return update_state(environ, **changes)  # clears the claim even on failure
 
 
 def due(state: dict[str, Any], now: float | None = None) -> bool:
-    """Never checked, checked 24 h ago, or the clock moved back."""
-    elapsed = (time.time() if now is None else now) - state["checked_at"]
+    """Never checked, a stale claim, checked 24 h ago, or the clock moved back."""
+    moment = time.time() if now is None else now
+    if _live_claim(state, moment):
+        return False
+    if state.get("checking_at"):
+        return True  # abandoned in-flight check: retry rather than gate for a day
+    # A spawned child that never reached its GET is still covered by the daily slot claim.
+    elapsed = moment - state["checked_at"]
     return not state["checked_at"] or not 0 <= elapsed < INTERVAL
 
 
@@ -258,7 +283,7 @@ def start_background_check(current: str, env: dict[str, str] | None = None, now:
     moment = time.time() if now is None else now
     if not force and not due(load_state(environ), moment):
         return False
-    update_state(environ, checked_at=moment)  # parallel commands see the claim and do not start another
+    update_state(environ, checked_at=moment, checking_at=0.0, spawned_at=moment)  # parallel commands see the claim
     (spawn or _spawn)(["--background", current], environ)
     return True
 
@@ -307,13 +332,16 @@ def emit_notice(lines: list[str], stream: Any = None, env: dict[str, str] | None
 def report(current: str, state: dict[str, Any], env: dict[str, str] | None = None) -> dict[str, Any]:
     latest = state["latest"]
     available = is_newer(latest, current)
-    return {
+    result: dict[str, Any] = {
         "state": "failed" if state["error"] else "available" if available else "current",
         "current": current, "latest": latest or None, "error": state["error"],
         "skipped": available and state["skip"] == latest, "auto": state["auto"],
         "command": update_command(current, env) if available else "",
         "notes": release_notes(state["notes"]) if available else "",
     }
+    if _live_claim(state, time.time()):
+        result["in_progress"] = True
+    return result
 
 
 def release_notes(notes: str, lines: int = 6, limit: int = 500) -> str:
@@ -559,7 +587,7 @@ def background(current: str, install_version: str = "", env: dict[str, str] | No
         os.nice(10)
     environ = _env(env)
     if not install_version:
-        state = check_now(current, environ)
+        state = check_now(current, environ, force=True)  # finish the claim the parent created
         if not (state["auto"] and is_newer(state["latest"], current) and state["skip"] != state["latest"]):
             return 0
         install_version = state["latest"]

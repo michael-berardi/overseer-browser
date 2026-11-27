@@ -53,13 +53,13 @@ describe('popup connection status accessibility', () => {
 
 describe('popup updates section', () => {
   const status = {
-    available: true, current: '0.11.0', latest: '0.12.0', notes: 'New release.', installing: false,
+    available: true, current: '0.11.3', latest: '0.12.0', notes: 'New release.', installing: false,
     installed: false, auto: false, checks: true, error: '', command: 'overseer-browser update',
   };
 
   it('offers Install, Skip and Later only for a newer release reported by the host', () => {
     expect(updateBannerPresentation(status)).toEqual({
-      message: 'OverSeer Browser 0.12.0 is available — you have 0.11.0.',
+      message: 'OverSeer Browser 0.12.0 is available — you have 0.11.3.',
       notes: 'New release.',
       actions: true,
     });

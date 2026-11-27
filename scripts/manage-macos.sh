@@ -111,8 +111,87 @@ finally:
  if os.path.exists(t): os.unlink(t)' "$1" "${2:-600}"
 }
 
+# Retention: a run killed before its EXIT trap leaves staging and publish debris;
+# sweep only what is older than an hour so a concurrent install is never disturbed.
+prune_stale_staging() {
+  find "$APP_SUPPORT/runtimes" -maxdepth 1 -name '.stage-*' -mmin +60 -exec rm -rf {} + 2>/dev/null || true
+  find "$APP_SUPPORT" -maxdepth 1 -name '.publish-*' -mmin +60 -exec rm -f {} + 2>/dev/null || true
+}
+
+# Each install stages a full immutable runtime copy. Keep the published copy and
+# any copy still named by a launcher, manifest, or explicit runtime override; prune
+# the rest only when every entry in it is at least 30 days old, so a recent or
+# still-in-use copy survives an interrupted or in-flight rollout.
+prune_old_runtimes() {
+  local -a references=(
+    "$HOST_PATH" "$CLI_FALLBACK" "$CLI_LAUNCHER" "$RELAY_PATH"
+    "${OVERSEER_BROWSER_RUNTIME:-}" "$MANIFEST" "$TESTING_MANIFEST"
+  )
+  local dir
+  for dir in "Google/Chrome" "Google/Chrome for Testing" "Chromium" "BraveSoftware/Brave-Browser" "Microsoft Edge"; do
+    references+=(
+      "$HOME/Library/Application Support/$dir/NativeMessagingHosts/com.paretocybernetics.overseer_browser.json"
+      "$HOME/Library/Application Support/$dir/NativeMessagingHosts/$LEGACY_HOST_NAME.json"
+    )
+  done
+  "$PYTHON" -I - "$APP_SUPPORT/runtimes" "$RUNTIME" "${references[@]}" <<'PYPRUNE'
+import os, re, shutil, sys, time
+from pathlib import Path
+
+root, current, *references = sys.argv[1:]
+root = Path(root)
+if not root.is_dir():
+    raise SystemExit(0)
+pattern = re.compile(re.escape(str(root)) + r'/runtime-[A-Za-z0-9_-]+')
+root_real = os.path.realpath(root)
+protected = {os.path.realpath(current)}
+
+
+def protect(reference):
+    # A reference either names the runtime tree itself (the OVERSEER_BROWSER_RUNTIME
+    # override is a directory) or names it inside a file (a launcher or manifest).
+    resolved = os.path.realpath(reference)
+    inner = os.path.relpath(resolved, root_real).split(os.sep)[0]
+    if inner == os.pardir:
+        protected.add(resolved)
+    else:
+        protected.add(os.path.realpath(os.path.join(str(root), inner)))
+
+
+for reference in references:
+    if not reference:
+        continue
+    if os.path.isdir(reference):
+        protect(reference)
+        continue
+    try:
+        text = Path(reference).read_text(encoding='utf-8', errors='replace')
+    except OSError:
+        continue
+    for match in pattern.finditer(text):
+        protect(match.group(0))
+cutoff = time.time() - 30 * 24 * 60 * 60
+for path in sorted(root.iterdir()):
+    if path.is_symlink() or not path.is_dir() or not re.fullmatch(r'runtime-[A-Za-z0-9_-]+', path.name):
+        continue
+    if os.path.realpath(path) in protected:
+        continue
+    try:
+        entries = [path, *path.rglob('*')]
+        if any(entry.is_symlink() for entry in entries):
+            continue
+        if any(entry.stat().st_mtime > cutoff for entry in entries):
+            continue
+        shutil.rmtree(path)
+        print(f'Pruned old runtime copy: {path}')
+    except OSError as exc:
+        print(f'overseer-browser: could not prune old runtime copy {path}: {exc}', file=sys.stderr)
+PYPRUNE
+}
+
 stage_runtime() {
   mkdir -p "$APP_SUPPORT/runtimes"
+  prune_stale_staging
   STAGE="$(mktemp -d "$APP_SUPPORT/runtimes/.stage-XXXXXXXX")"
   trap 'if [ -n "${STAGE:-}" ]; then rm -rf "$STAGE"; fi' EXIT
   mkdir "$STAGE/native_host" "$STAGE/cli" "$STAGE/extension"
@@ -142,6 +221,7 @@ PYVALIDATE
   RUNTIME="$APP_SUPPORT/runtimes/runtime-${STAGE##*.stage-}"
   mv "$STAGE" "$RUNTIME"
   STAGE=""
+  prune_old_runtimes
   HOST_DIR="$RUNTIME/native_host"
   CLI_MAIN="$RUNTIME/cli/main.py"
   EXTENSION_DIR="$RUNTIME/extension"

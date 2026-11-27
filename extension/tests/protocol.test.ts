@@ -34,7 +34,7 @@ describe('native protocol validation', () => {
 
   it('accepts only bounded native-host update status frames and known actions', () => {
     const status = { version: 1, kind: 'update_status', request_id: 'update-check-v1', result: {
-      available: true, current: '0.11.0', latest: '0.12.0', notes: 'Notes', installing: false,
+      available: true, current: '0.11.3', latest: '0.12.0', notes: 'Notes', installing: false,
       installed: false, auto: false, checks: true, error: '', command: 'overseer-browser update',
     } };
     expect(isUpdateStatus(status)).toBe(true);

@@ -109,6 +109,15 @@ class ShimOwnershipTests(unittest.TestCase):
         finally_part = BOOTSTRAP[BOOTSTRAP.rindex("} finally {"):]
         self.assertIn("$env:OVERSEER_BROWSER_BIN_DIR = $savedBinDirEnv", finally_part)
 
+    def test_windows_temp_folder_is_removed_and_stale_copies_swept(self):
+        # Retention: this run's temp folder goes in the finally block, and a temp
+        # folder left by a killed run is swept once it is older than six hours.
+        finally_part = BOOTSTRAP[BOOTSTRAP.rindex("} finally {"):]
+        self.assertIn("Remove-Item -Recurse -Force -LiteralPath $tmp", finally_part)
+        self.assertIn("-Filter 'overseer-browser-install*'", BOOTSTRAP)
+        self.assertIn("AddHours(-6)", BOOTSTRAP)
+        self.assertRegex(BOOTSTRAP, r"-Filter 'overseer-browser-install\*'[^\n]*\n[^\n]*AddHours\(-6\)")
+
 
 @unittest.skipUnless(BUILT_EXTENSION.is_file(), "needs a built extension (npm run build --prefix extension)")
 class ShellInstallerTests(unittest.TestCase):

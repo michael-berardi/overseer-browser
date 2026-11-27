@@ -368,6 +368,8 @@ class LauncherGuardTests(unittest.TestCase):
     # Reviewed non-browser spawns: the file, and the first word of the command's source.
     ALLOWED = {
         ('cli/main.py', 'str(script)'),            # the installer script behind install/update/uninstall
+        ('cli/main.py', 'argv'),                   # the same local installer/rollback command, built as argv
+        ('cli/update.py', 'command'),              # detached opt-in `update` CLI, never a browser spawn
         ('cli/recording.py', 'ffmpeg'), ('cli/recording.py', "shutil.which('ffmpeg')"),
         ('cli/recording.py', "shutil.which('ffprobe')"), ('cli/recording.py', 'ffprobe'),
         # Updates: the detached check child is cli/updates.py itself; argv is a verified release

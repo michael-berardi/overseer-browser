@@ -27,7 +27,7 @@ from cli import main as cli_main
 from native_host.protocol import ProtocolError, validate_extension_message
 
 REPO = Path(__file__).resolve().parents[1]
-CURRENT = "0.11.0"
+CURRENT = "0.11.3"
 NEXT = "0.12.0"
 
 
@@ -63,7 +63,7 @@ class Sandbox(unittest.TestCase):
 class VersionTests(unittest.TestCase):
     def test_only_strictly_newer_stable_versions_count(self) -> None:
         self.assertTrue(updates.is_newer(NEXT, CURRENT))
-        self.assertTrue(updates.is_newer("v0.11.1", CURRENT))
+        self.assertTrue(updates.is_newer("v0.11.4", CURRENT))
         self.assertTrue(updates.is_newer("0.11.10", "0.11.9"))
         self.assertFalse(updates.is_newer(CURRENT, CURRENT))
         self.assertFalse(updates.is_newer("0.10.17", CURRENT))
@@ -140,6 +140,26 @@ class CheckTests(Sandbox):
         self.assertTrue(updates.start_background_check(CURRENT, self.env, spawn=self.spawn))
         self.assertEqual(len(self.spawned), 3)
 
+    def test_abandoned_claim_recovers_instead_of_gating_for_a_day(self) -> None:
+        moment = 1_000.0
+        updates.update_state(self.env, checked_at=moment, checking_at=moment)
+        calls: list[str] = []
+
+        def fetch(url: str) -> dict:
+            calls.append(url)
+            return self.record()
+
+        state = updates.check_now(CURRENT, self.env, fetch, now=moment + 30.0)
+        self.assertEqual(calls, [])  # a live claim is reused by update --check too
+        self.assertEqual(state["checking_at"], moment)
+        self.assertFalse(updates.due(state, moment + 30.0))
+        self.assertFalse(updates.start_background_check(CURRENT, self.env, moment + 30.0, self.spawn))
+        self.assertEqual(self.spawned, [])
+        state = updates.check_now(CURRENT, self.env, fetch, now=moment + updates.CLAIM_SECONDS + 1)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual((state["checking_at"], state["latest"]), (0.0, NEXT))
+        self.assertTrue(state["checked_at"] > moment)
+
     def test_detached_child_runs_isolated_and_writes_only_the_state_file(self) -> None:
         record = self.base / "latest.json"
         record.write_text(json.dumps(self.record()), encoding="utf-8")
@@ -159,7 +179,7 @@ class NoticeTests(Sandbox):
         self.release()
         self.available()
         self.assertEqual(updates.notice(CURRENT, self.env, now=10.0), [
-            "overseer-browser 0.12.0 available (you have 0.11.0) · run: overseer-browser update",
+            "overseer-browser 0.12.0 available (you have 0.11.3) · run: overseer-browser update",
             "turn on automatic updates: overseer-browser update --auto on · skip: overseer-browser update --skip",
         ])
         self.assertEqual(updates.notice(CURRENT, self.env, now=10.0 + 3_600), [])
@@ -201,7 +221,7 @@ class NoticeTests(Sandbox):
             cli_main._after_command("tabs", True, False, dict(self.env, NO_COLOR="1"))
         self.assertEqual(out.getvalue(), "")
         self.assertEqual(err.getvalue().splitlines()[0],
-                         "overseer-browser 0.12.0 available (you have 0.11.0) · run: overseer-browser update")
+                         "overseer-browser 0.12.0 available (you have 0.11.3) · run: overseer-browser update")
         self.assertEqual(len(err.getvalue().splitlines()), 2)
 
     def test_emit_dims_only_the_second_line_on_a_terminal(self) -> None:
