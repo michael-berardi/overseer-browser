@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.11.3
+
+- macOS and Linux installers now prune superseded `runtimes/` trees once every file in a tree is older than 30 days. The published runtime, trees still named by a launcher/manifest or runtime override, and all recent or symlinked trees are kept; cleanup failures are reported without failing the install.
+- `PRIVACY.md` and `docs/install.md` now state that bound and the remaining manual deletion steps; regression tests cover an aged non-current runtime being removed while the fresh current and fresh non-current copies survive. No release-check or prompt code changed.
+
 ## 0.11.2
 
 - README's Privacy section is 3-6 short lines that link to `PRIVACY.md` again; the full data flow, runtime paths, log caps, and deletion steps moved into `PRIVACY.md`, and the resolved documentation-deviation note is gone from `docs/updates.md`.

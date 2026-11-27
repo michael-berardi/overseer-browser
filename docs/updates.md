@@ -44,7 +44,7 @@ When a new version is found you see at most one notice per version per 24 hours
 on stderr, after the command finishes:
 
 ```
-overseer-browser 0.11.2 available (you have 0.11.1) · run: overseer-browser update
+overseer-browser 0.11.3 available (you have 0.11.2) · run: overseer-browser update
 turn on automatic updates: overseer-browser update --auto on · skip: overseer-browser update --skip
 ```
 

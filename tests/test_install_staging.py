@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -196,6 +197,69 @@ class InstallStagingTests(unittest.TestCase):
         self.exercise('manage-macos.sh', relay=True)
 
     def test_linux_staging(self):
+        self.exercise('install-linux.sh')
+
+
+class RuntimePruningTests(unittest.TestCase):
+    """Aged, unreferenced runtime copies are pruned; current and fresh copies stay."""
+
+    def exercise(self, script):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            root = base / 'checkout'
+            (root / 'scripts').mkdir(parents=True)
+            shutil.copy2(REPO / 'scripts' / script, root / 'scripts' / script)
+            for package in ('cli', 'native_host'):
+                (root / package).mkdir()
+                for source in (REPO / package).glob('*.py'):
+                    shutil.copy2(source, root / package / source.name)
+            built = root / 'extension/.output/chrome-mv3'
+            built.mkdir(parents=True)
+            (built / 'manifest.json').write_text(json.dumps({'manifest_version': 3}))
+            (built / 'background.js').write_text('// synthetic build')
+            (root / 'extension/package.json').write_text('{}')
+            npm = base / 'npm'
+            npm.write_text('#!/bin/sh\nexit 0\n')
+            npm.chmod(0o700)
+            home = base / 'home'
+            home.mkdir()
+            env = dict(os.environ, HOME=str(home), PYTHON=sys.executable, NPM=str(npm),
+                       XDG_DATA_HOME=str(home / 'data'), XDG_CONFIG_HOME=str(home / 'config'),
+                       OVERSEER_BROWSER_BIN_DIR=str(home / 'bin'), TMPDIR=str(base))
+            app = home / ('Library/Application Support/OverSeer/browser' if 'macos' in script
+                          else 'data/overseer-browser')
+            runtimes = app / 'runtimes'
+
+            old = runtimes / 'runtime-old0001'
+            (old / 'cli').mkdir(parents=True)
+            (old / 'cli/main.py').write_text('# old runtime\n')
+            old_stamp = time.time() - 31 * 24 * 60 * 60
+            for entry in (old, old / 'cli', old / 'cli/main.py'):
+                os.utime(entry, (old_stamp, old_stamp))
+
+            fresh = runtimes / 'runtime-fresh01'
+            (fresh / 'cli').mkdir(parents=True)
+            (fresh / 'cli/main.py').write_text('# fresh non-current runtime\n')
+
+            result = subprocess.run(['bash', str(root / 'scripts' / script), 'install'],
+                                    env=env, cwd=base, text=True, capture_output=True, timeout=180)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn('Pruned old runtime copy', result.stdout)
+            self.assertFalse(old.exists(), 'aged non-current runtime was not pruned')
+            self.assertTrue(fresh.is_dir(), 'fresh non-current runtime must survive the age bound')
+
+            launcher = home / 'bin/overseer-browser'
+            current_name = re.search(r'runtime-[A-Za-z0-9_-]+', launcher.read_text()).group(0)
+            current = runtimes / current_name
+            self.assertTrue(current.is_dir(), 'the fresh current runtime was not kept')
+            self.assertNotEqual(current, fresh)
+            self.assertEqual({p.name for p in runtimes.iterdir() if p.name.startswith('runtime-')},
+                             {fresh.name, current.name})
+
+    def test_macos_prunes_aged_runtime(self):
+        self.exercise('manage-macos.sh')
+
+    def test_linux_prunes_aged_runtime(self):
         self.exercise('install-linux.sh')
 
 

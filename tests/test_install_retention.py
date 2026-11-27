@@ -298,6 +298,8 @@ class RetentionDocumentationTests(unittest.TestCase):
                      "~/.local/share/overseer-browser", "Default/Service Worker"):
             self.assertIn(path, privacy, path)
         self.assertNotIn("The extension and native host never make this request", privacy)
+        self.assertIn("older than 30 days", privacy)
+        self.assertNotIn("older runtime trees remain until you delete them", privacy)
         removal = privacy[privacy.index("### Deleting local data"):]
         self.assertIn("~/.local/share/overseer-browser", removal)
         self.assertIn("update cache and install-log directories", removal)
@@ -307,6 +309,8 @@ class RetentionDocumentationTests(unittest.TestCase):
         self.assertNotIn("must be removed manually", updates)
         install = " ".join((REPO / "docs" / "install.md").read_text(encoding="utf-8").split())
         self.assertIn("a successful update deletes the copy", install)
+        self.assertIn("older than 30 days", install)
+        self.assertNotIn("old runtime trees are retained", install)
 
     def test_readme_privacy_stays_short_and_links_the_detail(self):
         readme = (REPO / "README.md").read_text(encoding="utf-8")

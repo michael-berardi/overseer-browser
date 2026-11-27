@@ -56,9 +56,11 @@ Update by re-running the same one-liner (`overseer-browser update` does this for
 release installs). An update keeps the release it displaced in
 `<install>/rollback/previous` until the new release has installed and started;
 `overseer-browser update --rollback` restores it after a failed update, and a
-successful update deletes the copy. Installer temp and staging leftovers of an
-interrupted run are swept by the next install; [PRIVACY.md](../PRIVACY.md) lists
-every local write with its lifetime.
+successful update deletes the copy. macOS/Linux installers also prune
+unreferenced runtime trees older than 30 days, keeping the current and recent
+copies. Installer temp and staging leftovers of an interrupted run are swept by
+the next install; [PRIVACY.md](../PRIVACY.md) lists every local write with its
+lifetime.
 An anonymous, at-most-daily release check and its opt-outs are described in
 [Updates](updates.md). Remove by deleting the tool folder
 (`~/.overseer-browser` or `%LOCALAPPDATA%\OverSeerBrowser`), the
@@ -112,7 +114,9 @@ npm ci --prefix extension && npm run build --prefix extension
 
 The script registers the native host and CLI for Chrome, Chromium, Brave and
 Edge. After `git pull --ff-only`, rebuild the extension and rerun the installer to update.
-Load the new extension directory printed by the installer; old runtime trees are retained.
+Load the new extension directory printed by the installer; the current and recent
+runtime trees are kept, and unreferenced copies older than 30 days are pruned by
+the next install.
 
 ### Windows from source (experimental)
 
